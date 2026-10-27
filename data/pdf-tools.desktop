@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PDF Tools
+GenericName=PDF Editor
+Comment=View, redact, fill, add text, sign and merge PDFs
+Exec=pdf-tools %F
+Icon=pdf-tools
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupWMClass=pdf-tools

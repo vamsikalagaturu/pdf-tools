@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf-tools"
+version = "0.1.0"
+description = "View, redact, fill, annotate, sign and merge PDFs"
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf>=1.24",
+    "pyside6>=6.6",
+]
+
+[project.gui-scripts]
+pdf-tools = "pdf_tools.app:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
