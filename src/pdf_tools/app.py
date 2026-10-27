@@ -6,16 +6,22 @@ from pathlib import Path
 from PySide6.QtCore import QLoggingCategory, QTimer
 from PySide6.QtWidgets import QApplication
 
+from pdf_tools.core import desktop
 from pdf_tools.core.config import Settings, migrate_legacy
 from pdf_tools.ui.main_window import MainWindow
 from pdf_tools.ui.theme import apply_theme, saved_theme
 from pdf_tools.ui.util import app_icon
 
-DESKTOP_ID = "pdf-tools"
+DESKTOP_ID = desktop.DESKTOP_ID
 NO_NATIVE_DIALOG_THEMES = ("", "qt5ct", "qt6ct")
 
 
 def main():
+    if sys.argv[1:] in (["--install-desktop"], ["--uninstall-desktop"]):
+        install = sys.argv[1] == "--install-desktop"
+        paths = desktop.install() if install else desktop.uninstall()
+        print("\n".join(f"{'wrote' if install else 'removed'} {p}" for p in paths) or "nothing to remove")
+        return
     # Qt's event loop never returns to Python, so a Python SIGINT handler would never run; let Ctrl+C kill as usual
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     # harmless Qt Wayland input-method chatter whenever a focused field is removed
