@@ -6,6 +6,9 @@ build-backend = "hatchling.build"
 name = "pdf-tools"
 version = "0.1.0"
 description = "View, redact, fill, annotate, sign and merge PDFs"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "src/pdf_tools/assets/icons/LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "pymupdf>=1.24",
