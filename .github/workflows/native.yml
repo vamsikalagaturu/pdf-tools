@@ -1,0 +1,28 @@
+name: Native C
+on:
+  push:
+    paths: ["native/**", ".github/workflows/native.yml"]
+  pull_request:
+    paths: ["native/**", ".github/workflows/native.yml"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test fixtures and MuPDF C development headers/library
+        run: python -m pip install "pymupdf>=1.26,<2"
+      - name: Configure (CLI + tests)
+        shell: bash
+        run: |
+          MUPDF_PREFIX=$(python -c 'import pymupdf,os;print(os.path.dirname(pymupdf.__file__))')
+          LIB=$(find "$MUPDF_PREFIX" -maxdepth 1 -name 'libmupdf.so.*' | head -1)
+          cmake -S native -B build/native -DPT_BUILD_GUI=OFF \
+            "-DMUPDF_INCLUDE_DIR=$MUPDF_PREFIX/mupdf-devel/include" \
+            "-DMUPDF_LIBRARY=$LIB"
+      - name: Build
+        run: cmake --build build/native --parallel
+      - name: Test
+        run: ctest --test-dir build/native --output-on-failure
