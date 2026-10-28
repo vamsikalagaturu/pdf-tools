@@ -26,11 +26,10 @@ pdf_document *pt_copy_pages(fz_context *ctx, pdf_document *src, const int *pages
 {
     pdf_document *dst = pdf_create_document(ctx);
     fz_try(ctx) {
-        for (int i = 0; i < count; ++i) {
-            if (pages[i] < 0 || pages[i] >= pdf_count_pages(ctx, src))
-                fz_throw(ctx, FZ_ERROR_ARGUMENT, "page index out of bounds");
-            pdf_graft_page(ctx, dst, -1, src, pages[i]);
-        }
+        for (int i=0;i<count;i++)
+            if (pages[i]<0 || pages[i]>=pdf_count_pages(ctx,src))
+                fz_throw(ctx,FZ_ERROR_ARGUMENT,"page index out of bounds");
+        pt_graft_pages_with_forms(ctx,dst,src,pages,count);
     }
     fz_catch(ctx) {
         pdf_drop_document(ctx, dst);
