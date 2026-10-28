@@ -9,6 +9,7 @@ LEGACY_DIR = "pdf-redact"
 SETTINGS = {
     "theme": ("dark", "dark | light"),
     "view_mode": ("continuous", "continuous | single"),
+    "show_sidebar": (True, "Show the Pages / Annotations / Edits panel"),
     "export_flatten": (False, "Export pages as images without selectable text"),
     "export_dpi": (200, "Resolution of flattened exports"),
     "redact_snap_to_text": (True, "Redact whole lines of the words dragged over instead of a free rectangle"),

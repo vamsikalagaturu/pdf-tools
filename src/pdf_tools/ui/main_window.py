@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pdf_tools import APP_NAME
+from pdf_tools import APP_NAME, REPO_URL, __version__
 from pdf_tools.ui import icons
 from pdf_tools.ui.edit_tab import EditTab
 from pdf_tools.ui.merge_tab import MergePage
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self.a_close_tab = self.action("Close tab", lambda: self.close_tab(self.docs.currentWidget()), "Ctrl+W", "close")
         self.a_merge = self.action("Merge PDFs...", self.open_merge, "Ctrl+M", "merge")
         self.a_quit = self.action("Quit", self.close, QKeySequence.Quit)
+        self.a_about = self.action(f"About {APP_NAME}", self.about, icon="about")
         self.a_next_tab = self.action("Next tab", lambda: self.step_tab(1), "Ctrl+Tab")
         self.a_prev_tab = self.action("Previous tab", lambda: self.step_tab(-1), "Ctrl+Shift+Tab")
         self.appearance = QMenu("Appearance", self)
@@ -268,6 +269,8 @@ class MainWindow(QMainWindow):
         if e:
             f.addSeparator()
             f.addActions([e.a_save, e.a_save_as, e.a_export])
+            f.addSeparator()
+            f.addActions([e.a_print, e.a_print_preview])
         f.addSeparator()
         f.addAction(self.a_merge)
         f.addSeparator()
@@ -293,7 +296,7 @@ class MainWindow(QMainWindow):
             subs += [m, t]
         v = menu.addMenu("View")
         if e:
-            v.addAction(e.a_continuous)
+            v.addActions([e.a_sidebar, e.a_continuous])
             v.addSeparator()
             v.addActions([e.a_zoom_in, e.a_zoom_out, e.a_fit])
             v.addSeparator()
@@ -303,6 +306,8 @@ class MainWindow(QMainWindow):
         v.addSeparator()
         v.addMenu(self.appearance)
         subs.append(v)
+        menu.addSeparator()
+        menu.addAction(self.a_about)
         old = self.menu_button.menu()
         self.menu_button.setMenu(menu)
         if old:
@@ -322,7 +327,19 @@ class MainWindow(QMainWindow):
         if merge_index >= 0:
             self.docs.setTabIcon(merge_index, icons.icon("merge"))
         for t in self.tabs():
+            t.edits_sig = None
             t.update_state()
+
+    def about(self):
+        QMessageBox.about(
+            self,
+            f"About {APP_NAME}",
+            f"<h3>{APP_NAME}</h3>"
+            f"<p>Version {__version__}</p>"
+            "<p>View, redact, fill, annotate, sign and merge PDFs.</p>"
+            f'<p><a href="{REPO_URL}">{REPO_URL.removeprefix("https://")}</a></p>'
+            "<p>License: AGPL-3.0-or-later. Icons: Lucide (ISC).</p>",
+        )
 
     def closeEvent(self, e):
         dirty = [t for t in self.tabs() if t.edit_count()]

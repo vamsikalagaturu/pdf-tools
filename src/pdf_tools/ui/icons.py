@@ -41,6 +41,10 @@ LUCIDE = {
     "textcolour": "baseline",
     "custom-colour": "palette",
     "file": "file-text",
+    "sidebar": "panel-left",
+    "copy": "copy",
+    "print": "printer",
+    "about": "info",
 }
 SIZE = 48
 

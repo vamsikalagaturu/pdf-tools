@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pdf-tools"
-version = "0.1.0"
+dynamic = ["version"]
 description = "View, redact, fill, annotate, sign and merge PDFs"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -20,6 +20,12 @@ pdf-tools = "pdf_tools.app:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/vamsikalagaturu/pdf-tools"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf_tools"]
