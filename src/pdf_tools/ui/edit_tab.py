@@ -1,3 +1,12 @@
+"""One open PDF in the main window: the EditTab widget and its helpers.
+
+EditTab owns the page view, the tools (select, redact, mark, note, text, sign, image, draw, crop), the unsaved edit
+state with snapshot-based undo, the page model (order, rotation, crop, inserted files), the side panels (pages,
+annotations, edits) and saving, printing, splitting and reloading from disk. Edits stay in memory until saved, when
+core.edits.apply_edits writes them. Positions are PDF points on the unrotated page unless a name says scene; page
+numbers index the display document, not positions in the current page order.
+"""
+
 import os
 import shlex
 import statistics
@@ -9,16 +18,19 @@ from pathlib import Path
 import pymupdf
 from PySide6.QtCore import (
     QByteArray,
+    QEasingCurve,
     QEvent,
     QFile,
     QFileSystemWatcher,
     QPoint,
     QPointF,
     QProcess,
+    QRect,
     QRectF,
     QSize,
     Qt,
     QTimer,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
@@ -29,9 +41,11 @@ from PySide6.QtGui import (
     QCursor,
     QFont,
     QFontDatabase,
-    QIcon,
+    QFontMetrics,
     QImage,
     QKeySequence,
+    QPainter,
+    QPalette,
     QPen,
     QPixmap,
     QPolygonF,
@@ -56,6 +70,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QSizePolicy,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -92,18 +108,21 @@ from pdf_tools.ui.popover import FormatBar, Popover
 from pdf_tools.ui.printing import print_pdf
 from pdf_tools.ui.util import hex_to_rgb, png_bytes, rgb_to_hex, swatch_icon, to_qimage
 
-THUMB_ZOOM = 0.22
 PREVIEW_SCALE = 4
 SIGNATURE_WIDTH = 150
 NOTE_SIZE = 18
 PAGE_GAP = 12
 PIXMAP_CACHE = 12
 PATH_WIDTH = 360
-THUMB_CHECK_WIDTH = 24
+THUMB_BOX = QSize(150, 196)
+EDITS_ROLE = Qt.UserRole + 1
+BADGE_COLOUR = QColor(217, 48, 37)
 CROP_DIM = QColor(32, 33, 36, 150)
 KEEP = object()
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff)"
-PAGE_BAR_STYLE ="QToolBar { border: none; border-bottom: 1px solid rgba(128, 128, 128, 70); padding: 2px; spacing: 2px; }"
+SIDEBAR_WIDTH = 250
+SIDEBAR_MIN = 240
+SIDEBAR_MS = 180
 RELOAD_SETTLE_MS = 300
 RELOAD_TRIES = 10
 SYNC_MARK = QColor(255, 200, 0, 110)
@@ -202,6 +221,134 @@ def colour_key(style):
     return "highlight_colour" if style == "highlight" else "ink_colour"
 
 
+class SlideHolder(QWidget):
+    """The sidebar's slot in the splitter. While its width animates, the sidebar inside keeps a fixed width and
+    slides along the right edge, so its contents never squeeze (their minimum sizes would make the splitter jump);
+    otherwise the sidebar simply fills it."""
+
+    def __init__(self, child):
+        super().__init__()
+        self.child, self.slide_width = child, None
+        child.setParent(self)
+
+    def resizeEvent(self, e):
+        width = self.slide_width or self.width()
+        self.child.setGeometry(self.width() - width, 0, width, self.height())
+
+
+class ThumbDelegate(QStyledItemDelegate):
+    """A page in the Pages list: the thumbnail centred with its position below, a tick box on its top-left corner
+    and a red edit-count badge on its top-right; the current page gets a highlighted card and outline.
+
+    Clicks on the tick box and the badge are handled here (toggle the tick; `badge_clicked` with the page number),
+    so they neither select the row nor start a drag."""
+
+    badge_clicked = Signal(int)
+    # tick boxes show on hover, on ticked pages, and on all pages while any is ticked
+    any_ticked = False
+
+    def sizeHint(self, option, index):
+        return QSize(THUMB_BOX.width() + 24, self.thumb_size(index).height() + 42)
+
+    @staticmethod
+    def is_ticked(index):
+        # the role holds an int or a Qt.CheckState depending on who set it; they do not compare equal in PySide
+        return Qt.CheckState(index.data(Qt.CheckStateRole) or 0) == Qt.Checked
+
+    @staticmethod
+    def thumb_size(index):
+        pix = index.data(Qt.DecorationRole)
+        size = pix.deviceIndependentSize().toSize() if isinstance(pix, QPixmap) else THUMB_BOX
+        return size.scaled(THUMB_BOX, Qt.KeepAspectRatio)
+
+    def rects(self, option, index):
+        """(row card, thumbnail, position label, tick box, badge) for one row."""
+        view = self.parent()
+        # paint and click events can get different widths for a list row; use the viewport's for both
+        r = QRect(option.rect.left(), option.rect.top(), view.viewport().width() - 2 * view.spacing(), option.rect.height())
+        size = self.thumb_size(index)
+        thumb = QRect(r.center().x() - size.width() // 2, r.top() + 8, size.width(), size.height())
+        label = QRect(r.left(), thumb.bottom() + 4, r.width(), 22)
+        card = QRect(r.left() + 6, r.top() + 2, r.width() - 12, label.bottom() - r.top())
+        check = QRect(thumb.left() + 6, thumb.top() + 6, 16, 16)
+        edits = index.data(EDITS_ROLE) or 0
+        text = f"{edits} edit{'s' * (edits != 1)}"
+        width = QFontMetrics(self.badge_font(option)).horizontalAdvance(text) + 14
+        badge = QRect(thumb.right() - width - 5, thumb.top() + 5, width, 18)
+        return card, thumb, label, check, (badge, text if edits else "")
+
+    def badge_font(self, option):
+        font = QFont(option.font)
+        font.setPointSizeF(font.pointSizeF() * 0.8)
+        font.setBold(True)
+        return font
+
+    def paint(self, p, option, index):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        palette = option.palette
+        card, thumb, label, check, (badge, badge_text) = self.rects(option, index)
+        highlight = palette.color(QPalette.Highlight)
+        selected = bool(option.state & QStyle.State_Selected)
+        if selected:
+            fill = QColor(highlight)
+            fill.setAlpha(45)
+            p.setPen(Qt.NoPen)
+            p.setBrush(fill)
+            p.drawRoundedRect(card, 8, 8)
+        pix = index.data(Qt.DecorationRole)
+        if isinstance(pix, QPixmap):
+            p.drawPixmap(thumb, pix)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(highlight, 2) if selected else QPen(QColor(128, 128, 128, 120), 1))
+        p.drawRect(thumb)
+
+        ticked = self.is_ticked(index)
+        if ticked or self.any_ticked or option.state & QStyle.State_MouseOver:
+            p.setPen(QPen(highlight if ticked else QColor(110, 110, 110), 1.2))
+            p.setBrush(highlight if ticked else QColor(255, 255, 255, 230))
+            p.drawRoundedRect(check, 3, 3)
+        if ticked:
+            p.setPen(QPen(palette.color(QPalette.HighlightedText), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            c = check
+            p.drawPolyline([QPointF(c.left() + 3.5, c.center().y()), QPointF(c.left() + 6.5, c.bottom() - 4),
+                            QPointF(c.right() - 3, c.top() + 4)])
+
+        if badge_text:
+            p.setPen(Qt.NoPen)
+            p.setBrush(BADGE_COLOUR)
+            p.drawRoundedRect(badge, 9, 9)
+            p.setPen(Qt.white)
+            p.setFont(self.badge_font(option))
+            p.drawText(badge, Qt.AlignCenter, badge_text)
+
+        font = QFont(option.font)
+        font.setBold(selected)
+        p.setFont(font)
+        p.setPen(highlight if selected else palette.color(QPalette.Text))
+        p.drawText(label, Qt.AlignCenter, index.data(Qt.DisplayRole) or "")
+        p.restore()
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() not in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            return False
+        if event.button() != Qt.LeftButton:
+            return False
+        _, _, _, check, (badge, badge_text) = self.rects(option, index)
+        pos = event.position().toPoint()
+        # the box is drawn on hover, so the pointer is always over a visible box when it hits one
+        hit_check = check.adjusted(-4, -4, 4, 4).contains(pos)
+        hit_badge = bool(badge_text) and badge.contains(pos)
+        if event.type() == QEvent.MouseButtonRelease:
+            if hit_check:
+                ticked = self.is_ticked(index)
+                model.setData(index, Qt.Unchecked if ticked else Qt.Checked, Qt.CheckStateRole)
+            elif hit_badge:
+                self.badge_clicked.emit(index.data(Qt.UserRole))
+        # swallow press and double-click too, so these spots neither change the page nor start a drag
+        return hit_check or hit_badge
+
+
 class EditTab(QWidget):
     """Viewer/editor for one PDF: redactions, text, signatures, highlights, notes, form fields, search."""
 
@@ -254,8 +401,10 @@ class EditTab(QWidget):
         self.ink_group = None
 
         self.thumbs = QListWidget()
-        self.thumbs.setIconSize(QSize(130, 184))
-        self.thumbs.setSpacing(4)
+        self.thumb_delegate = ThumbDelegate(self.thumbs)
+        self.thumb_delegate.badge_clicked.connect(self.show_page_edits)
+        self.thumbs.setItemDelegate(self.thumb_delegate)
+        self.thumbs.setSpacing(2)
         self.thumbs.setDragDropMode(QAbstractItemView.InternalMove)
         self.thumbs.setDefaultDropAction(Qt.MoveAction)
         self.thumbs.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -279,16 +428,9 @@ class EditTab(QWidget):
         self.thumbs.viewport().installEventFilter(self)
         self.side = QTabWidget()
         self.side.setDocumentMode(True)
-        self.pages_panel = QWidget()
-        pages_layout = QVBoxLayout(self.pages_panel)
-        pages_layout.setContentsMargins(0, 0, 0, 0)
-        pages_layout.setSpacing(0)
-        pages_layout.addWidget(self.thumbs)
-        self.side.addTab(self.pages_panel, "Pages")
+        self.side.addTab(self.thumbs, "Pages")
         self.side.addTab(self.annot_tree, "Annotations")
         self.side.addTab(self.edits_tree, "Edits")
-        self.side.setMinimumWidth(240)
-        self.side.setVisible(settings.get("show_sidebar"))
 
         self.view = PageView(lambda: self.tool, self.selection_mode)
         self.view.pressed.connect(lambda: self.close_popover())
@@ -319,11 +461,20 @@ class EditTab(QWidget):
         vlay.addWidget(self.findbar)
         vlay.addWidget(self.view)
 
-        split = QSplitter()
-        split.addWidget(self.side)
+        self.side_holder = SlideHolder(self.side)
+        self.side_holder.setMinimumWidth(SIDEBAR_MIN)
+        self.side_holder.setVisible(settings.get("show_sidebar"))
+        split = self.split = QSplitter()
+        split.addWidget(self.side_holder)
         split.addWidget(self.viewer)
         split.setStretchFactor(1, 1)
-        split.setSizes([250, 950])
+        split.setSizes([SIDEBAR_WIDTH, 950])
+        self.side_width, self.side_target = SIDEBAR_WIDTH, settings.get("show_sidebar")
+        self.side_anim = QVariantAnimation(self)
+        self.side_anim.setDuration(SIDEBAR_MS)
+        self.side_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.side_anim.valueChanged.connect(self.set_side_width)
+        self.side_anim.finished.connect(self.side_settled)
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.setSpacing(0)
@@ -347,12 +498,20 @@ class EditTab(QWidget):
         self.window().statusBar().showMessage(text, ms)
 
     def build_info(self):
-        """Status line: page and edit counts, then the file path (elided to a fixed width) with a copy button."""
+        """The status bar's right side: the page position, then the file path (elided to a fixed width) with a
+        copy button.
+
+        Edit and tick counts are a separate widget, `self.stats`, which the window puts on the left.
+        """
+        self.stats = QLabel()
+        self.stats.setContentsMargins(8, 0, 0, 0)
         box = QWidget()
         lay = QHBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        self.stats = QLabel()
+        self.page_label = QLabel()
+        lay.addWidget(self.page_label)
+        lay.addSpacing(12)
         self.path_label = QLabel()
         self.path_label.setFixedWidth(PATH_WIDTH)
         self.path_label.setContextMenuPolicy(Qt.ActionsContextMenu)
@@ -365,8 +524,8 @@ class EditTab(QWidget):
         copy.setToolTip("Copy path")
         icons.bind(copy, "copy")
         copy.clicked.connect(self.copy_path)
-        for w in (self.stats, self.path_label, copy):
-            lay.addWidget(w)
+        lay.addWidget(self.path_label)
+        lay.addWidget(copy)
         return box
 
     def copy_path(self):
@@ -570,31 +729,7 @@ class EditTab(QWidget):
             self.a_sidebar, self.a_undo, self.a_redo, self.a_zoom_out, self.a_zoom_in, self.a_fit, self.a_continuous, self.a_find,
         ):
             tb.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.pages_panel.layout().insertWidget(0, self.build_page_bar())
         self.on_tool()
-
-    def build_page_bar(self):
-        """Page commands above the thumbnails; they act on the ticked pages, else the current one."""
-        bar = QToolBar()
-        bar.setIconSize(QSize(16, 16))
-        bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        bar.setStyleSheet(PAGE_BAR_STYLE)
-        targets = " (ticked pages, or the current page)"
-        for a, tip in (
-            (self.a_rotate_left, "Rotate left, Ctrl+Shift+L" + targets),
-            (self.a_rotate_right, "Rotate right, Ctrl+Shift+R" + targets),
-            (None, None),
-            (self.a_insert_pages, "Insert pages from a PDF after the current page"),
-            (self.a_remove_pages, "Remove, Delete" + targets),
-            (None, None),
-            (self.a_fit_content, "Crop to content" + targets),
-        ):
-            if a is None:
-                bar.addSeparator()
-            else:
-                a.setToolTip(tip)
-                bar.addAction(a)
-        return bar
 
     def build_pen_options(self):
         """Draw tool options: pen colour swatches and a width choice."""
@@ -620,6 +755,7 @@ class EditTab(QWidget):
         return self.option_group(*buttons, self.pen_width_box)
 
     def set_pen(self, rgb=None, width=None):
+        """Change the Draw tool's colour and/or width; the next stroke starts a new drawing."""
         self.pen_rgb = rgb or self.pen_rgb
         self.pen_width = width or self.pen_width
         self.view.pen = QPen(QColor(*self.pen_rgb), self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -646,6 +782,7 @@ class EditTab(QWidget):
         self.render()
 
     def set_ink(self, pno, obj, **values):
+        """Change a drawing's colour or width (`values`) as one undo step."""
         self.push_undo(self.snapshot())
         obj.update(values)
         obj["rect"] = ink_bounds(obj)
@@ -733,6 +870,7 @@ class EditTab(QWidget):
         self.sync_mark_options()
 
     def on_tool(self):
+        """Switch to the checked tool: show only its toolbar options, set its cursor, drop half-done selections."""
         tool = self.tool
         self.redact_opts.setVisible(tool == "redact")
         self.highlight_opts.setVisible(tool == "highlight")
@@ -825,10 +963,9 @@ class EditTab(QWidget):
         ) != QMessageBox.Yes:
             self.disk_stamp = stamp
             return
-        position = self.order.index(self.pno) if self.pno in self.order else 0
-        zoom, scroll = self.zoom, self.view.verticalScrollBar().value()
         try:
-            loaded = self.load(self.doc_path, self.password)
+            fresh = open_pdf(self.doc_path, self.password)
+            fresh.load_page(len(fresh) - 1)
         except Exception:
             # still being written: try again shortly, a few times
             self.reload_tries += 1
@@ -836,15 +973,39 @@ class EditTab(QWidget):
                 self.reload_timer.start()
             return
         self.reload_tries = 0
-        if not loaded:
-            return
-        self.zoom = zoom
-        self.pno = self.order[min(position, len(self.order) - 1)]
-        self.sync_thumb()
-        self.render()
-        # after load()'s own deferred scroll to the top
-        QTimer.singleShot(0, lambda: self.view.verticalScrollBar().setValue(scroll))
+        self.swap_document(fresh, stamp)
         self.status(f"Reloaded {self.doc_path.name} (changed on disk)")
+
+    def swap_document(self, fresh, stamp):
+        """Show `fresh` (the file as rebuilt on disk) in place of the open copy, keeping page, zoom and scroll.
+
+        The scene is rebuilt in one pass with the new page images, so the view never shows an empty frame.
+        Unsaved edits are dropped (the caller asked first).
+        """
+        position = self.order.index(self.pno) if self.pno in self.order else 0
+        old, old_sizes = self.doc, [tuple(self.doc[p].rect) for p in self.order]
+        self.close_popover(commit=False)
+        self.finish_text(rerender=False)
+        self.fields.detach()
+        self.fields.reset()
+        self.items, self.deleted, self.forms, self.annot_text = {}, set(), {}, {}
+        self.rotation, self.crop, self.inserted, self.history, self.future = {}, {}, (), [], []
+        self.doc, self.own, self.order = fresh, len(fresh), tuple(range(len(fresh)))
+        self.pno = self.order[min(position, len(self.order) - 1)]
+        self.pix_cache, self.words_cache, self.thumb_done, self.edits_sig, self.sync = {}, {}, set(), None, None
+        self.font_cache.clear()
+        self.preview_cache.clear()
+        self.text_sel, self.matches, self.match_idx = None, [], -1
+        self.disk_stamp = self.seen_stamp = stamp
+        if old_sizes == [tuple(fresh[p].rect) for p in self.order]:
+            self.render_thumbs()
+        else:
+            self.rebuild_thumbs()
+        self.render()
+        # only now: the scene no longer holds anything of the old document (see unload)
+        old.close()
+        if self.findbar.isVisible():
+            self.run_search()
 
     def synctex(self):
         """This PDF's SyncTeX data, re-read when the .synctex file changed; None if there is none."""
@@ -867,6 +1028,7 @@ class EditTab(QWidget):
             self.open_source(*found)
 
     def open_source(self, path, line):
+        """Open TeX file `path` at `line` with the user's editor command, asking for the command on first use."""
         command = self.settings.get("editor_command")
         if not command:
             command, ok = QInputDialog.getText(
@@ -921,10 +1083,11 @@ class EditTab(QWidget):
         self.thumbs.blockSignals(True)
         self.thumbs.clear()
         for p in self.order:
-            w, h = self.doc[p].rect.width * THUMB_ZOOM, self.doc[p].rect.height * THUMB_ZOOM
-            blank = QPixmap(max(1, round(w)), max(1, round(h)))
+            size = QSize(round(self.doc[p].rect.width), round(self.doc[p].rect.height)).scaled(THUMB_BOX, Qt.KeepAspectRatio)
+            blank = QPixmap(size)
             blank.fill(QColor(235, 235, 235))
-            item = QListWidgetItem(QIcon(blank), "")
+            item = QListWidgetItem()
+            item.setData(Qt.DecorationRole, blank)
             item.setData(Qt.UserRole, p)
             item.setFlags((item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled) & ~Qt.ItemIsDropEnabled)
             item.setCheckState(Qt.Checked if p in ticked else Qt.Unchecked)
@@ -949,9 +1112,12 @@ class EditTab(QWidget):
             p = item.data(Qt.UserRole)
             if rect.bottom() < near.top() or p in self.thumb_done:
                 continue
-            pix = self.doc[p].get_pixmap(matrix=pymupdf.Matrix(THUMB_ZOOM, THUMB_ZOOM), alpha=False)
+            page, ratio = self.doc[p], self.devicePixelRatioF()
+            zoom = min(THUMB_BOX.width() / page.rect.width, THUMB_BOX.height() / page.rect.height) * ratio
+            image = QPixmap.fromImage(to_qimage(page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)))
+            image.setDevicePixelRatio(ratio)
             self.thumbs.blockSignals(True)
-            item.setIcon(QIcon(QPixmap.fromImage(to_qimage(pix))))
+            item.setData(Qt.DecorationRole, image)
             self.thumbs.blockSignals(False)
             self.thumb_done.add(p)
 
@@ -960,6 +1126,7 @@ class EditTab(QWidget):
         self.view.horizontalScrollBar().setValue(self.view.horizontalScrollBar().minimum())
 
     def unload(self):
+        """Close the document and reset all per-document state: edits, history, page model, caches, panels, watcher."""
         self.close_popover(commit=False)
         if self.text_edit:
             self.text_edit[3].deleteLater()
@@ -1010,6 +1177,7 @@ class EditTab(QWidget):
         self.render_thumbs()
 
     def close_doc(self):
+        """Close the document if unsaved edits may go, then emit `closed` so the window drops the tab."""
         if self.doc and self.confirm_discard():
             self.unload()
             self.update_state()
@@ -1036,6 +1204,10 @@ class EditTab(QWidget):
         return any(p in self.crop or any(o["kind"] == "redact" for o in self.items.get(p, [])) for p in pages)
 
     def save(self):
+        """Overwrite the file with the edited version after confirmation.
+
+        The original goes to the trash, a password protected file keeps its password, and the result is reopened.
+        """
         if not self.edit_count():
             return
         reply = QMessageBox.warning(
@@ -1069,9 +1241,11 @@ class EditTab(QWidget):
             self.write_copy(None, f"{self.doc_path.stem}-edited.pdf")
 
     def ticked_positions(self):
+        """Display positions (rows of the Pages list) of the ticked pages."""
         return [i for i in range(self.thumbs.count()) if self.thumbs.item(i).checkState() == Qt.Checked]
 
     def export_pages(self):
+        """Ask for a page range (default: the ticked pages) and optional flattening, then save those pages."""
         if not self.doc:
             return
         s = self.settings
@@ -1106,6 +1280,7 @@ class EditTab(QWidget):
         self.report(out, leaks, self.scrubs(pages) or bool(flatten_dpi))
 
     def output(self, pages, flatten_dpi=None, password=None):
+        """Bytes and redaction leaks of the edited `pages`, optionally flattened to images and encrypted."""
         data, leaks = self.edited(pages)
         if flatten_dpi:
             data = flatten(data, flatten_dpi)
@@ -1122,6 +1297,7 @@ class EditTab(QWidget):
         self.status(f"Saved {out} - no text left under any redaction.{hidden}", 10000)
 
     def split_doc(self):
+        """Ask the window to open Combine & split with this document's edited output."""
         if self.doc:
             self.split_requested.emit(self)
 
@@ -1139,6 +1315,7 @@ class EditTab(QWidget):
         self.write_copy(None, f"{self.doc_path.stem}-unlocked.pdf", password=None)
 
     def print_doc(self, preview=False):
+        """Print (or preview) the edited document; "current page" means the current page's position."""
         if self.doc:
             position = self.order.index(self.pno) if self.pno in self.order else 0
             print_pdf(self, lambda: self.edited()[0], len(self.order), position, self.doc_path.name, preview)
@@ -1163,20 +1340,24 @@ class EditTab(QWidget):
         return QRectF(o.x(), o.y(), r.width, r.height)
 
     def to_scene(self, rect, pno):
+        """Map `rect` (PDF points on page `pno`) to the scene, applying the page's rotation."""
         d = (rect * self.doc[pno].rotation_matrix).normalize()
         o = self.offsets[pno]
         return QRectF(d.x0 + o.x(), d.y0 + o.y(), d.width, d.height)
 
     def to_pdf(self, r, pno):
+        """Map scene rectangle `r` on page `pno` back to PDF points of the unrotated page."""
         o = self.offsets[pno]
         rect = pymupdf.Rect(r.left() - o.x(), r.top() - o.y(), r.right() - o.x(), r.bottom() - o.y())
         return (rect * self.doc[pno].derotation_matrix).normalize()
 
     def to_pdf_point(self, pt, pno):
+        """Map scene point `pt` on page `pno` to a PDF point of the unrotated page."""
         o = self.offsets[pno]
         return pymupdf.Point(pt.x() - o.x(), pt.y() - o.y()) * self.doc[pno].derotation_matrix
 
     def page_at(self, pt):
+        """The laid-out page containing scene point `pt`, else the vertically nearest one; None when none is shown."""
         if not self.offsets:
             return None
         return min(self.offsets, key=lambda p: 0 if self.page_rect(p).contains(pt) else abs(self.page_rect(p).center().y() - pt.y()))
@@ -1190,6 +1371,7 @@ class EditTab(QWidget):
         bar.setValue(bar.value() + top)
 
     def page_pix(self, pno, scale):
+        """Page `pno` rendered at `scale`; a small cache keeps the pages nearest the current one."""
         cached = self.pix_cache.get(pno)
         if cached and cached[0] == scale:
             return cached[1]
@@ -1201,10 +1383,10 @@ class EditTab(QWidget):
         return pix
 
     def eventFilter(self, obj, event):
+        """Watch the Pages list (a click on an edit count opens the Edits tab; a resize draws newly visible
+        thumbnails) and the toolbar (a resize decides whether tool buttons keep their labels)."""
         if obj is self.thumbs.viewport():
-            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-                self.on_thumb_clicked(event.position().toPoint())
-            elif event.type() == QEvent.Resize:
+            if event.type() == QEvent.Resize:
                 QTimer.singleShot(0, self.render_thumbs)
         elif obj is self.toolbar and event.type() == QEvent.Resize:
             self.fit_toolbar()
@@ -1217,6 +1399,7 @@ class EditTab(QWidget):
         return self.font_cache[key]
 
     def text_image(self, obj):
+        """Text box `obj` drawn by the PDF engine on a transparent image, so the preview matches the saved file."""
         key = (obj["text"], obj["font"], obj["size"], obj["rgb"], obj.get("width"))
         if key not in self.preview_cache:
             w, h = obj["rect"].width, obj["rect"].height
@@ -1230,6 +1413,8 @@ class EditTab(QWidget):
         return self.preview_cache[key]
 
     def obj_item(self, obj, pno):
+        """The scene item showing edit `obj` of page `pno`: an image for text boxes, signatures and pictures, line
+        rects for marks, strokes for drawings, a plain box otherwise."""
         rect = self.to_scene(obj["rect"], pno)
         image, parts = None, ()
         if obj["kind"] == "text":
@@ -1443,21 +1628,56 @@ class EditTab(QWidget):
             target.setSelected(True)
             self.view.centerOn(target.sceneBoundingRect().center())
 
-    def on_thumb_clicked(self, pos):
-        """A click on a page's edit count (right of the checkbox and thumbnail) shows that page in the Edits tab."""
-        item = self.thumbs.itemAt(pos)
-        if item is None:
-            return
-        p = item.data(Qt.UserRole)
-        caption = self.thumbs.visualItemRect(item).left() + self.thumbs.iconSize().width() + THUMB_CHECK_WIDTH
-        if not self.page_edits(p) or pos.x() < caption:
-            return
+    def show_page_edits(self, p):
+        """The badge on page `p`'s thumbnail: show that page's group in the Edits tab."""
         self.side.setCurrentWidget(self.edits_tree)
         self.edits_tree.scroll_to_group(("page", p))
 
     def toggle_sidebar(self):
         self.settings.set("show_sidebar", self.a_sidebar.isChecked())
-        self.side.setVisible(self.a_sidebar.isChecked())
+        self.show_sidebar(self.a_sidebar.isChecked())
+
+    def show_sidebar(self, shown, animate=True):
+        """Slide the sidebar in or out, so the page beside it moves over gradually instead of jumping.
+
+        Without animation (or while this tab is not on screen) it just appears or disappears. The open width
+        is remembered, so it comes back as wide as the user left it.
+        """
+        if shown == self.side_target:
+            return
+        self.side_target = shown
+        holder = self.side_holder
+        if not shown and holder.isVisible() and self.side_anim.state() != QVariantAnimation.Running:
+            self.side_width = self.split.sizes()[0] or self.side_width
+        if not animate or not self.isVisible():
+            self.side_anim.stop()
+            self.side_settled()
+            holder.setVisible(shown)
+            return
+        # the minimum width would stop the splitter from shrinking it to nothing; side_settled restores it
+        holder.setMinimumWidth(0)
+        holder.slide_width = self.side_width
+        start = self.split.sizes()[0] if holder.isVisible() else 0
+        if not holder.isVisible():
+            holder.show()
+            self.set_side_width(0)
+        self.side_anim.stop()
+        self.side_anim.setStartValue(start)
+        self.side_anim.setEndValue(self.side_width if shown else 0)
+        self.side_anim.start()
+
+    def set_side_width(self, width):
+        total = sum(self.split.sizes())
+        self.split.setSizes([int(width), total - int(width)])
+
+    def side_settled(self):
+        holder = self.side_holder
+        holder.slide_width = None
+        holder.setMinimumWidth(SIDEBAR_MIN)
+        if self.side_target:
+            self.set_side_width(self.side_width)
+        else:
+            holder.hide()
 
     def target_pages(self, clicked=None):
         """Pages a page command acts on: the ticked ones (when `clicked` is one of them or not given), else `clicked`."""
@@ -1482,6 +1702,7 @@ class EditTab(QWidget):
         self.render(scroll_to=self.pno if self.continuous else None)
 
     def rotate_pages(self, pages, degrees):
+        """Turn `pages` by `degrees` (a multiple of 90) as one undo step; the display copy is rebuilt rotated."""
         def apply():
             for p in pages:
                 turned = (self.rotation.get(p, 0) + degrees) % 360
@@ -1492,6 +1713,7 @@ class EditTab(QWidget):
         self.change_pages(apply, reload=True)
 
     def remove_pages(self, pages):
+        """Drop `pages` from the page order as one undo step; at least one page always stays."""
         remaining = tuple(p for p in self.order if p not in pages)
         if not remaining:
             QMessageBox.information(self, APP_NAME, "A document needs at least one page.")
@@ -1505,6 +1727,10 @@ class EditTab(QWidget):
         self.change_pages(apply)
 
     def insert_pages(self, after):
+        """Pick a PDF and insert all its pages after page `after` as one undo step.
+
+        The file's pages are appended to the display copy (new page numbers) and spliced into the order there.
+        """
         path, _ = QFileDialog.getOpenFileName(self, "Insert pages from", str(self.doc_path.parent), "PDF (*.pdf)")
         if not path:
             return
@@ -1575,6 +1801,7 @@ class EditTab(QWidget):
         icons.bind(menu.addAction(f"Remove {label}", lambda: self.remove_pages(pages)), "remove")
 
     def scene_item(self, pno, ref):
+        """The shown item for `ref` on page `pno`: ("obj", edit dict) or ("annot", xref); None if not in the scene."""
         for it in self.view.scene().items():
             if isinstance(it, ObjItem) and it.pno == pno:
                 if (ref[0] == "obj" and it.obj is ref[1]) or (ref[0] == "annot" and it.kind == "annot" and it.obj["xref"] == ref[1]):
@@ -1619,6 +1846,7 @@ class EditTab(QWidget):
                 self.fields.remove(p)
 
     def on_scroll(self):
+        """Load page images coming into view; in continuous view also make the centred page the current one."""
         if not self.doc:
             return
         self.close_popover()
@@ -1632,6 +1860,7 @@ class EditTab(QWidget):
             self.update_state()
 
     def sync_thumb(self):
+        """Select the current page's row in the Pages list without that selection navigating again."""
         row = self.order.index(self.pno) if self.pno in self.order else -1
         if self.thumbs.currentRow() != row:
             self.thumbs.blockSignals(True)
@@ -1639,6 +1868,8 @@ class EditTab(QWidget):
             self.thumbs.blockSignals(False)
 
     def update_state(self):
+        """Refresh everything derived from the edit state: which actions are enabled, tab and window titles, find
+        count, thumbnail captions, the status line and the Edits tab. Inactive tabs only update their tab title."""
         if self.doc:
             self.title_changed.emit(f"{'* ' if self.edit_count() else ''}{self.doc_path.name}")
         has_doc = self.doc is not None and self.active
@@ -1671,13 +1902,15 @@ class EditTab(QWidget):
         if not self.active:
             return
         shown = self.settings.get("show_sidebar")
-        self.side.setVisible(shown)
+        # another tab may have toggled the shared setting; follow it without animating
+        self.show_sidebar(shown, animate=False)
         self.a_sidebar.setChecked(shown)
         if not has_doc:
             self.window().setWindowTitle(APP_NAME)
             self.zoom_label.setText("")
             self.stats.setText("Open a PDF (Ctrl+O) or drop one on the window")
             self.path_label.clear()
+            self.page_label.clear()
             return
         self.refresh_edits()
         self.window().setWindowTitle(f"{'* ' if n else ''}{self.doc_path.name} - {APP_NAME}")
@@ -1687,15 +1920,23 @@ class EditTab(QWidget):
         for i in range(self.thumbs.count()):
             item = self.thumbs.item(i)
             k = self.page_edits(item.data(Qt.UserRole))
-            item.setText(f"{i + 1}" + (f"\n{k} edit{'s' * (k != 1)}" if k else ""))
-            item.setForeground(QColor("#d93025") if k else self.thumbs.palette().text().color())
+            item.setText(str(i + 1))
+            item.setData(EDITS_ROLE, k)
+            item.setToolTip(f"Page {i + 1}" + (f", {k} unsaved edit{'s' * (k != 1)}" if k else ""))
             ticked += item.checkState() == Qt.Checked
         self.thumbs.blockSignals(False)
+        if self.thumb_delegate.any_ticked != bool(ticked):
+            self.thumb_delegate.any_ticked = bool(ticked)
+            self.thumbs.viewport().update()
         pages = sum(1 for p in self.order if self.page_edits(p))
         position = self.order.index(self.pno) + 1 if self.pno in self.order else 0
-        self.stats.setText(
-            f"page {position}/{len(self.order)}   |   {n} edit(s) on {pages} page(s)   |   {ticked} ticked   |"
-        )
+        self.page_label.setText(f"Page {position} of {len(self.order)}")
+        parts = []
+        if n:
+            parts.append(f"{n} edit{'s' * (n != 1)} on {pages} page{'s' * (pages != 1)}")
+        if ticked:
+            parts.append(f"{ticked} ticked")
+        self.stats.setText("   |   ".join(parts))
         path = str(self.doc_path)
         self.path_label.setText(self.path_label.fontMetrics().elidedText(path, Qt.ElideMiddle, PATH_WIDTH))
         self.path_label.setToolTip(path)
@@ -1707,6 +1948,7 @@ class EditTab(QWidget):
                 self.goto(self.order[position])
 
     def goto(self, pno):
+        """Show page `pno` (a page number, not a position): scroll there in continuous view, else render it alone."""
         if not self.doc or pno not in self.order:
             return
         self.pno = pno
@@ -1739,6 +1981,7 @@ class EditTab(QWidget):
             self.thumbs.item(i).setCheckState(Qt.Checked if value else Qt.Unchecked)
 
     def pick_colour(self):
+        """Choose a fixed fill colour for new redactions; this turns Auto fill off."""
         c = QColorDialog.getColor(QColor(*self.manual_rgb), self, "Redaction colour")
         if c.isValid():
             self.manual_rgb = (c.red(), c.green(), c.blue())
@@ -1767,6 +2010,7 @@ class EditTab(QWidget):
         }
 
     def push_undo(self, snap):
+        """Record `snap` (taken before a change) as an undo step; clears redo and ends form-typing coalescing."""
         self.history.append(snap)
         self.future.clear()
         self.fields.edit_key = None
@@ -1775,6 +2019,9 @@ class EditTab(QWidget):
         self.pending = self.snapshot()
 
     def end_change(self, clicked=None):
+        """After an item is released: store moved or resized items as one undo step (the state from begin_change),
+        or, if nothing moved, treat the release of `clicked` as a click. Runs inside the item's event handler,
+        so the re-render and popovers are deferred."""
         changed = False
         for it in self.view.scene().items():
             if isinstance(it, ObjItem) and it.kind not in ("annot", "highlight"):
@@ -1836,6 +2083,8 @@ class EditTab(QWidget):
         return next(p for p, objs in self.items.items() if any(o is obj for o in objs))
 
     def delete_selected(self):
+        """Delete key: remove the ticked (or current) pages when the Pages list has focus; else the selected edits,
+        PDF annotations and crop, as one undo step."""
         if self.thumbs.hasFocus() and self.thumbs.currentItem():
             return self.remove_pages(self.target_pages(self.thumbs.currentItem().data(Qt.UserRole)))
         entry = self.annot_tree.currentItem()
@@ -1880,6 +2129,7 @@ class EditTab(QWidget):
             self.render()
 
     def sample_background(self, pno, rect):
+        """Median colour of a thin ring just outside `rect` on page `pno`, so a redaction blends into the page."""
         cached = self.pix_cache.get(pno)
         scale, pix = cached if cached else (2.0, self.page_pix(pno, 2.0))
         d = (rect * self.doc[pno].rotation_matrix).normalize() * scale
@@ -1893,6 +2143,7 @@ class EditTab(QWidget):
         return tuple(int(statistics.median(ch)) for ch in zip(*px))
 
     def add_redaction(self, pno, rect):
+        """Add a redaction over `rect` without an undo step (callers record one); False for a sliver or a duplicate."""
         if rect.is_empty or rect.width < 1 or rect.height < 1:
             return False
         if any(o["kind"] == "redact" and o["rect"] == rect for o in self.items.get(pno, [])):
@@ -1902,6 +2153,7 @@ class EditTab(QWidget):
         return True
 
     def line_rects(self, sel, pno):
+        """Whole text lines (as rects, top to bottom) and their text for the words rectangle `sel` touches."""
         lines, words = {}, {}
         for x0, y0, x1, y1, word, block, line, wno in self.doc[pno].get_text("words"):
             w = pymupdf.Rect(x0, y0, x1, y1)
@@ -1937,6 +2189,7 @@ class EditTab(QWidget):
         self.flow_items = []
 
     def on_flow(self, start, end, done):
+        """Text-flow drag between scene points `start` and `end`: preview the selection, act on it once `done`."""
         pno = self.page_at(start) if self.doc else None
         if pno is None:
             return
@@ -1953,6 +2206,7 @@ class EditTab(QWidget):
         self.apply_selection(pno, rects, text)
 
     def apply_selection(self, pno, rects, text):
+        """Act on selected text by tool: View keeps it for copying, Highlight marks it, Redact redacts it."""
         if self.tool == "view":
             self.text_sel = (pno, rects, text) if text else None
             if text:
@@ -1964,6 +2218,7 @@ class EditTab(QWidget):
             self.redact_rects(pno, rects)
 
     def add_highlight(self, pno, rects, text, ask_comment=False, style=None):
+        """Mark `rects` with `style` (default: the current one) in that style's colour, as one undo step."""
         bounds = pymupdf.Rect(rects[0])
         for rect in rects[1:]:
             bounds.include_rect(rect)
@@ -2106,6 +2361,8 @@ class EditTab(QWidget):
         act()
 
     def on_band(self, r):
+        """A rectangle `r` (scene) dragged on a page: redact it, offer to crop to it, start a text box of its width,
+        place an image in it, or select the text lines it touches, depending on the tool."""
         if not self.doc:
             return
         pno = self.page_at(r.center())
@@ -2181,6 +2438,7 @@ class EditTab(QWidget):
             self.show_mark_popover(pno, obj, f"{MARK_STYLES[obj.get('style', 'highlight')]} - comment")
 
     def set_comment(self, pno, obj, text):
+        """Set the comment of note or mark `obj` as one undo step; a note emptied of text is removed."""
         snap = self.snapshot()
         if obj["kind"] == "note" and not text:
             self.items[pno] = [o for o in self.items.get(pno, []) if o is not obj]
@@ -2202,6 +2460,7 @@ class EditTab(QWidget):
         self.render()
 
     def delete_annot(self, key):
+        """Delete the PDF's own annotation `key` = (page, xref) as one undo step; the display copy drops it."""
         snap = self.snapshot()
         annot = self.doc[key[0]].load_annot(key[1])
         self.annot_types[key] = annot.type[1] if annot else "annotation"
@@ -2211,6 +2470,8 @@ class EditTab(QWidget):
         self.render()
 
     def on_click(self, pt):
+        """A click on a page (scene point): drop the text selection, then place a text box, signature, note or
+        image with those tools."""
         if not self.doc:
             return
         if self.text_sel:
@@ -2235,6 +2496,7 @@ class EditTab(QWidget):
             self.status("Copied", 2000)
 
     def nearby_style(self, pos, pno):
+        """(font, size, colour) of the text nearest `pos` on page `pno`, so new text matches its surroundings."""
         best, style = None, ("Helvetica", 10.0, (0, 0, 0))
         for block in self.doc[pno].get_text("dict")["blocks"]:
             for line in block.get("lines", []):
@@ -2280,6 +2542,7 @@ class EditTab(QWidget):
         return font
 
     def sized(self, obj):
+        """Grow or shrink text box `obj`'s rect to what its text needs in its font (wrapped to its width, if any)."""
         w, h = text_size(self.font_for(obj["font"], obj["text"])[2], obj)
         obj["rect"] = pymupdf.Rect(obj["rect"].x0, obj["rect"].y0, obj["rect"].x0 + w, obj["rect"].y0 + h)
         return obj
@@ -2369,6 +2632,7 @@ class EditTab(QWidget):
             QTimer.singleShot(0, self.render)
 
     def place_note(self, pos, pno):
+        """Open an empty note popover at `pos`; the note is only added once it has text."""
         rect = pymupdf.Rect(pos.x, pos.y, pos.x + NOTE_SIZE, pos.y + NOTE_SIZE)
         self.show_popover(
             "New note", "", self.to_scene(rect, pno),
@@ -2448,6 +2712,8 @@ class EditTab(QWidget):
             self.view.setFocus()
 
     def run_search(self):
+        """Find the query on every page in display order (search_for ignores case; Match case re-checks hits) and
+        jump to the first match at or after the current page."""
         self.find_timer.stop()
         self.matches, self.match_idx = [], -1
         query = self.find_edit.text()

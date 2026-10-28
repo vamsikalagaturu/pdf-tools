@@ -1,3 +1,6 @@
+"""Small editors floating over the page view: the comment popover for notes and marks, and the format bar shown
+while a text box is typed on the page."""
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -32,6 +35,10 @@ class Popover(QFrame):
         self, parent, title, text, on_commit, on_delete=None, placeholder="Add a comment...",
         colours=None, colour=None, on_colour=None,
     ):
+        """`on_commit(text)` runs when the text changed and is committed; `on_delete` adds a Delete button.
+
+        With `colours` and `on_colour`, a row of swatches recolours the item while the popover stays open.
+        """
         super().__init__(parent)
         # a child of the page viewport would otherwise inherit the current tool's cursor
         self.setCursor(Qt.ArrowCursor)
@@ -86,6 +93,7 @@ class Popover(QFrame):
         return row
 
     def dismiss(self, commit=True):
+        """Close once; with `commit`, hand on the text if it differs from what the popover opened with."""
         if self.finished:
             return
         self.finished = True
@@ -108,6 +116,7 @@ class FormatBar(QFrame):
     """Floating font controls over a text box being typed: family, size, bold, italic, colour."""
 
     def __init__(self, parent, families, family, size, bold, italic, rgb, on_change):
+        """Every change calls `on_change(family, size, bold, italic, rgb)`; `hint` shows which font will render."""
         super().__init__(parent)
         self.setObjectName("formatbar")
         self.setCursor(Qt.ArrowCursor)
@@ -151,6 +160,7 @@ class FormatBar(QFrame):
         self.on_change(*self.values())
 
     def pick_colour(self):
+        """Choose the text colour; while the dialog is open the bar still counts as focused (see has_focus)."""
         self.picking = True
         c = QColorDialog.getColor(QColor(*self.rgb), self, "Text colour")
         self.picking = False
@@ -160,6 +170,7 @@ class FormatBar(QFrame):
             self.changed()
 
     def has_focus(self):
+        """Whether focus is in the bar (or its dropdown or colour dialog), so the text box must not finish yet."""
         if getattr(self, "picking", False):
             return True
         focused = QApplication.focusWidget()

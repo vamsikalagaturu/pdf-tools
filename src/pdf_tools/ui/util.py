@@ -1,3 +1,5 @@
+"""Small Qt helpers shared by the UI: the app icon, PyMuPDF pixmaps as QImages, PNG bytes and colour swatches."""
+
 from importlib.resources import files
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
@@ -13,6 +15,7 @@ def app_icon():
 
 
 def to_qimage(pix):
+    """A PyMuPDF Pixmap as a QImage that owns its pixels (the pixmap's buffer may be freed afterwards)."""
     fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
     return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 

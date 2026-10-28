@@ -1,3 +1,5 @@
+"""The user's saved signatures (PNG files in the config folder) and turning a scanned signature into one."""
+
 import time
 
 import pymupdf
@@ -10,6 +12,7 @@ def signature_dir():
 
 
 def list_signatures():
+    """Saved signature PNGs, oldest first."""
     return sorted(signature_dir().glob("*.png"), key=lambda p: p.stat().st_mtime)
 
 

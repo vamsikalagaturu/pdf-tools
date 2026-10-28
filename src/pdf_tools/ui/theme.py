@@ -1,3 +1,5 @@
+"""Dark and light themes: the app palette and the style sheets of the header and the document tabs."""
+
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -58,6 +60,7 @@ def saved_theme(settings):
 
 
 def apply_theme(mode):
+    """Switch the whole app to `mode`; style sheets using palette() must then be set again (see restyle methods)."""
     app = QApplication.instance()
     palette = dark_palette() if mode == "dark" else app.style().standardPalette()
     app.setPalette(palette)

@@ -1,4 +1,8 @@
-"""The unsaved edits of a document as a list, and removing some of them (the Edits tab)."""
+"""The unsaved edits of a document as a list, and removing some of them (the Edits tab).
+
+An edit state is a dict: items (placed edits per page), deleted annotations, form values, changed comments, the
+page order, rotations, crops and inserted files. Pages are numbered as edits.open_pdf builds the document.
+"""
 
 from pathlib import Path
 
@@ -22,6 +26,7 @@ def edit_entries(doc, state, own, form_names=None, annot_types=None):
     pages = {}
 
     def add(page, kind, name="", detail="", key=None):
+        """List one edit under `page`; its ref (kind, page, key) is what discard() takes."""
         pages.setdefault(page, []).append((kind, name, detail, (kind, page, key)))
 
     order = state["order"]

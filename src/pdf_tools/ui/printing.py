@@ -1,3 +1,5 @@
+"""Printing and print preview through Qt's print dialog; pages are sent as images at the printer's resolution."""
+
 import pymupdf
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QPainter, QTransform

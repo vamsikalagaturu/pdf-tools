@@ -1,3 +1,10 @@
+"""Entry point of the pdf-tools command.
+
+Dispatches the window-free commands (cli) and desktop install flags, and otherwise starts the window: one running
+app per user, reached over a local socket, so later launches (files, --new-window, --forward) are handed to it.
+Also sets up Qt: platform theme for the native file chooser, logging filters and Ctrl+C.
+"""
+
 import getpass
 import json
 import os
@@ -13,6 +20,7 @@ from PySide6.QtWidgets import QApplication
 from pdf_tools import cli
 from pdf_tools.core import desktop
 from pdf_tools.core.config import Settings, migrate_legacy
+from pdf_tools.ui import icons
 from pdf_tools.ui.main_window import MainWindow, dispatch
 from pdf_tools.ui.theme import apply_theme, saved_theme
 from pdf_tools.ui.util import app_icon
@@ -77,6 +85,11 @@ def serve(name, handle):
 
 
 def main():
+    """Run what the arguments ask for: a desktop flag, help, a CLI command, or the window.
+
+    For the window, a request is first offered to an app that is already running; only when none answers does this
+    process create the window and start listening.
+    """
     if sys.argv[1:] in (["--install-desktop"], ["--uninstall-desktop"]):
         install = sys.argv[1] == "--install-desktop"
         paths = desktop.install() if install else desktop.uninstall()
@@ -106,6 +119,7 @@ def main():
     server_name = f"{DESKTOP_ID}-{getpass.getuser()}"
     if send_to_running(server_name, message):
         return
+    icons.install_cursors(app)
     app.setApplicationName(DESKTOP_ID)
     app.setDesktopFileName(DESKTOP_ID)
     app.setStyle("Fusion")

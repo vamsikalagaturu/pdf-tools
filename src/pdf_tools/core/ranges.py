@@ -1,3 +1,6 @@
+"""Page range strings as people type them ('1-3,7', 1-based) and 0-based page index lists."""
+
+
 def parse_ranges(text, n):
     """Parse '1-3,7' into sorted 0-based page indices of an n-page document; raises ValueError."""
     pages = set()
@@ -28,6 +31,7 @@ def ordered_ranges(text, n):
 
 
 def format_ranges(pages):
+    """Sorted 0-based indices back to the compact 1-based form, e.g. [0, 1, 2, 6] -> '1-3,7'."""
     out, i = [], 0
     while i < len(pages):
         j = i

@@ -1,3 +1,10 @@
+"""Application windows and how launches reach them.
+
+A MainWindow is a header (menu button, Home logo, the current tab's toolbar) above one tab strip holding
+document tabs (EditTab) and, on demand, the Home and Combine & split tabs. All windows live in one process:
+MainWindow.windows is the registry, and dispatch() routes requests from later `pdf-tools` launches.
+"""
+
 from pathlib import Path
 
 import pymupdf
@@ -51,12 +58,17 @@ def dispatch(message):
 
 
 class MainWindow(QMainWindow):
-    """Header (menu, home logo, current tab's toolbar) above one tab strip: documents, plus Home and Merge on demand."""
+    """Header (menu, home logo, current tab's toolbar) above one tab strip: documents, plus Home and Combine & split
+    on demand.
+
+    `windows` lists the open windows in creation order; `last_active` is the one used last, where new files go.
+    """
 
     windows = []
     last_active = None
 
     def __init__(self, settings):
+        """Register the window, build its header, tabs and actions, and start on a Home tab. Closing deletes it."""
         super().__init__()
         self.settings = settings
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -138,7 +150,7 @@ class MainWindow(QMainWindow):
         self.a_quit = self.action("Quit", QApplication.closeAllWindows, QKeySequence.Quit)
         self.a_new_window = self.action("New window", self.new_window, QKeySequence.New)
         self.a_close_window = self.action("Close window", self.close, "Ctrl+Shift+W")
-        self.a_about = self.action(f"About {APP_NAME}", self.about, icon="about")
+        self.a_about = self.action(f"About {APP_NAME}", self.about)
         self.a_home = self.action("Home", self.go_home)
         self.a_home.setIcon(app_icon())
         self.recent_menu = QMenu("Open recent", self)
@@ -190,6 +202,7 @@ class MainWindow(QMainWindow):
         window.drop_page(window.start)
 
     def changeEvent(self, e):
+        """Remember this window as the one used last whenever it is activated (dispatch() sends files there)."""
         if e.type() == QEvent.ActivationChange and self.isActiveWindow():
             MainWindow.last_active = self
         super().changeEvent(e)
@@ -209,7 +222,7 @@ class MainWindow(QMainWindow):
         return current if isinstance(current, EditTab) else None
 
     def tabs(self):
-        """Open documents (every tab except Home and Merge)."""
+        """Open documents (every tab except Home and Combine & split)."""
         return [w for w in map(self.docs.widget, range(self.docs.count())) if isinstance(w, EditTab)]
 
     def add_tab(self, widget, title, icon=None):
@@ -315,9 +328,8 @@ class MainWindow(QMainWindow):
         """Take document tab `tab` out of this window without closing it (see adopt)."""
         for signal in (tab.activate_requested, tab.closed, tab.open_dialog_requested, tab.title_changed, tab.split_requested):
             signal.disconnect()
-        if self.info_widget is tab.info:
-            self.statusBar().removeWidget(tab.info)
-            self.info_widget = None
+        if self.info_widget is tab:
+            self.swap_info(None)
         self.docs.removeTab(self.docs.indexOf(tab))
         self.toolbars.removeWidget(tab.toolbar)
         if not self.docs.count():
@@ -330,6 +342,8 @@ class MainWindow(QMainWindow):
             self.docs.setTabToolTip(i, str(tab.doc_path))
 
     def close_tab(self, widget):
+        """Close any tab: Home and Combine & split are only taken out (kept for reuse), a document asks about
+        unsaved edits first. The window is never left without a tab; Home fills in."""
         if widget is self.workspace and self.docs.count() == 1:
             # the last tab: Home takes its place, as when the last document closes
             self.go_home()
@@ -344,9 +358,9 @@ class MainWindow(QMainWindow):
             self.go_home()
 
     def remove_tab(self, tab):
-        if self.info_widget is tab.info:
-            self.statusBar().removeWidget(tab.info)
-            self.info_widget = None
+        """Delete a closed document tab with its toolbar and status widget (see release() to move one instead)."""
+        if self.info_widget is tab:
+            self.swap_info(None)
         self.docs.removeTab(self.docs.indexOf(tab))
         self.toolbars.removeWidget(tab.toolbar)
         tab.toolbar.deleteLater()
@@ -377,13 +391,24 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(APP_NAME)
 
     def swap_info(self, tab):
+        """Show document tab `tab`'s status widgets, or none for other tabs: its page and edit counts on the left
+        (where temporary messages briefly cover them) and its file path on the right."""
+        bar = self.statusBar()
         if self.info_widget is not None:
-            self.statusBar().removeWidget(self.info_widget)
+            bar.removeWidget(self.info_widget.stats)
+            bar.removeWidget(self.info_widget.info)
             self.info_widget = None
         if tab:
-            self.statusBar().addPermanentWidget(tab.info)
+            bar.addWidget(tab.stats, 1)
+            bar.addPermanentWidget(tab.info)
+            if bar.currentMessage():
+                # hidden the way QStatusBar hides left widgets during a message, so it shows them again after it
+                tab.stats.hide()
+                tab.stats.setAttribute(Qt.WA_WState_ExplicitShowHide, False)
+            else:
+                tab.stats.show()
             tab.info.show()
-            self.info_widget = tab.info
+            self.info_widget = tab
 
     def rebuild_menu(self, e):
         """The menu (and its window-level shortcuts) points at the active document's actions."""
@@ -458,6 +483,7 @@ class MainWindow(QMainWindow):
         self.addActions(self.menu_actions)
 
     def set_theme(self, mode):
+        """Switch the app-wide theme, remember it, and restyle every open window."""
         self.settings.set("theme", mode)
         apply_theme(mode)
         icons.refresh()
@@ -487,7 +513,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, e):
-        dirty = [t for t in self.tabs() if t.edit_count()]
+        """Ask once about unsaved edits in this window's documents, close them and leave the window registry
+        (the app quits when the last window closes)."""
+        dirty =[t for t in self.tabs() if t.edit_count()]
         if dirty:
             names = "\n".join(f"  {t.doc_path.name}" for t in dirty)
             reply = QMessageBox.question(
@@ -514,7 +542,8 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        files = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(self.droppable())]
+        """Files dropped on the window open as tabs, or join Combine & split when that tab is showing."""
+        files =[u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(self.droppable())]
         if self.docs.currentWidget() is self.workspace:
             self.workspace.add_paths(files)
         elif files:

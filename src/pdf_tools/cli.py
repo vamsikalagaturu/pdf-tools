@@ -1,4 +1,8 @@
-"""Command-line (no window) interface for scripts and agents; every command prints one JSON object."""
+"""Command-line (no window) interface for scripts and agents.
+
+Each subcommand (info, redact, fill, pages, merge, split, protect, unprotect, flatten, synctex) runs the same core
+code as the window, never prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH.
+"""
 
 import argparse
 import json
@@ -20,7 +24,7 @@ OK, FAILED, LEAKED, NO_MATCH = 0, 1, 2, 3
 
 
 class CliError(Exception):
-    pass
+    """A user-facing failure; main() prints it as {"error": message} and exits with FAILED."""
 
 
 def emit(result, code=OK):
@@ -49,6 +53,7 @@ def page_list(spec, count):
 
 
 def write(out, data, source):
+    """Write `data` to `out` (creating its folder) and return the path; refuses to overwrite `source`."""
     out = Path(out)
     if out.resolve() == Path(source).resolve():
         raise CliError("refusing to overwrite the input; write to another file")
@@ -63,6 +68,7 @@ def finish(doc, data, args):
 
 
 def cmd_info(args):
+    """Describe a PDF: page count and sizes, fonts, form fields, annotations, metadata, encryption, SyncTeX."""
     doc = opened(args.input, args.password)
     fields, annots = [], []
     for page in doc:
@@ -120,6 +126,11 @@ def hex_rgb(value):
 
 
 def cmd_redact(args):
+    """Redact every --text / --regex match and list the matches.
+
+    Writes nothing and exits NO_MATCH when nothing matched; exits LEAKED (file written) when text is still found
+    under a redaction.
+    """
     doc = opened(args.input, args.password)
     if not args.text and not args.regex:
         raise CliError("give at least one --text or --regex")
@@ -145,6 +156,7 @@ def parse_value(raw):
 
 
 def cmd_fill(args):
+    """Set form fields by name; every widget sharing a name gets the value. Unknown names list the real ones."""
     doc = opened(args.input, args.password)
     by_name = {}
     for page in doc:
@@ -172,6 +184,7 @@ def page_and_value(spec, flag):
 
 
 def cmd_pages(args):
+    """Reorder (--order), drop (--remove), rotate and crop pages; order is applied first, then removals."""
     doc = opened(args.input, args.password)
     n = len(doc)
     try:
@@ -207,6 +220,7 @@ def cmd_pages(args):
 
 
 def cmd_merge(args):
+    """Join inputs in order; 'file.pdf:1-3' takes some pages, an image file becomes one page."""
     parts = []
     for spec in args.inputs:
         path, sep, ranges = spec.rpartition(":")
@@ -221,6 +235,7 @@ def cmd_merge(args):
 
 
 def cmd_split(args):
+    """Write NAME-partK.pdf files into --directory: every N pages, or a new part at each --at page."""
     doc = opened(args.input, args.password)
     n = len(doc)
     if args.every:
@@ -241,17 +256,20 @@ def cmd_split(args):
 
 
 def cmd_protect(args):
+    """Write a copy encrypted with AES-256 under the new --password."""
     data, _ = apply_edits(args.input, {}, password=args.current_password)
     return emit({"output": write(args.output, protect(data, args.password), args.input), "encrypted": "AES-256"})
 
 
 def cmd_unprotect(args):
+    """Write an unencrypted copy; --password must open the input."""
     opened(args.input, args.password)
     data, _ = apply_edits(args.input, {}, password=args.password)
     return emit({"output": write(args.output, data, args.input), "encrypted": False})
 
 
 def cmd_flatten(args):
+    """Rebuild every page as an image at --dpi, so no text or hidden content remains."""
     doc = opened(args.input, args.password)
     data, _ = apply_edits(args.input, {}, password=args.password)
     data = flatten(data, args.dpi)
@@ -260,6 +278,10 @@ def cmd_flatten(args):
 
 
 def cmd_synctex(args):
+    """SyncTeX lookups: --page/--at gives {"source", "line"}; --source/--line gives {"page", "rects"}.
+
+    Exits NO_MATCH when the PDF has SyncTeX data but nothing at that point or line.
+    """
     sync = SyncTex(args.input)
     if not sync.path:
         raise CliError(f"no .synctex(.gz) next to {args.input}; compile with -synctex=1")
@@ -361,6 +383,7 @@ def man_page():
 
 
 def main(argv=None):
+    """Run one subcommand and return its exit code; a CliError becomes {"error": ...} with FAILED."""
     args = parser().parse_args(argv)
     try:
         return args.func(args)

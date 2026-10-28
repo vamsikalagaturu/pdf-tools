@@ -1,3 +1,5 @@
+"""Writing AcroForm field values, working around PyMuPDF's handling of inherited appearance (/DA) strings."""
+
 import re
 
 import pymupdf
@@ -7,6 +9,7 @@ DA_SIZE = re.compile(r"[\d.]+\s+Tf")
 
 
 def is_on(value):
+    """Whether a checkbox or radio value means checked (anything but empty, "Off" or False)."""
     return value not in (None, "", "Off", False)
 
 
@@ -25,6 +28,10 @@ def set_da_fontsize(widget, size):
 
 
 def set_field(widget, value, fontsize=None):
+    """Store `value` in the field and rebuild its appearance; checkboxes and radios take any truthy value as on.
+
+    `fontsize` (points) replaces the field's font size, for text the app shrank to fit the box.
+    """
     if widget.field_type in TOGGLE_TYPES:
         value = bool(value)
     if fontsize:

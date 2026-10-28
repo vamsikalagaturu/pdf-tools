@@ -1,3 +1,10 @@
+"""The page canvas of a document tab and the items drawn on it.
+
+PageView turns mouse input into selections, bands, strokes and clicks for EditTab; ObjItem shows one placed edit
+(or an existing PDF annotation) and lets it be moved, resized and right-clicked; TextEditItem is a text box being
+typed. Scene coordinates are PDF points of the laid-out pages; EditTab converts them to page coordinates.
+"""
+
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
@@ -8,6 +15,8 @@ from PySide6.QtWidgets import (
     QGraphicsTextItem,
     QGraphicsView,
 )
+
+from pdf_tools.ui import icons
 
 HANDLE_PX = 10
 CLICK_SLOP_PX = 4
@@ -29,9 +38,12 @@ CURSORS = {
 
 
 class ObjItem(QGraphicsRectItem):
-    """An edit on page `pno` (redaction, text, signature, highlight, note) or an existing PDF annotation."""
+    """An edit on page `pno` (redaction, text, signature, image, mark, note, drawing, crop frame) or an existing
+    PDF annotation; `obj` is the edit's dict in EditTab.items, shared, not copied."""
 
     def __init__(self, editor, obj, pno, rect, image=None, parts=()):
+        """`rect` is the scene rect; `image` the rendered preview (text, signature, image); `parts` the line rects
+        of a mark or the strokes of a drawing, in item coordinates."""
         super().__init__(0, 0, rect.width(), rect.height())
         self.editor, self.obj, self.pno, self.image, self.parts = editor, obj, pno, image, parts
         self.kind = obj["kind"]
@@ -50,11 +62,13 @@ class ObjItem(QGraphicsRectItem):
         return self.kind in RESIZABLE and (self.isSelected() or self.kind == "crop")
 
     def handle_rect(self):
+        """The bottom-right resize handle, HANDLE_PX screen pixels whatever the zoom."""
         s = HANDLE_PX / self.scene().views()[0].transform().m11()
         r = self.rect()
         return QRectF(r.right() - s, r.bottom() - s, s, s)
 
     def paint(self, p, option, widget=None):
+        """Draw the edit as it will look when saved, plus a dashed frame (and handle) when selected or hovered."""
         r = self.rect()
         if self.kind == "redact":
             p.fillRect(r, QColor(*self.obj["rgb"]))
@@ -132,12 +146,14 @@ class ObjItem(QGraphicsRectItem):
         self.setCursor(Qt.SizeFDiagCursor if on_handle else Qt.SizeAllCursor if self.kind in MOVABLE else Qt.ArrowCursor)
 
     def mousePressEvent(self, e):
+        """Start a move or (on the handle) a resize; EditTab snapshots the state for undo."""
         self.editor.begin_change()
         self.resizing = self.resizable() and self.handle_rect().contains(e.pos())
         self.press, self.start = e.pos(), QRectF(self.rect())
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        """Resize from the handle (signatures and images keep their aspect ratio); otherwise Qt moves the item."""
         if not self.resizing:
             return super().mouseMoveEvent(e)
         w = max(4, self.start.width() + e.pos().x() - self.press.x())
@@ -147,6 +163,7 @@ class ObjItem(QGraphicsRectItem):
         self.setRect(0, 0, w, h)
 
     def mouseReleaseEvent(self, e):
+        """Hand the new geometry (or a plain click) to EditTab.end_change, which records it."""
         super().mouseReleaseEvent(e)
         self.resizing = False
         self.editor.end_change(self)
@@ -168,6 +185,7 @@ class TextEditItem(QGraphicsTextItem):
     finished = Signal()
 
     def __init__(self, bar_has_focus):
+        """`bar_has_focus()` tells whether the format bar holds focus, which does not count as leaving."""
         super().__init__()
         self.bar_has_focus = bar_has_focus
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
@@ -188,17 +206,23 @@ class TextEditItem(QGraphicsTextItem):
         super().keyPressEvent(e)
 
     def focusOutEvent(self, e):
+        """Losing focus may finish the box; decided once focus has settled (check_focus)."""
         super().focusOutEvent(e)
         # deferred: focus has not reached its new owner yet
         QTimer.singleShot(0, self.check_focus)
 
     def check_focus(self):
+        """Finish unless focus came back here or went to the format bar."""
         if self.scene() is not None and not self.hasFocus() and not self.bar_has_focus():
             self.finished.emit()
 
 
 class PageView(QGraphicsView):
-    """Page canvas. Drags become a rectangle band or a text-flow selection, as `selection_mode` decides."""
+    """Page canvas. A drag on empty page becomes a rectangle band, a text-flow selection or a pen stroke, as
+    `selection_mode` decides; the results leave as signals (scene coordinates) for EditTab to act on.
+
+    Ctrl+click is reserved for SyncTeX (sync_clicked) and Ctrl+wheel for zoom (zoom_step).
+    """
 
     pressed = Signal()
     context_requested = Signal(QPointF, QPoint)
@@ -210,6 +234,8 @@ class PageView(QGraphicsView):
     stroke_drawn = Signal(list)
 
     def __init__(self, tool, selection_mode):
+        """`tool()` names the active tool (for the cursor); `selection_mode(modifiers)` returns "flow", "rect",
+        "draw" or None for what a drag does."""
         super().__init__()
         self.tool = tool
         self.selection_mode = selection_mode
@@ -228,12 +254,19 @@ class PageView(QGraphicsView):
         self.update_cursor()
 
     def update_cursor(self):
-        self.viewport().setCursor(CURSORS[self.tool()])
+        tool = self.tool()
+        if tool == "draw":
+            self.viewport().setCursor(icons.cursor(icons.PEN_CURSOR, self.devicePixelRatioF()))
+        else:
+            self.viewport().setCursor(CURSORS[tool])
 
     def on_object(self, pos):
+        """Whether view position `pos` is on something that handles the mouse itself (an edit, a form field or
+        the text box being typed) rather than on bare page."""
         return any(isinstance(i, (ObjItem, QGraphicsProxyWidget, TextEditItem)) for i in self.items(pos))
 
     def mousePressEvent(self, e):
+        """Start a band, a stroke or a flow selection on bare page; leave presses on objects to the scene."""
         pos = e.position().toPoint()
         if e.button() == Qt.LeftButton and e.modifiers() & Qt.ControlModifier:
             self.sync_clicked.emit(self.mapToScene(pos))
@@ -263,6 +296,7 @@ class PageView(QGraphicsView):
         return (pos - self.press_pos).manhattanLength() > CLICK_SLOP_PX
 
     def mouseMoveEvent(self, e):
+        """Grow the stroke or band, or report the flow selection so far (flow_changed with done=False)."""
         pos = e.position().toPoint()
         if self.stroke is not None:
             self.stroke.append(self.mapToScene(pos))
@@ -277,6 +311,8 @@ class PageView(QGraphicsView):
             super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        """Finish the gesture: emit stroke_drawn, band_selected or the final flow_changed; a press that did not
+        move counts as clicked."""
         origin, self.origin = self.origin, None
         pos = e.position().toPoint()
         if self.stroke is not None:

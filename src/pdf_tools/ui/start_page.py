@@ -1,3 +1,5 @@
+"""The Home tab: open a PDF, start Combine & split, or reopen a recent file (drawn as two-line rows)."""
+
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal

@@ -1,3 +1,9 @@
+"""Fillable PDF form fields in the page view.
+
+Each AcroForm widget gets a real Qt editor (line/text edit, checkbox, radio, combo) placed over the page; typed
+values become edits of the tab (`tab.forms`), shrink to fit like auto-size fields, and are written on save.
+"""
+
 import pymupdf
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QFontMetrics, QTextLayout, QTextOption
@@ -22,6 +28,10 @@ class FormFields(QObject):
         self.edit_key = None
 
     def add(self, scene, pno):
+        """Put editors over every supported field of page `pno`, showing the edited value where there is one.
+
+        Remembers each field's value from the file (to tell edits from no-ops) and its label for the Edits tab.
+        """
         tab = self.tab
         proxies = []
         for widget in tab.doc[pno].widgets():
@@ -175,6 +185,7 @@ class FormFields(QObject):
         tab.update_state()
 
     def set_check(self, key, name, on):
+        """Record a checkbox or radio button; turning a radio on turns its group's others off (same undo step)."""
         self.set_form(key, on, coalesce=False)
         if not (on and isinstance(self.editors.get(key), QRadioButton)):
             return

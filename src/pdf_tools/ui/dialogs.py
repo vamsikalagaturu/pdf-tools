@@ -1,3 +1,5 @@
+"""Modal dialogs of the edit tab: export pages, protect with a password, and the signature library with its pad."""
+
 from pathlib import Path
 
 from PySide6.QtCore import QFile, QPointF, QRectF, QSize, Qt
@@ -26,6 +28,8 @@ from pdf_tools.ui.util import png_bytes
 
 
 class ExportDialog(QDialog):
+    """Asks which pages to export and whether to flatten them to images (at what DPI)."""
+
     def __init__(self, parent, n_pages, ranges, flat, dpi):
         super().__init__(parent)
         self.setWindowTitle("Export pages")
@@ -51,6 +55,8 @@ class ExportDialog(QDialog):
 
 
 class PasswordDialog(QDialog):
+    """Asks for a new password twice; OK stays disabled until both entries match."""
+
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Protect with password")
@@ -82,6 +88,8 @@ class PasswordDialog(QDialog):
 
 
 class SignaturePad(QWidget):
+    """A drawing surface for a handwritten signature, kept in a fixed-size transparent image (W x H)."""
+
     W, H = 1200, 400
 
     def __init__(self):
@@ -127,13 +135,17 @@ class SignaturePad(QWidget):
         self.last = None
 
     def png(self):
+        """The drawing cropped to its ink as PNG bytes, or None when nothing was drawn."""
         if self.bounds.isEmpty():
             return None
         return png_bytes(self.image.copy(self.bounds.toAlignedRect().intersected(self.image.rect())))
 
 
 class SignatureDialog(QDialog):
+    """The saved signatures: pick one to place, draw or import a new one, or move one to the trash."""
+
     def __init__(self, parent, last):
+        """Lists the stored signatures and preselects the file named `last` (else the newest)."""
         super().__init__(parent)
         self.setWindowTitle("Signatures")
         self.resize(640, 420)
@@ -196,6 +208,7 @@ class SignatureDialog(QDialog):
             self.store(pad.png())
 
     def import_image(self):
+        """Store the ink of a photographed or scanned signature (background removed by ink_from_scan)."""
         path, _ = QFileDialog.getOpenFileName(self, "Import signature", str(Path.home()), "Images (*.png *.jpg *.jpeg)")
         if path:
             data = ink_from_scan(path)
@@ -205,6 +218,7 @@ class SignatureDialog(QDialog):
                 QMessageBox.warning(self, "Signatures", "No ink found in that image.")
 
     def delete_selected(self):
+        """After confirming, move the selected signature file to the trash (restorable) and drop it from the list."""
         item = self.list.currentItem()
         if not item:
             return

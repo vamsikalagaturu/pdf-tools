@@ -1,3 +1,10 @@
+"""The save pipeline: turns the app's edit state into the bytes of the output PDF.
+
+Opens the file as the display does (inserted pages appended), applies redactions, text, images, annotations, form
+values, crops and rotations, scrubs hidden data when anything was redacted or cropped, and selects the output pages.
+Also flattening, merging and password protection. Qt-free; coordinates are PDF points.
+"""
+
 import pymupdf
 
 from pdf_tools.core.fonts import draw_text, unit
@@ -9,6 +16,7 @@ JPEG_QUALITY = 90
 
 
 def remove_annots(doc, deleted):
+    """Delete the annotations given as (page, xref) from `doc`, in place; ones already gone are skipped."""
     for pno, xref in deleted:
         page = doc[pno]
         annot = page.load_annot(xref)
@@ -20,6 +28,7 @@ MARK_STYLES = ("highlight", "underline", "strikeout", "squiggly", "textcolour")
 
 
 def add_mark(page, rects, style):
+    """Add a text markup annotation of one of MARK_STYLES over `rects` and return it (not yet coloured)."""
     if style == "underline":
         return page.add_underline_annot(rects)
     if style == "strikeout":
@@ -34,6 +43,7 @@ def add_mark(page, rects, style):
 
 
 def add_annotation(page, obj):
+    """Write a highlight, ink drawing or note edit as a real PDF annotation, with its colour and comment."""
     if obj["kind"] == "highlight":
         annot = add_mark(page, obj["rects"], obj.get("style", "highlight"))
         annot.set_colors(stroke=unit(obj["rgb"]))
@@ -49,6 +59,7 @@ def add_annotation(page, obj):
 
 
 def set_annot_texts(doc, texts):
+    """Replace the comments of existing annotations: {(page, xref): text}."""
     for (pno, xref), text in texts.items():
         page = doc[pno]
         annot = page.load_annot(xref)

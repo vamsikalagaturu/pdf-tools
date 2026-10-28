@@ -1,3 +1,8 @@
+"""User settings: the known keys with their defaults, and a commented settings.toml that survives hand edits.
+
+Also locates the per-user config folder (XDG_CONFIG_HOME) shared with saved signatures.
+"""
+
 import os
 import shutil
 import tomllib
@@ -47,6 +52,8 @@ class Settings:
     """App settings in a commented, hand-editable ~/.config/pdf-tools/settings.toml."""
 
     def __init__(self, path=None):
+        """Load `path` (default: settings.toml in config_dir()); unknown keys and wrongly typed values are ignored,
+        and a missing or unreadable file is written out with the defaults."""
         self.path = Path(path) if path else config_dir() / "settings.toml"
         self.values = {key: default for key, (default, _) in SETTINGS.items()}
         try:
@@ -67,11 +74,13 @@ class Settings:
         return self.values[key]
 
     def set(self, key, value):
+        """Change a setting and write the file at once (only when the value differs)."""
         if self.values.get(key) != value:
             self.values[key] = value
             self.save()
 
     def add_recent(self, path):
+        """Put `path` first in the recent files list, without duplicates, keeping at most RECENT_LIMIT entries."""
         path = str(path)
         self.set("recent_files", [path] + [p for p in self.values["recent_files"] if p != path][: RECENT_LIMIT - 1])
 

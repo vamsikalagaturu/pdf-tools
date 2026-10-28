@@ -1,4 +1,8 @@
-"""SyncTeX lookups (PDF position <-> source line) from the .synctex(.gz) file pdfTeX/LuaTeX write next to a PDF."""
+"""SyncTeX lookups (PDF position <-> source line) from the .synctex(.gz) file pdfTeX/LuaTeX write next to a PDF.
+
+A small reader of its own rather than the `synctex` tool: no subprocess, and no TeX installation needed. Positions
+are PDF points from the page's top-left corner; pages are 0-based.
+"""
 
 import gzip
 import re
@@ -14,6 +18,9 @@ RECORD = re.compile(r"([(\[hvxgk$])(\d+),(-?\d+):(-?\d+),(-?\d+)(?::(-?\d+),(-?\
 
 @dataclass
 class Node:
+    """One record: its kind character ("(" line box, "[" vertical box, "h"/"v" void boxes, "x" "g" "k" "$" points),
+    the input tag and source line, and its box (empty for point records)."""
+
     kind: str
     tag: int
     line: int
@@ -21,6 +28,7 @@ class Node:
 
 
 def synctex_path(pdf):
+    """The name.synctex.gz (or uncompressed name.synctex) next to `pdf`, or None."""
     pdf = Path(pdf)
     for name in (pdf.with_suffix(".synctex.gz"), pdf.with_suffix(".synctex")):
         if name.exists():
@@ -32,6 +40,7 @@ class SyncTex:
     """The parsed SyncTeX data of one PDF; reload when `stale()`."""
 
     def __init__(self, pdf):
+        """Read the SyncTeX file of `pdf`; without one, `path` is None and lookups find nothing."""
         self.pdf = Path(pdf)
         self.path = synctex_path(pdf)
         self.mtime = _mtime(self.path)
@@ -42,9 +51,11 @@ class SyncTex:
                 self.parse(fh)
 
     def stale(self):
+        """Whether the SyncTeX file was rewritten (or appeared or vanished) since it was read."""
         return _mtime(synctex_path(self.pdf)) != self.mtime
 
     def parse(self, lines):
+        """Collect the input files and, per page, every record converted from scaled points to PDF points."""
         unit, x_off, y_off, page = 1.0, 0.0, 0.0, None
         for raw in lines:
             line = raw.rstrip("\n")

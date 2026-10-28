@@ -1,3 +1,8 @@
+"""The Edits tab of the sidebar: every unsaved edit grouped by page, each row (or group) discardable on its own.
+
+Purely presentational: the edit tab builds the rows and reacts to `discard_requested` / `activated`.
+"""
+
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QToolButton, QTreeWidget, QTreeWidgetItem

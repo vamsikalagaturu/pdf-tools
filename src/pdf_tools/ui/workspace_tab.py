@@ -1,3 +1,10 @@
+"""The Combine & split tab: one workspace for merging, splitting and extracting pages.
+
+Pages of every added PDF or image sit in one grid (PageGrid, drawn by PageDelegate); dragging reorders them,
+Delete drops them and the strip left of a page cuts there. WorkspacePage turns the cuts into parts and writes
+one file per part, or a single combined file when there are no cuts.
+"""
+
 from pathlib import Path
 
 import pymupdf
@@ -53,7 +60,10 @@ DROP_ZONE_STYLE = "QFrame#dropzone { border: 2px dashed rgba(128, 128, 128, 120)
 
 
 class PageDelegate(QStyledItemDelegate):
-    """A page card: source colour band, thumbnail, page and file label; the strip left of it toggles a cut."""
+    """Draws a page card: source colour band, thumbnail, page and file label; the strip left of it toggles a cut.
+
+    `hover` is the pointer position in the grid's viewport (set by PageGrid), for the cut-strip hint.
+    """
 
     cut_toggled = Signal(int)
     hover = None
@@ -62,6 +72,7 @@ class PageDelegate(QStyledItemDelegate):
         return CELL
 
     def rects(self, r):
+        """Split cell `r` into (cut strip, card, thumbnail, label) rects."""
         gap = QRect(r.left(), r.top(), GAP, r.height())
         card = QRect(r.left() + GAP, r.top() + 4, r.width() - GAP - 4, r.height() - 8)
         thumb = QRect(card.left() + (card.width() - THUMB.width()) // 2, card.top() + 8, THUMB.width(), THUMB.height())
@@ -69,6 +80,8 @@ class PageDelegate(QStyledItemDelegate):
         return gap, card, thumb, label
 
     def paint(self, p, option, index):
+        """Draw the card: selection, file colour band, thumbnail (grey until rendered), page and file name, the
+        cut line with scissors (faint while hovering the strip) and a "Part N" tag on the first page of a part."""
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         palette = option.palette
@@ -126,6 +139,8 @@ class PageDelegate(QStyledItemDelegate):
         p.restore()
 
     def editorEvent(self, event, model, option, index):
+        """A click in the strip left of a card (not the first) emits cut_toggled and is not passed on, so it
+        neither selects nor starts a drag."""
         if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and index.row() > 0:
             if self.rects(option.rect)[0].contains(event.position().toPoint()):
                 self.cut_toggled.emit(index.row())
@@ -134,6 +149,9 @@ class PageDelegate(QStyledItemDelegate):
 
 
 class PageGrid(QListWidget):
+    """The page grid: fixed-size cells, drag to reorder, Delete to drop pages; files dropped on it are passed
+    on through files_dropped."""
+
     files_dropped = Signal(list)
 
     def __init__(self):
@@ -177,6 +195,7 @@ class PageGrid(QListWidget):
         e.acceptProposedAction() if e.mimeData().hasUrls() else super().dragMoveEvent(e)
 
     def dropEvent(self, e):
+        """Dropped files go to files_dropped; a page dropped from the grid itself is moved there."""
         if e.mimeData().hasUrls():
             self.files_dropped.emit([u.toLocalFile() for u in e.mimeData().urls()])
             e.acceptProposedAction()
@@ -190,6 +209,8 @@ class WorkspacePage(QWidget):
     open_requested = Signal(str)
 
     def __init__(self, start_dir):
+        """`start_dir` is where the file dialogs open first. Each added file becomes a source (an open, unlocked
+        PDF kept in memory); grid items refer to a source and one of its pages."""
         super().__init__()
         self.start_dir = Path(start_dir)
         self.sources = []
@@ -305,14 +326,17 @@ class WorkspacePage(QWidget):
         self.grid.viewport().update()
 
     def pick_files(self):
-        patterns = " ".join(f"*{s}" for s in (".pdf", *IMAGE_SUFFIXES))
+        patterns =" ".join(f"*{s}" for s in (".pdf", *IMAGE_SUFFIXES))
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add PDFs or images", str(self.start_dir), f"PDFs and images ({patterns});;PDF (*.pdf)"
         )
         self.add_paths(paths)
 
     def add_paths(self, paths):
-        """Add PDFs, and images as pages (one per image, or per frame of a multi-page TIFF)."""
+        """Add PDFs, and images as pages (one per image, or per frame of a multi-page TIFF).
+
+        Protected PDFs ask for their password (cancel skips the file); other file types are ignored.
+        """
         for path in paths:
             suffix = Path(path).suffix.lower()
             if suffix not in (".pdf", *IMAGE_SUFFIXES):
@@ -373,6 +397,7 @@ class WorkspacePage(QWidget):
         return [self.grid.item(i) for i in range(self.grid.count())]
 
     def part_rows(self):
+        """The pages grouped into parts: a new part starts at the first page and at every cut."""
         parts = []
         for row, item in enumerate(self.items()):
             if row == 0 or item.data(CUT_ROLE):
@@ -386,6 +411,7 @@ class WorkspacePage(QWidget):
         self.refresh()
 
     def cut_every(self, n):
+        """Replace all cuts with one every `n` pages (n None or 0: no cuts)."""
         for row, item in enumerate(self.items()):
             item.setData(CUT_ROLE, bool(n) and row > 0 and row % n == 0)
         self.refresh()
@@ -405,6 +431,8 @@ class WorkspacePage(QWidget):
         self.refresh()
 
     def default_name(self, k, count, part):
+        """The suggested file name of part `k` of `count`: named after its source file when it has only one,
+        else "combined"; a single part ends in -pages, several in -partN."""
         used = {item.data(SRC_ROLE) for item in part}
         base = self.sources[next(iter(used))]["name"].stem if len(used) == 1 else "combined"
         if count == 1:
@@ -412,12 +440,15 @@ class WorkspacePage(QWidget):
         return f"{base}-part{k + 1}.pdf"
 
     def part_key(self, part):
+        """Identifies a part by its first page (source, page), so a rename survives cuts made elsewhere."""
         return part[0].data(SRC_ROLE), part[0].data(PAGE_ROLE)
 
     def file_name(self, k, count, part):
         return self.names.get(self.part_key(part)) or self.default_name(k, count, part)
 
     def refresh(self):
+        """Bring everything in line with the grid: part numbers on the cards, the parts list, the total line and
+        the Save button's label."""
         items = self.items()
         self.stack.setCurrentIndex(1 if items else 0)
         parts = self.part_rows()
@@ -457,6 +488,7 @@ class WorkspacePage(QWidget):
             self.refresh()
 
     def build(self, part):
+        """The PDF bytes of one part, its pages copied from their sources in grid order."""
         out = pymupdf.open()
         for item in part:
             src = self.sources[item.data(SRC_ROLE)]["doc"]
@@ -469,6 +501,8 @@ class WorkspacePage(QWidget):
         return protect(data, password) if password else data
 
     def run_save(self):
+        """Write the parts: one part asks for a file name, several ask for a folder (and before overwriting).
+        Afterwards offers to open the first file (open_requested)."""
         parts = self.part_rows()
         if not parts:
             return

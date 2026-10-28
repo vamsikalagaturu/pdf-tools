@@ -1,3 +1,9 @@
+"""Fonts for text boxes: picking the font to draw with, measuring and drawing text, bold/italic variants.
+
+A font name resolves to a standard base-14 font, else a font embedded in the PDF, else the closest installed font
+(fontconfig, via ctypes), else Helvetica; each step only counts if it has glyphs for the text.
+"""
+
 import ctypes
 import re
 from functools import lru_cache
@@ -37,6 +43,7 @@ def base_font_name(name):
 
 
 def pdf_font_names(doc):
+    """Base names of the fonts used anywhere in `doc`, in order of first use."""
     names = []
     for pno in range(len(doc)):
         for f in doc.get_page_fonts(pno):
@@ -65,6 +72,7 @@ def fontconfig():
 
 
 def fontconfig_pattern(name):
+    """A fontconfig pattern for a PDF font name: 'TimesNewRomanPS-BoldMT' -> 'TimesNewRoman:style=Bold'."""
     tokens = [re.sub(r"(PSMT|MT|PS)$", "", t) for t in re.split(r"[-\s,]+", base_font_name(name)) if t]
     style = [re.sub(r"(?<=[a-z])(?=[A-Z])", " ", t) for t in tokens if t.lower() in STYLE_WORDS]
     family = " ".join(t for t in tokens if t.lower() not in STYLE_WORDS)
@@ -73,6 +81,7 @@ def fontconfig_pattern(name):
 
 @lru_cache(maxsize=None)
 def system_font_file(name):
+    """Path of the installed TrueType/OpenType font fontconfig picks for PDF font `name`, or None."""
     lib = fontconfig()
     if not lib:
         return None
@@ -134,6 +143,7 @@ BASE14_FAMILIES = {
 
 
 def name_tokens(name):
+    """The words of a font name, without PostScript suffixes: 'Arial-BoldItalicMT' -> ['Arial', 'BoldItalic']."""
     return [re.sub(r"(PSMT|MT|PS)$", "", t) for t in re.split(r"[-\s,]+", base_font_name(name)) if t]
 
 
@@ -144,6 +154,7 @@ def font_style(name):
 
 
 def font_family(name):
+    """A font name's family, without style words: 'Arial-BoldMT' -> 'Arial', 'Times-Bold' -> 'Times-Roman'."""
     for family, variants in BASE14_FAMILIES.items():
         if base_font_name(name) in variants:
             return variants[0]
@@ -187,6 +198,7 @@ def wrap_lines(font, obj):
 
 
 def text_size(font, obj):
+    """(width, height) in points that text box `obj` takes in `font`: its set width, else the longest line."""
     lines = wrap_lines(font, obj)
     size = obj["size"]
     width = obj.get("width") or max(font.text_length(line, fontsize=size) for line in lines)
@@ -195,6 +207,8 @@ def text_size(font, obj):
 
 
 def draw_text(page, obj, fonts_doc):
+    """Burn text box `obj` into the page content, top-left at obj["rect"], in the font resolved against
+    `fonts_doc` (the document whose embedded fonts may be reused)."""
     key, buf, font, _ = resolve_font(fonts_doc, obj["font"], obj["text"])
     if buf:
         page.insert_font(fontname=key, fontbuffer=buf)

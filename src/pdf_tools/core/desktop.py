@@ -1,3 +1,5 @@
+"""Per-user app launcher integration: the .desktop entry and icon behind `pdf-tools --install-desktop`."""
+
 import os
 import shutil
 import sys
@@ -12,6 +14,7 @@ def data_dir():
 
 
 def targets():
+    """Where the launcher entry and the scalable icon go: (desktop file, icon file)."""
     base = data_dir()
     return base / "applications" / f"{DESKTOP_ID}.desktop", base / "icons" / "hicolor" / "scalable" / "apps" / f"{DESKTOP_ID}.svg"
 
