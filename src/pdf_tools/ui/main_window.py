@@ -1,8 +1,10 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
+import pymupdf
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QMainWindow,
@@ -19,18 +21,47 @@ from PySide6.QtWidgets import (
 from pdf_tools import APP_NAME, REPO_URL, __version__
 from pdf_tools.ui import icons
 from pdf_tools.ui.edit_tab import EditTab
-from pdf_tools.ui.merge_tab import MergePage
+from pdf_tools.ui.workspace_tab import IMAGE_SUFFIXES, WorkspacePage
 from pdf_tools.ui.start_page import StartPage
 from pdf_tools.ui.theme import DOC_TAB_STYLE, HEADER_STYLE, THEMES, apply_theme, saved_theme
 from pdf_tools.ui.util import app_icon
 
 
+def dispatch(message):
+    """Route a launch request: a forward search to the window showing that PDF, files to the window used last (or
+    to a new one with "new_window"); a file already open elsewhere is shown where it is."""
+    windows = MainWindow.windows
+    target = None
+    if message.get("forward"):
+        target = next((w for w in windows if w.tab_for(message["forward"][0])), None)
+    if message.get("open") and not message.get("new_window"):
+        for path in list(message["open"]):
+            owner = next((w for w in windows if w.tab_for(path)), None)
+            if owner:
+                owner.docs.setCurrentWidget(owner.tab_for(path))
+                owner.raise_()
+                owner.activateWindow()
+                message = dict(message, open=[p for p in message["open"] if p != path])
+        if not message["open"] and not message.get("forward"):
+            return
+    if target is None:
+        last = MainWindow.last_active or windows[-1]
+        target = last.new_window() if message.get("new_window") else last
+    target.handle_message(message)
+
+
 class MainWindow(QMainWindow):
     """Header (menu, home logo, current tab's toolbar) above one tab strip: documents, plus Home and Merge on demand."""
+
+    windows = []
+    last_active = None
 
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        MainWindow.windows.append(self)
+        MainWindow.last_active = self
         self.setAcceptDrops(True)
         self.setWindowIcon(app_icon())
         self.resize(1280, 1100)
@@ -38,7 +69,7 @@ class MainWindow(QMainWindow):
         self.info_widget = None
 
         self.start = StartPage(settings)
-        self.merge_page = MergePage(Path.home())
+        self.workspace = WorkspacePage(Path.home())
         self.docs = QTabWidget()
         self.docs.setDocumentMode(True)
         self.docs.setTabsClosable(True)
@@ -47,14 +78,16 @@ class MainWindow(QMainWindow):
         self.docs.tabBar().setExpanding(False)
         self.docs.setStyleSheet(DOC_TAB_STYLE)
         self.docs.tabCloseRequested.connect(lambda i: self.close_tab(self.docs.widget(i)))
+        self.docs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.docs.tabBar().customContextMenuRequested.connect(self.on_tab_menu)
         self.blank_toolbar = QWidget()
         self.toolbars = QStackedWidget()
         self.toolbars.addWidget(self.blank_toolbar)
-        self.toolbars.addWidget(self.merge_page.toolbar)
+        self.toolbars.addWidget(self.workspace.toolbar)
 
         self.start.open_requested.connect(lambda path: self.open_paths([path]) if path else self.open_dialog())
-        self.start.merge_requested.connect(self.open_merge)
-        self.merge_page.open_requested.connect(lambda path: self.open_paths([path]))
+        self.start.workspace_requested.connect(lambda: self.open_workspace())
+        self.workspace.open_requested.connect(lambda path: self.open_paths([path]))
 
         self.menu_button = QToolButton()
         self.menu_button.setText("Menu")
@@ -101,21 +134,74 @@ class MainWindow(QMainWindow):
         """Actions that exist without a document: open, close tab, merge, quit, tab switching, theme."""
         self.a_open = self.action("Open...", self.open_dialog, QKeySequence.Open, "open")
         self.a_close_tab = self.action("Close tab", lambda: self.close_tab(self.docs.currentWidget()), "Ctrl+W", "close")
-        self.a_merge = self.action("Merge PDFs...", self.open_merge, "Ctrl+M", "merge")
-        self.a_quit = self.action("Quit", self.close, QKeySequence.Quit)
+        self.a_merge = self.action("Combine && split PDFs...", self.open_workspace, "Ctrl+M", "merge")
+        self.a_quit = self.action("Quit", QApplication.closeAllWindows, QKeySequence.Quit)
+        self.a_new_window = self.action("New window", self.new_window, QKeySequence.New)
+        self.a_close_window = self.action("Close window", self.close, "Ctrl+Shift+W")
         self.a_about = self.action(f"About {APP_NAME}", self.about, icon="about")
+        self.a_home = self.action("Home", self.go_home)
+        self.a_home.setIcon(app_icon())
+        self.recent_menu = QMenu("Open recent", self)
+        self.recent_menu.aboutToShow.connect(self.fill_recent_menu)
         self.a_next_tab = self.action("Next tab", lambda: self.step_tab(1), "Ctrl+Tab")
         self.a_prev_tab = self.action("Previous tab", lambda: self.step_tab(-1), "Ctrl+Shift+Tab")
         self.appearance = QMenu("Appearance", self)
         group = QActionGroup(self)
-        current = saved_theme(self.settings)
         for mode in THEMES:
             a = QAction(mode.capitalize(), self)
             a.setCheckable(True)
-            a.setChecked(mode == current)
+            a.setData(mode)
             a.triggered.connect(lambda checked=False, mode=mode: self.set_theme(mode))
             group.addAction(a)
             self.appearance.addAction(a)
+        self.sync_theme_actions()
+
+    def sync_theme_actions(self):
+        current = saved_theme(self.settings)
+        for a in self.appearance.actions():
+            a.setChecked(a.data() == current)
+
+    def new_window(self):
+        window = MainWindow(self.settings)
+        window.resize(self.size())
+        window.show()
+        return window
+
+    def tab_for(self, path):
+        """The document tab showing `path` in this window, or None."""
+        path = Path(path).resolve()
+        return next((t for t in self.tabs() if t.doc and t.doc_path.resolve() == path), None)
+
+    def on_tab_menu(self, pos):
+        widget = self.docs.widget(self.docs.tabBar().tabAt(pos))
+        if not isinstance(widget, EditTab):
+            return
+        menu = QMenu(self)
+        menu.addAction("Move to new window", lambda: self.move_to_new_window(widget))
+        menu.addAction("Close", lambda: self.close_tab(widget))
+        menu.exec(self.docs.tabBar().mapToGlobal(pos))
+
+    def move_to_new_window(self, tab):
+        """Hand a document tab (with its edits and undo history) to a fresh window."""
+        window = self.new_window()
+        self.release(tab)
+        window.adopt(tab)
+        window.docs.setCurrentWidget(tab)
+        window.drop_page(window.start)
+
+    def changeEvent(self, e):
+        if e.type() == QEvent.ActivationChange and self.isActiveWindow():
+            MainWindow.last_active = self
+        super().changeEvent(e)
+
+    def fill_recent_menu(self):
+        self.recent_menu.clear()
+        for path in self.settings.get("recent_files"):
+            if Path(path).exists():
+                a = self.recent_menu.addAction(Path(path).name, lambda path=path: self.open_paths([path]))
+                a.setToolTip(path)
+        if self.recent_menu.isEmpty():
+            self.recent_menu.addAction("No recent files").setEnabled(False)
 
     @property
     def edit(self):
@@ -148,16 +234,19 @@ class MainWindow(QMainWindow):
         self.add_tab(self.start, "Home", app_icon())
         self.docs.setCurrentWidget(self.start)
 
-    def open_merge(self):
-        """Open (or switch to) the Merge tab; started from Home, it takes Home's place."""
+    def open_workspace(self, tab=None):
+        """Open (or switch to) the Combine & split tab, adding document tab `tab` (its edits applied) when given;
+        started from Home, it takes Home's place."""
         from_home = self.docs.currentWidget() is self.start
-        self.add_tab(self.merge_page, "Merge PDFs", icons.icon("merge"))
-        self.docs.setCurrentWidget(self.merge_page)
+        if tab is not None and tab.doc:
+            self.workspace.add_document(pymupdf.open("pdf", tab.edited()[0]), tab.doc_path, tab.password)
+        self.add_tab(self.workspace, "Combine && split", icons.icon("merge"))
+        self.docs.setCurrentWidget(self.workspace)
         if from_home:
             self.drop_page(self.start)
 
     def drop_page(self, page):
-        """Remove the Home or Merge tab (the widget is kept for reuse); the window is never left without a tab."""
+        """Remove the Home or Combine & split tab (the widget is kept for reuse); the window always keeps a tab."""
         i = self.docs.indexOf(page)
         if i >= 0 and self.docs.count() > 1:
             self.docs.removeTab(i)
@@ -206,14 +295,33 @@ class MainWindow(QMainWindow):
 
     def new_tab(self):
         tab = EditTab(self.settings)
+        self.adopt(tab)
+        return tab
+
+    def adopt(self, tab):
+        """Show document tab `tab` (new, or released by another window) in this window."""
         tab.active = False
         tab.activate_requested.connect(lambda t=tab: self.docs.setCurrentWidget(t))
         tab.closed.connect(lambda t=tab: self.remove_tab(t))
         tab.open_dialog_requested.connect(self.open_dialog)
         tab.title_changed.connect(lambda title, t=tab: self.set_tab_title(t, title))
+        tab.split_requested.connect(self.open_workspace)
         self.toolbars.addWidget(tab.toolbar)
         self.add_tab(tab, "")
-        return tab
+        if tab.doc:
+            tab.update_state()
+
+    def release(self, tab):
+        """Take document tab `tab` out of this window without closing it (see adopt)."""
+        for signal in (tab.activate_requested, tab.closed, tab.open_dialog_requested, tab.title_changed, tab.split_requested):
+            signal.disconnect()
+        if self.info_widget is tab.info:
+            self.statusBar().removeWidget(tab.info)
+            self.info_widget = None
+        self.docs.removeTab(self.docs.indexOf(tab))
+        self.toolbars.removeWidget(tab.toolbar)
+        if not self.docs.count():
+            self.go_home()
 
     def set_tab_title(self, tab, title):
         i = self.docs.indexOf(tab)
@@ -222,7 +330,10 @@ class MainWindow(QMainWindow):
             self.docs.setTabToolTip(i, str(tab.doc_path))
 
     def close_tab(self, widget):
-        if widget is self.start or widget is self.merge_page:
+        if widget is self.workspace and self.docs.count() == 1:
+            # the last tab: Home takes its place, as when the last document closes
+            self.go_home()
+        if widget in (self.start, self.workspace):
             self.drop_page(widget)
         elif widget is not None:
             if widget.doc:
@@ -251,17 +362,16 @@ class MainWindow(QMainWindow):
         """Show the current tab's toolbar, status line, menu and window title."""
         current = self.docs.currentWidget()
         tab = self.edit
-        self.toolbars.setCurrentWidget(
-            tab.toolbar if tab else self.merge_page.toolbar if current is self.merge_page else self.blank_toolbar
-        )
+        workspace = current is self.workspace
+        self.toolbars.setCurrentWidget(tab.toolbar if tab else self.workspace.toolbar if workspace else self.blank_toolbar)
         for t in self.tabs():
             t.active = t is tab
         self.swap_info(tab)
         self.rebuild_menu(tab)
         if tab:
             tab.update_state()
-        elif current is self.merge_page:
-            self.setWindowTitle(f"Merge PDFs - {APP_NAME}")
+        elif workspace:
+            self.setWindowTitle(f"Combine & split - {APP_NAME}")
         else:
             self.start.refresh()
             self.setWindowTitle(APP_NAME)
@@ -281,16 +391,22 @@ class MainWindow(QMainWindow):
             self.removeAction(a)
         menu = QMenu(self)
         f = menu.addMenu("File")
-        f.addActions([self.a_open, self.a_close_tab])
+        f.addActions([self.a_new_window, self.a_home, self.a_open])
+        f.addMenu(self.recent_menu)
+        f.addActions([self.a_close_tab, self.a_close_window])
         if e:
             f.addSeparator()
-            f.addActions([e.a_save, e.a_save_as, e.a_export, e.a_split])
+            f.addActions([e.a_save, e.a_save_as, e.a_export])
             f.addSeparator()
             f.addActions([e.a_protect, e.a_unprotect])
             f.addSeparator()
             f.addActions([e.a_print, e.a_print_preview])
+            f.addSeparator()
+            f.addAction(e.a_copy_path)
         f.addSeparator()
         f.addAction(self.a_merge)
+        if e:
+            f.addAction(e.a_split)
         f.addSeparator()
         f.addAction(self.a_quit)
         subs = [f]
@@ -303,20 +419,21 @@ class MainWindow(QMainWindow):
             m.addActions([e.a_clear_page, e.a_clear_all])
             m.addSeparator()
             m.addAction(e.a_find)
-            m.addSeparator()
-            m.addActions([e.a_tick, e.a_untick])
             t = menu.addMenu("Tools")
             t.addActions(list(e.tool_actions.values()))
             t.addSeparator()
-            t.addActions([e.a_snap, e.a_auto])
+            t.addActions([e.a_snap, e.a_auto, e.a_redact_colour])
             t.addSeparator()
-            t.addAction(e.a_highlight_colour)
+            t.addMenu(e.style_menu)
+            t.addMenu(e.colour_menu)
             p = menu.addMenu("Pages")
             p.addActions([e.a_rotate_left, e.a_rotate_right])
             p.addSeparator()
             p.addActions([e.a_fit_content, e.a_uncrop])
             p.addSeparator()
             p.addActions([e.a_insert_pages, e.a_remove_pages])
+            p.addSeparator()
+            p.addActions([e.a_split, e.a_tick, e.a_untick])
             subs += [m, t, p]
         v = menu.addMenu("View")
         if e:
@@ -344,12 +461,16 @@ class MainWindow(QMainWindow):
         self.settings.set("theme", mode)
         apply_theme(mode)
         icons.refresh()
+        for window in MainWindow.windows:
+            window.restyle()
+
+    def restyle(self):
+        self.sync_theme_actions()
         self.header.setStyleSheet(HEADER_STYLE)
         self.docs.setStyleSheet(DOC_TAB_STYLE)
-        self.merge_page.restyle()
-        merge_index = self.docs.indexOf(self.merge_page)
-        if merge_index >= 0:
-            self.docs.setTabIcon(merge_index, icons.icon("merge"))
+        self.workspace.restyle()
+        if self.docs.indexOf(self.workspace) >= 0:
+            self.docs.setTabIcon(self.docs.indexOf(self.workspace), icons.icon("merge"))
         for t in self.tabs():
             t.edits_sig = None
             t.update_state()
@@ -370,20 +491,31 @@ class MainWindow(QMainWindow):
         if dirty:
             names = "\n".join(f"  {t.doc_path.name}" for t in dirty)
             reply = QMessageBox.question(
-                self, APP_NAME, f"{len(dirty)} document(s) have unsaved edits:\n{names}\n\nQuit and discard them?"
+                self, APP_NAME, f"{len(dirty)} document(s) have unsaved edits:\n{names}\n\nClose and discard them?"
             )
             if reply != QMessageBox.Yes:
                 e.ignore()
                 return
+        for t in self.tabs():
+            # close documents while their scenes still exist (see EditTab.unload)
+            t.unload()
+        if self in MainWindow.windows:
+            MainWindow.windows.remove(self)
+        if MainWindow.last_active is self:
+            MainWindow.last_active = MainWindow.windows[-1] if MainWindow.windows else None
         e.accept()
 
+    def droppable(self):
+        """File types a drop accepts here: images too while Combine & split is showing."""
+        return (".pdf", *IMAGE_SUFFIXES) if self.docs.currentWidget() is self.workspace else (".pdf",)
+
     def dragEnterEvent(self, e):
-        if any(u.toLocalFile().lower().endswith(".pdf") for u in e.mimeData().urls()):
+        if any(u.toLocalFile().lower().endswith(self.droppable()) for u in e.mimeData().urls()):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        pdfs = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(".pdf")]
-        if self.docs.currentWidget() is self.merge_page:
-            self.merge_page.add_paths(pdfs)
-        elif pdfs:
-            self.open_paths(pdfs)
+        files = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(self.droppable())]
+        if self.docs.currentWidget() is self.workspace:
+            self.workspace.add_paths(files)
+        elif files:
+            self.open_paths(files)

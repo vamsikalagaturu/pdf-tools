@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -80,39 +79,6 @@ class PasswordDialog(QDialog):
 
     def password(self):
         return self.first.text()
-
-
-class SplitDialog(QDialog):
-    def __init__(self, parent, pages, ticked):
-        super().__init__(parent)
-        self.setWindowTitle("Split")
-        self.ticked = ticked
-        form = QFormLayout(self)
-        self.by_count = QRadioButton("Every")
-        self.count = QSpinBox()
-        self.count.setRange(1, max(1, pages))
-        self.count.setValue(1)
-        self.count.setSuffix(" page(s)")
-        row = QHBoxLayout()
-        row.addWidget(self.by_count)
-        row.addWidget(self.count)
-        row.addStretch()
-        form.addRow(row)
-        starts = ", ".join(str(i + 1) for i in ticked if i)
-        self.by_ticks = QRadioButton(f"Before each ticked page ({starts})" if starts else "Before each ticked page (none ticked)")
-        self.by_ticks.setEnabled(bool(starts))
-        form.addRow(self.by_ticks)
-        (self.by_ticks if starts else self.by_count).setChecked(True)
-        form.addRow(QLabel(f"{pages} pages; parts are saved as name-part1.pdf, name-part2.pdf, ... in a folder you choose."))
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Split...")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-
-    def choice(self):
-        """(every, at) for core.pages.split_points."""
-        return (None, self.ticked) if self.by_ticks.isChecked() else (self.count.value(), ())
 
 
 class SignaturePad(QWidget):

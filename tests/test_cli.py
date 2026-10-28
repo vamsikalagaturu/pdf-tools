@@ -69,6 +69,14 @@ def test_merge_split_flatten(capsys, text_pdf, tmp_path):
     assert code == OK and not text(tmp_path / "flat.pdf").strip()
 
 
+def test_merge_takes_images_as_pages(capsys, text_pdf, tmp_path):
+    photo = tmp_path / "photo.png"
+    pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 80, 60), False).save(photo)
+    code, out = run(capsys, "merge", photo, f"{text_pdf}:1", "-o", tmp_path / "m.pdf")
+    doc = pymupdf.open(tmp_path / "m.pdf")
+    assert code == OK and out["pages"] == 2 and len(doc[0].get_images()) == 1 and "John Smith" in doc[1].get_text()
+
+
 def test_protect_and_unprotect(capsys, text_pdf, tmp_path):
     locked, unlocked = tmp_path / "locked.pdf", tmp_path / "unlocked.pdf"
     assert run(capsys, "protect", text_pdf, "-o", locked, "--password", "pw")[0] == OK

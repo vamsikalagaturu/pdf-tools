@@ -316,9 +316,12 @@ def parser():
     p.add_argument("--order", help="new page order, e.g. 3,1,2 or 5-1 (reversed); pages left out are dropped")
     p.add_argument("--crop", action="append", default=[], help="PAGE:x0,y0,x1,y1 in points (repeatable)")
     p.add_argument("--crop-content", nargs="?", const="", help="crop pages (default all) to their content")
-    p = sub.add_parser("merge", help="Join PDFs, optionally page ranges: a.pdf b.pdf:1-3", description="Join PDFs")
+    p = sub.add_parser(
+        "merge", help="Join PDFs and images, optionally page ranges: a.pdf b.pdf:1-3 photo.jpg",
+        description="Join PDFs and images (each image becomes a page), in order",
+    )
     p.set_defaults(func=cmd_merge)
-    p.add_argument("inputs", nargs="+", help="PDF or PDF:PAGES")
+    p.add_argument("inputs", nargs="+", help="PDF, PDF:PAGES or an image file")
     p.add_argument("-o", "--output", required=True)
     p = command("split", "Split into PART files", cmd_split, output=False)
     how = p.add_mutually_exclusive_group(required=True)

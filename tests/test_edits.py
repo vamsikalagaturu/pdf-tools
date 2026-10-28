@@ -39,6 +39,26 @@ def test_text_box_and_signature_are_added(text_pdf):
     assert len(page.get_images()) == 1
 
 
+def test_placed_image_is_embedded_at_its_box(text_pdf):
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 20), False)
+    pix.set_rect(pix.irect, (200, 30, 30))
+    box = pymupdf.Rect(100, 300, 300, 400)
+    data, _ = apply_edits(text_pdf, {0: [{"kind": "image", "rect": box, "data": pix.tobytes("png")}]})
+    page = pymupdf.open("pdf", data)[0]
+    (info,) = page.get_image_info()
+    assert pymupdf.Rect(info["bbox"]) == box
+    assert page.get_pixmap(clip=pymupdf.Rect(195, 345, 205, 355)).pixel(5, 5) == (200, 30, 30)
+
+
+def test_drawing_is_an_ink_annotation(text_pdf):
+    strokes = [[pymupdf.Point(100, 100), pymupdf.Point(150, 130), pymupdf.Point(200, 100)], [pymupdf.Point(100, 150), pymupdf.Point(200, 150)]]
+    obj = {"kind": "ink", "rect": pymupdf.Rect(100, 100, 200, 150), "strokes": strokes, "rgb": (198, 40, 40), "width": 3}
+    page = pymupdf.open("pdf", apply_edits(text_pdf, {0: [obj]})[0])[0]
+    (annot,) = page.annots()
+    assert annot.type[1] == "Ink" and len(annot.vertices) == 2
+    assert annot.border["width"] == 3 and tuple(round(c * 255) for c in annot.colors["stroke"]) == (198, 40, 40)
+
+
 def test_highlight_and_note_are_real_annotations(text_pdf):
     rect = word_rect(text_pdf, "Rossmann")
     items = {0: [

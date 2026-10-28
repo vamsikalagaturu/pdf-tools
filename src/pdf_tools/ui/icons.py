@@ -53,6 +53,8 @@ LUCIDE = {
     "split": "scissors",
     "bold": "bold",
     "italic": "italic",
+    "image": "image",
+    "draw": "pencil",
 }
 SIZE = 48
 

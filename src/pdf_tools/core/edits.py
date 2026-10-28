@@ -39,6 +39,10 @@ def add_annotation(page, obj):
         annot.set_colors(stroke=unit(obj["rgb"]))
         if obj.get("text"):
             annot.set_info(content=obj["text"])
+    elif obj["kind"] == "ink":
+        annot = page.add_ink_annot([[tuple(p) for p in stroke] for stroke in obj["strokes"]])
+        annot.set_colors(stroke=unit(obj["rgb"]))
+        annot.set_border(width=obj["width"])
     else:
         annot = page.add_text_annot(obj["rect"].tl, obj["text"], icon="Note")
     annot.update()
@@ -109,7 +113,7 @@ def apply_edits(
 ):
     """Return the edited PDF bytes and any text left under redactions.
 
-    items: {page: [{"kind": "redact"|"text"|"sign"|"highlight"|"note", "rect": Rect, ...}]};
+    items: {page: [{"kind": "redact"|"text"|"sign"|"image"|"highlight"|"note"|"ink", "rect": Rect, ...}]};
     forms: {(page, xref): value}; sizes: {(page, xref): fontsize} for fields shrunk to fit;
     deleted: {(page, xref)} of existing annotations to remove; annot_text: {(page, xref): new comment};
     rotation: {page: degrees added}; crop: {page: Rect}; inserted: PDFs appended after the file's own pages;
@@ -140,7 +144,9 @@ def apply_edits(
                 draw_text(page, o, fonts_doc)
             elif o["kind"] == "sign":
                 page.insert_image(o["rect"], stream=o["png"])
-            elif o["kind"] in ("highlight", "note"):
+            elif o["kind"] == "image":
+                page.insert_image(o["rect"], stream=o["data"])
+            elif o["kind"] in ("highlight", "note", "ink"):
                 add_annotation(page, o)
     for pno, rect in (crop or {}).items():
         crop_page(doc[pno], rect)
@@ -179,10 +185,12 @@ def flatten(data, dpi):
 
 
 def merge(parts):
-    """Concatenate [(path, 0-based pages)] in order into one PDF."""
+    """Concatenate [(path, 0-based pages)] in order into one PDF; an image file counts as a one-page PDF."""
     out = pymupdf.open()
     for path, pages in parts:
         src = pymupdf.open(path)
+        if not src.is_pdf:
+            src = pymupdf.open("pdf", src.convert_to_pdf())
         src.select(pages)
         out.insert_pdf(src)
         src.close()

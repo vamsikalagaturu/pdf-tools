@@ -20,7 +20,7 @@ pdf-tools info in.pdf                     # pages, sizes, fonts, form fields, an
 pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}' [--pages 1-3] [--case-sensitive] [--fill '#000000']
 pdf-tools fill in.pdf -o out.pdf --field name=Jane --field agree=true
 pdf-tools pages in.pdf -o out.pdf [--order 3,1,2] [--remove 4-5] [--rotate 2:90] [--crop 1:x0,y0,x1,y1] [--crop-content [PAGES]]
-pdf-tools merge a.pdf b.pdf:1-3 -o out.pdf
+pdf-tools merge a.pdf b.pdf:1-3 scan.jpg -o out.pdf          # images become pages
 pdf-tools split in.pdf (--every 2 | --at 3,7) -d outdir/      # outdir/in-part1.pdf, ...
 pdf-tools protect in.pdf -o out.pdf --password NEW [--current-password OLD]
 pdf-tools unprotect in.pdf -o out.pdf --password PW
@@ -44,8 +44,9 @@ Notes:
 ## Windowed use
 
 ```sh
-pdf-tools file.pdf ...                         # opens tabs in the running window (starts it if needed)
-pdf-tools --forward file.pdf LINE source.tex   # scrolls the running window to that source line
+pdf-tools file.pdf ...                         # opens tabs in the window used last (starts the app if needed)
+pdf-tools --new-window file.pdf ...            # opens them in a new window
+pdf-tools --forward file.pdf LINE source.tex   # scrolls the window showing that PDF to the source line
 ```
 
 Edits made in the window (redactions, text, signatures, forms, page changes) only reach the

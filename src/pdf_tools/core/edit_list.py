@@ -5,6 +5,8 @@ from pathlib import Path
 from pdf_tools.core.pages import file_order, is_reordered, put_back
 
 DOCUMENT = None
+# edits stored per page in state["items"]
+PLACED = ("redact", "text", "note", "sign", "image", "highlight", "ink")
 
 
 def empty_state(pages):
@@ -82,7 +84,7 @@ def discard(state, refs, own):
     rotation, crop, order = dict(state["rotation"]), dict(state["crop"]), state["order"]
     drop = {}
     for kind, page, key in refs:
-        if kind in ("redact", "text", "note", "sign", "highlight"):
+        if kind in PLACED:
             drop.setdefault(page, set()).add(key)
         elif kind == "form":
             forms.pop(key, None)

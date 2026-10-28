@@ -3,6 +3,7 @@
 pdf-tools \- view, redact, fill, annotate, sign, crop and merge PDF files
 .SH SYNOPSIS
 .B pdf-tools
+.RB [ \-\-new\-window ]
 .RI [ file.pdf " ...]"
 .br
 .B pdf-tools \-\-forward
@@ -33,8 +34,14 @@ scanned document) and embedded thumbnails.
 After saving, the status line says whether any text was still found under a
 redaction.
 .PP
-Only one window runs at a time: opening more files, from a terminal or the
-application launcher, adds tabs to the running window.
+All windows belong to one running program.
+Opening more files, from a terminal or the application launcher, adds tabs to
+the window you used last (a file that is already open is shown where it is);
+.B \-\-new\-window
+opens them in a new window instead.
+.B File > New window
+opens another window, and a tab's right-click menu moves it, with its unsaved
+edits and undo history, to a window of its own.
 .PP
 The same operations are also available as commands that run without the window
 (see
@@ -69,6 +76,15 @@ Esc or clicking elsewhere finishes; double-click a box to edit it again.
 .BR Sign " (S)"
 Click to place a saved signature, or draw or import a new one.
 .TP
+.BR Image " (I)"
+Click, or drag a box, to place a picture (PNG, JPEG, WebP and other common
+formats) in full colour; drag it or its corner to move or resize it.
+.TP
+.BR Draw " (D)"
+Draw freehand with a pen colour and width.
+Strokes made in quick succession form one drawing, saved as a PDF ink
+annotation that other viewers show and can remove.
+.TP
 .BR Crop " (C)"
 Drag a rectangle, then crop this page, all pages or the ticked pages to it, or
 crop the page to its content.
@@ -79,7 +95,12 @@ The
 sidebar shows a thumbnail per page.
 Drag thumbnails to reorder pages, tick pages to act on several at once, and
 right-click for rotate, crop to content, insert pages from another PDF and
-remove.
+remove; the same commands are on the bar above the thumbnails and in the
+right-click menu of the page itself.
+Right-clicking a placed edit (text box, mark, note, redaction, signature, image,
+drawing, crop)
+or one of the document's own annotations offers its own commands, such as
+edit, comment, style, colour and delete.
 The
 .B Edits
 tab lists every unsaved change by page; hover over one and click its X to drop
@@ -93,13 +114,21 @@ replaces the file and moves the original to the trash.
 .B Save As
 writes a copy,
 .B Export pages
-writes a copy of some pages (optionally flattened to images),
-.B Split
-writes several parts, and
+writes a copy of some pages (optionally flattened to images), and
 .B Protect with password
 writes an AES-256 encrypted copy.
 A password protected file asks for its password when opened and keeps it when
 saved.
+.SS Combine & split
+One tab (on Home, Ctrl+M, or
+.B Split into files
+for the open document) combines, splits and extracts.
+Add one or more PDFs or images (each image becomes a page): all their pages
+appear in one grid, each file marked by its own colour.
+Drag pages to reorder them, select and press Delete to drop them, and click the
+strip left of a page to start a new file there (or cut every N pages).
+Without cuts, Save writes one combined file; with cuts, one file per part,
+whose names can be edited.
 .SS Keyboard
 .TS
 l l.
@@ -119,10 +148,12 @@ Left, PgUp	previous page
 Right, PgDn	next page
 Ctrl+Shift+L, Ctrl+Shift+R	rotate left, right
 F9	show or hide the sidebar
-Ctrl+M	merge PDFs
+Ctrl+M	combine and split PDFs
 Ctrl+Tab, Ctrl+Shift+Tab	next, previous tab
 Ctrl+W	close the tab
-Ctrl+Q	quit
+Ctrl+N	new window
+Ctrl+Shift+W	close the window
+Ctrl+Q	quit (all windows)
 Ctrl+click	open the TeX source line
 .TE
 .SH LATEX
@@ -148,8 +179,8 @@ by the line, for example
 .BR "code \-g %f:%l" .
 .TP
 .BI "pdf-tools \-\-forward " "file.pdf line source.tex"
-shows where a source line is typeset: the running window jumps there and
-briefly highlights it.
+shows where a source line is typeset: the window showing that PDF (or the one
+used last) jumps there and briefly highlights it.
 Configure your editor to run this command for its "view in PDF" action.
 .SH COMMANDS
 These run without the window, never ask questions, and print one JSON object.
@@ -204,8 +235,9 @@ crops to a box, and
 crops pages to their content.
 Content outside a crop is deleted.
 .TP
-.BI "merge " "a.pdf b.pdf:1-3 ... " \-o " output.pdf"
-Join files, each optionally limited to some pages.
+.BI "merge " "a.pdf b.pdf:1-3 photo.jpg ... " \-o " output.pdf"
+Join PDFs, each optionally limited to some pages, and images, each of which
+becomes a page.
 .TP
 .BI "split " "input.pdf " "\-\-every " n " \-d " folder
 .TQ
@@ -241,6 +273,9 @@ Show a short usage summary.
 .TP
 .B help
 Print the guide for scripts and agents (AGENTS.md).
+.TP
+.B \-\-new\-window
+Open the given files (or Home) in a new window rather than the one used last.
 .TP
 .B \-\-install\-desktop
 Add PDF Tools to the application launcher and install its icon, for the current

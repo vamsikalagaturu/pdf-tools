@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (
 
 HANDLE_PX = 10
 CLICK_SLOP_PX = 4
-MOVABLE = {"redact", "text", "sign", "note", "crop"}
-RESIZABLE = {"redact", "sign", "crop"}
+MOVABLE = {"redact", "text", "sign", "image", "note", "crop", "ink"}
+RESIZABLE = {"redact", "sign", "image", "crop"}
+KEEP_ASPECT = {"sign", "image"}
 EDITABLE = {"text"}
 CURSORS = {
     "view": Qt.IBeamCursor,
@@ -21,7 +22,9 @@ CURSORS = {
     "note": Qt.PointingHandCursor,
     "text": Qt.IBeamCursor,
     "sign": Qt.CrossCursor,
+    "image": Qt.CrossCursor,
     "crop": Qt.CrossCursor,
+    "draw": Qt.CrossCursor,
 }
 
 
@@ -66,6 +69,11 @@ class ObjItem(QGraphicsRectItem):
             for i in (1, 2, 3):
                 y = r.top() + r.height() * i / 4.5
                 p.drawLine(QPointF(r.left() + 3, y), QPointF(r.right() - 3, y))
+        elif self.kind == "ink":
+            p.setPen(QPen(QColor(*self.obj["rgb"]), self.obj["width"], Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.setBrush(Qt.NoBrush)
+            for stroke in self.parts:
+                p.drawPolyline(stroke)
         elif self.kind == "crop":
             p.setPen(QPen(QColor("#1a73e8"), 0, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
@@ -134,7 +142,7 @@ class ObjItem(QGraphicsRectItem):
             return super().mouseMoveEvent(e)
         w = max(4, self.start.width() + e.pos().x() - self.press.x())
         h = max(4, self.start.height() + e.pos().y() - self.press.y())
-        if self.kind == "sign":
+        if self.kind in KEEP_ASPECT:
             h = w * self.start.height() / self.start.width()
         self.setRect(0, 0, w, h)
 
@@ -142,6 +150,11 @@ class ObjItem(QGraphicsRectItem):
         super().mouseReleaseEvent(e)
         self.resizing = False
         self.editor.end_change(self)
+
+    def contextMenuEvent(self, e):
+        # deferred: most entries re-render the scene, which deletes this item
+        obj, pno, kind, pos = self.obj, self.pno, self.kind, e.screenPos()
+        QTimer.singleShot(0, lambda: self.editor.item_menu(obj, pno, kind, pos))
 
     def mouseDoubleClickEvent(self, e):
         # deferred: editing re-renders the scene, which deletes this item
@@ -194,6 +207,7 @@ class PageView(QGraphicsView):
     clicked = Signal(QPointF)
     zoom_step = Signal(float)
     sync_clicked = Signal(QPointF)
+    stroke_drawn = Signal(list)
 
     def __init__(self, tool, selection_mode):
         super().__init__()
@@ -209,6 +223,8 @@ class PageView(QGraphicsView):
         self.press_pos = None
         self.band = None
         self.flowing = False
+        self.stroke = None
+        self.pen = QPen(Qt.black, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         self.update_cursor()
 
     def update_cursor(self):
@@ -237,6 +253,10 @@ class PageView(QGraphicsView):
             fill.setAlpha(40)
             self.band = self.scene().addRect(QRectF(self.origin, self.origin), QPen(colour, 0, Qt.DashLine), QBrush(fill))
             self.band.setZValue(3)
+        elif mode == "draw":
+            self.stroke = [self.origin]
+            self.stroke_item = self.scene().addPath(QPainterPath(self.origin), self.pen)
+            self.stroke_item.setZValue(3)
         self.flowing = mode == "flow"
 
     def moved(self, pos):
@@ -244,7 +264,12 @@ class PageView(QGraphicsView):
 
     def mouseMoveEvent(self, e):
         pos = e.position().toPoint()
-        if self.band:
+        if self.stroke is not None:
+            self.stroke.append(self.mapToScene(pos))
+            path = self.stroke_item.path()
+            path.lineTo(self.stroke[-1])
+            self.stroke_item.setPath(path)
+        elif self.band:
             self.band.setRect(QRectF(self.origin, self.mapToScene(pos)).normalized())
         elif self.flowing and self.moved(pos):
             self.flow_changed.emit(self.origin, self.mapToScene(pos), False)
@@ -254,7 +279,12 @@ class PageView(QGraphicsView):
     def mouseReleaseEvent(self, e):
         origin, self.origin = self.origin, None
         pos = e.position().toPoint()
-        if self.band:
+        if self.stroke is not None:
+            stroke, self.stroke = self.stroke, None
+            self.scene().removeItem(self.stroke_item)
+            if len(stroke) > 1:
+                self.stroke_drawn.emit(stroke)
+        elif self.band:
             rect = self.band.rect()
             self.scene().removeItem(self.band)
             self.band = None

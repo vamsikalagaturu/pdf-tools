@@ -18,7 +18,7 @@ QTabBar::tab { background: transparent; border: none; border-bottom: 2px solid t
                padding: 5px 8px 4px 12px; margin-right: 1px; color: palette(window-text); max-width: 260px; }
 QTabBar::tab:hover:!selected { background: palette(button); }
 QTabBar::tab:selected { background: palette(button); border-bottom: 2px solid palette(highlight); }
-QTabBar QToolButton { border: none; border-radius: 4px; padding: 2px; margin-left: 4px; }
+QTabBar QToolButton { border: none; border-radius: 4px; padding: 2px; margin-left: 6px; margin-right: 7px; }
 QTabBar QToolButton:hover { background: palette(mid); }
 """
 

@@ -1,6 +1,8 @@
 import os
 import shlex
 import statistics
+import time
+from functools import partial
 import tempfile
 from pathlib import Path
 
@@ -30,7 +32,9 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QKeySequence,
+    QPen,
     QPixmap,
+    QPolygonF,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -38,6 +42,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QColorDialog,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -61,7 +66,7 @@ from PySide6.QtWidgets import (
 )
 
 from pdf_tools import APP_NAME
-from pdf_tools.core.edit_list import DOCUMENT, count_edits, discard, edit_entries
+from pdf_tools.core.edit_list import DOCUMENT, PLACED, count_edits, discard, edit_entries
 from pdf_tools.core.edits import apply_edits, flatten, open_pdf, protect, remove_annots
 from pdf_tools.core.fonts import (
     DEFAULT_FONTS,
@@ -74,18 +79,18 @@ from pdf_tools.core.fonts import (
     styled_font,
     text_size,
 )
-from pdf_tools.core.pages import content_rect, split_points
+from pdf_tools.core.pages import content_rect
 from pdf_tools.core.ranges import format_ranges, parse_ranges
 from pdf_tools.core.selection import flow_select, reading_order_words
 from pdf_tools.core.synctex import SyncTex
 from pdf_tools.ui import icons
-from pdf_tools.ui.dialogs import ExportDialog, PasswordDialog, SignatureDialog, SplitDialog
+from pdf_tools.ui.dialogs import ExportDialog, PasswordDialog, SignatureDialog
 from pdf_tools.ui.edits_panel import EditsPanel, shorten
 from pdf_tools.ui.form_fields import FormFields
 from pdf_tools.ui.page_view import ObjItem, PageView, TextEditItem
 from pdf_tools.ui.popover import FormatBar, Popover
 from pdf_tools.ui.printing import print_pdf
-from pdf_tools.ui.util import hex_to_rgb, rgb_to_hex, swatch_icon, to_qimage
+from pdf_tools.ui.util import hex_to_rgb, png_bytes, rgb_to_hex, swatch_icon, to_qimage
 
 THUMB_ZOOM = 0.22
 PREVIEW_SCALE = 4
@@ -97,6 +102,8 @@ PATH_WIDTH = 360
 THUMB_CHECK_WIDTH = 24
 CROP_DIM = QColor(32, 33, 36, 150)
 KEEP = object()
+IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff)"
+PAGE_BAR_STYLE ="QToolBar { border: none; border-bottom: 1px solid rgba(128, 128, 128, 70); padding: 2px; spacing: 2px; }"
 RELOAD_SETTLE_MS = 300
 RELOAD_TRIES = 10
 SYNC_MARK = QColor(255, 200, 0, 110)
@@ -114,6 +121,8 @@ TOOLS = (
     ("note", "Note", "N", "Click to add a sticky note; click one to read or edit it (N)"),
     ("text", "Text", "T", "Click to type on the page, or drag first to set a width; double-click a box to edit it (T)"),
     ("sign", "Sign", "S", "Click to place a signature (S)"),
+    ("image", "Image", "I", "Click, or drag a box, to place a picture; drag its corner to resize (I)"),
+    ("draw", "Draw", "D", "Draw freehand; strokes made in quick succession form one drawing (D)"),
     ("crop", "Crop", "C", "Drag a rectangle to crop to it; drag the frame or its corner to adjust (C)"),
 )
 FLOW_COLOURS = {"view": QColor(26, 115, 232, 70), "redact": QColor(0, 0, 0, 90)}
@@ -126,6 +135,7 @@ QTreeWidget::item:has-children { padding: 8px 4px 4px 4px; border-bottom: none; 
 # Edits tab: kind -> (label, icon)
 EDIT_KINDS = {
     "redact": ("Redaction", "redact"), "text": ("Text", "text"), "sign": ("Signature", "sign"), "note": ("Note", "note"),
+    "image": ("Image", "image"), "ink": ("Drawing", "draw"),
     "form": ("Field", "file"), "deleted": ("Removed", "remove"), "comment": ("Comment", "note"),
     "rotate": ("Rotated", "rotate"), "crop": ("Cropped", "crop"), "remove_page": ("Page removed", "remove"),
     "insert": ("Inserted from", "add"), "reorder": ("Pages reordered", "sort"),
@@ -168,6 +178,22 @@ def file_stamp(path):
     return st.st_mtime_ns, st.st_size
 
 
+PEN_COLOURS = (("Black", (0, 0, 0)), *INK_PRESETS)
+PEN_WIDTHS = (("Thin", 1.0), ("Medium", 2.0), ("Thick", 4.0))
+# a stroke started within this many seconds of the last one joins its drawing
+INK_GROUP_S = 1.5
+
+
+def ink_bounds(obj):
+    """Bounding box of a drawing's strokes, padded by half the pen width."""
+    box = pymupdf.Rect(obj["strokes"][0][0], obj["strokes"][0][0])
+    for stroke in obj["strokes"]:
+        for point in stroke:
+            box.include_point(point)
+    half = obj["width"] / 2 + 1
+    return box + (-half, -half, half, half)
+
+
 def palette_for(style):
     return HIGHLIGHT_PRESETS if style == "highlight" else INK_PRESETS
 
@@ -183,6 +209,7 @@ class EditTab(QWidget):
     closed = Signal()
     open_dialog_requested = Signal()
     title_changed = Signal(str)
+    split_requested = Signal(object)
 
     def __init__(self, settings):
         super().__init__()
@@ -223,6 +250,8 @@ class EditTab(QWidget):
         self.popover = None
         self.text_edit = None
         self.qt_families = {}
+        self.pen_rgb, self.pen_width = PEN_COLOURS[0][1], PEN_WIDTHS[1][1]
+        self.ink_group = None
 
         self.thumbs = QListWidget()
         self.thumbs.setIconSize(QSize(130, 184))
@@ -250,7 +279,12 @@ class EditTab(QWidget):
         self.thumbs.viewport().installEventFilter(self)
         self.side = QTabWidget()
         self.side.setDocumentMode(True)
-        self.side.addTab(self.thumbs, "Pages")
+        self.pages_panel = QWidget()
+        pages_layout = QVBoxLayout(self.pages_panel)
+        pages_layout.setContentsMargins(0, 0, 0, 0)
+        pages_layout.setSpacing(0)
+        pages_layout.addWidget(self.thumbs)
+        self.side.addTab(self.pages_panel, "Pages")
         self.side.addTab(self.annot_tree, "Annotations")
         self.side.addTab(self.edits_tree, "Edits")
         self.side.setMinimumWidth(240)
@@ -264,6 +298,7 @@ class EditTab(QWidget):
         self.view.clicked.connect(self.on_click)
         self.view.zoom_step.connect(lambda f: self.set_zoom(self.zoom * f))
         self.view.sync_clicked.connect(self.inverse_search)
+        self.view.stroke_drawn.connect(self.on_stroke)
         self.sync = None
         self.sync_marks = []
         self.watcher = QFileSystemWatcher(self)
@@ -399,7 +434,7 @@ class EditTab(QWidget):
         self.a_export = self.action("Export pages...", self.export_pages, "Ctrl+E")
         self.a_print = self.action("Print...", self.print_doc, QKeySequence.Print)
         self.a_print_preview = self.action("Print preview...", lambda: self.print_doc(preview=True))
-        self.a_split = self.action("Split...", self.split_doc)
+        self.a_split = self.action("Split into files...", self.split_doc)
         self.a_protect = self.action("Protect with password...", self.protect_copy)
         self.a_unprotect = self.action("Remove password...", self.unprotect_copy)
         self.a_rotate_left = self.action("Rotate left", lambda: self.rotate_pages(self.target_pages(), -90), "Ctrl+Shift+L")
@@ -442,7 +477,9 @@ class EditTab(QWidget):
         self.a_auto = self.action("Auto fill", lambda: s.set("redact_auto_fill", self.a_auto.isChecked()), checkable=True)
         self.a_auto.setChecked(s.get("redact_auto_fill"))
         self.a_auto.setToolTip("Fill each redaction with the colour sampled around it")
-        self.a_highlight_colour = self.action("Highlight colour...", self.pick_highlight_colour)
+        self.a_highlight_colour = self.action("Custom mark colour...", self.pick_highlight_colour)
+        self.a_redact_colour = self.action("Redaction colour...", self.pick_colour)
+        self.a_copy_path = self.action("Copy file path", self.copy_path)
         self.build_toolbar()
 
     def tool_button(self, action=None, text=None):
@@ -502,6 +539,7 @@ class EditTab(QWidget):
         for b in (fit_content, uncrop):
             b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.crop_opts = tb.addWidget(self.option_group(fit_content, uncrop))
+        self.draw_opts = tb.addWidget(self.build_pen_options())
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -521,7 +559,7 @@ class EditTab(QWidget):
         save.setPopupMode(QToolButton.MenuButtonPopup)
         save.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         menu = QMenu(save)
-        menu.addActions([self.a_save, self.a_save_as, self.a_export, self.a_split])
+        menu.addActions([self.a_save, self.a_save_as, self.a_export])
         menu.addSeparator()
         menu.addActions([self.a_protect, self.a_unprotect])
         menu.addSeparator()
@@ -532,14 +570,93 @@ class EditTab(QWidget):
             self.a_sidebar, self.a_undo, self.a_redo, self.a_zoom_out, self.a_zoom_in, self.a_fit, self.a_continuous, self.a_find,
         ):
             tb.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.pages_panel.layout().insertWidget(0, self.build_page_bar())
         self.on_tool()
+
+    def build_page_bar(self):
+        """Page commands above the thumbnails; they act on the ticked pages, else the current one."""
+        bar = QToolBar()
+        bar.setIconSize(QSize(16, 16))
+        bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        bar.setStyleSheet(PAGE_BAR_STYLE)
+        targets = " (ticked pages, or the current page)"
+        for a, tip in (
+            (self.a_rotate_left, "Rotate left, Ctrl+Shift+L" + targets),
+            (self.a_rotate_right, "Rotate right, Ctrl+Shift+R" + targets),
+            (None, None),
+            (self.a_insert_pages, "Insert pages from a PDF after the current page"),
+            (self.a_remove_pages, "Remove, Delete" + targets),
+            (None, None),
+            (self.a_fit_content, "Crop to content" + targets),
+        ):
+            if a is None:
+                bar.addSeparator()
+            else:
+                a.setToolTip(tip)
+                bar.addAction(a)
+        return bar
+
+    def build_pen_options(self):
+        """Draw tool options: pen colour swatches and a width choice."""
+        group = QButtonGroup(self)
+        buttons = []
+        for name, rgb in PEN_COLOURS:
+            b = self.tool_button(text=" ")
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            b.setIcon(swatch_icon(rgb))
+            b.setToolTip(name)
+            b.setCheckable(True)
+            b.setChecked(rgb == self.pen_rgb)
+            b.clicked.connect(lambda _=False, rgb=rgb: self.set_pen(rgb=rgb))
+            group.addButton(b)
+            buttons.append(b)
+        self.pen_width_box = QComboBox()
+        for name, width in PEN_WIDTHS:
+            self.pen_width_box.addItem(name, width)
+        self.pen_width_box.setCurrentIndex(1)
+        self.pen_width_box.setToolTip("Pen width")
+        self.pen_width_box.currentIndexChanged.connect(lambda i: self.set_pen(width=self.pen_width_box.itemData(i)))
+        self.set_pen()
+        return self.option_group(*buttons, self.pen_width_box)
+
+    def set_pen(self, rgb=None, width=None):
+        self.pen_rgb = rgb or self.pen_rgb
+        self.pen_width = width or self.pen_width
+        self.view.pen = QPen(QColor(*self.pen_rgb), self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        self.ink_group = None
+
+    def on_stroke(self, scene_points):
+        """A finished pen stroke: joins the drawing made just before on the same page, else starts one."""
+        pno = self.page_at(scene_points[0]) if self.doc else None
+        if pno is None:
+            return
+        points = [self.to_pdf_point(p, pno) for p in scene_points]
+        now = time.monotonic()
+        snap = self.snapshot()
+        group = self.ink_group
+        if group and group[0] == pno and now - group[2] < INK_GROUP_S and any(o is group[1] for o in self.items.get(pno, [])):
+            obj = group[1]
+            obj["strokes"].append(points)
+        else:
+            obj = {"kind": "ink", "strokes": [points], "rgb": self.pen_rgb, "width": self.pen_width}
+            self.items.setdefault(pno, []).append(obj)
+        obj["rect"] = ink_bounds(obj)
+        self.ink_group = (pno, obj, now)
+        self.push_undo(snap)
+        self.render()
+
+    def set_ink(self, pno, obj, **values):
+        self.push_undo(self.snapshot())
+        obj.update(values)
+        obj["rect"] = ink_bounds(obj)
+        self.render()
 
     def build_mark_options(self):
         """Highlight tool options: a style menu button, preset colour swatches and a custom colour."""
         self.style_button = QToolButton()
         self.style_button.setPopupMode(QToolButton.InstantPopup)
         self.style_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        menu = QMenu(self.style_button)
+        menu = self.style_menu = QMenu("Mark style", self)
         styles = QActionGroup(self)
         for key, label in MARK_STYLES.items():
             a = menu.addAction(label, lambda key=key: self.set_mark_style(key))
@@ -547,6 +664,8 @@ class EditTab(QWidget):
             styles.addAction(a)
             icons.bind(a, STYLE_ICONS[key])
         self.style_button.setMenu(menu)
+        self.colour_menu = QMenu("Mark colour", self)
+        self.colour_menu.aboutToShow.connect(self.fill_colour_menu)
         self.colour_group = QButtonGroup(self)
         self.colour_buttons = []
         for i in range(len(HIGHLIGHT_PRESETS)):
@@ -564,6 +683,18 @@ class EditTab(QWidget):
         self.colour_group.addButton(self.custom_colour)
         self.sync_mark_options()
         return self.option_group(self.style_button, *self.colour_buttons, self.custom_colour)
+
+    def fill_colour_menu(self):
+        """The current mark style's presets, as in the toolbar, plus a custom colour."""
+        menu = self.colour_menu
+        menu.clear()
+        current = self.mark_colour()
+        for name, rgb in palette_for(self.mark_style()):
+            a = menu.addAction(swatch_icon(rgb), name, lambda rgb=rgb: self.set_mark_colour(rgb))
+            a.setCheckable(True)
+            a.setChecked(rgb == current)
+        menu.addSeparator()
+        menu.addAction(self.a_highlight_colour)
 
     def mark_style(self):
         style = self.settings.get("highlight_style")
@@ -606,7 +737,9 @@ class EditTab(QWidget):
         self.redact_opts.setVisible(tool == "redact")
         self.highlight_opts.setVisible(tool == "highlight")
         self.crop_opts.setVisible(tool == "crop")
-        self.opts_sep.setVisible(tool in ("redact", "highlight", "crop"))
+        self.draw_opts.setVisible(tool == "draw")
+        self.opts_sep.setVisible(tool in ("redact", "highlight", "crop", "draw"))
+        self.ink_group = None
         self.view.update_cursor()
         self.close_popover()
         self.clear_flow()
@@ -989,23 +1122,8 @@ class EditTab(QWidget):
         self.status(f"Saved {out} - no text left under any redaction.{hidden}", 10000)
 
     def split_doc(self):
-        if not self.doc:
-            return
-        dlg = SplitDialog(self, len(self.order), self.ticked_positions())
-        if dlg.exec() != QDialog.Accepted:
-            return
-        every, at = dlg.choice()
-        parts = split_points(len(self.order), every=every, at=at)
-        folder = QFileDialog.getExistingDirectory(self, "Save parts in", str(self.doc_path.parent))
-        if not folder:
-            return
-        names = [Path(folder) / f"{self.doc_path.stem}-part{i + 1}.pdf" for i in range(len(parts))]
-        existing = [p.name for p in names if p.exists()]
-        if existing and QMessageBox.question(self, APP_NAME, f"Overwrite {', '.join(existing)}?") != QMessageBox.Yes:
-            return
-        for name, part in zip(names, parts):
-            name.write_bytes(self.output([self.order[i] for i in part], password=self.password)[0])
-        self.status(f"Saved {len(parts)} parts to {folder}", 8000)
+        if self.doc:
+            self.split_requested.emit(self)
 
     def protect_copy(self):
         if not self.doc:
@@ -1118,6 +1236,14 @@ class EditTab(QWidget):
             image = self.text_image(obj)
         elif obj["kind"] == "sign":
             image = QImage.fromData(obj["png"])
+        elif obj["kind"] == "image":
+            image = QImage.fromData(obj["data"])
+        elif obj["kind"] == "ink":
+            origin = rect.topLeft()
+            parts = [
+                QPolygonF([self.to_scene(pymupdf.Rect(pt, pt), pno).topLeft() - origin for pt in stroke])
+                for stroke in obj["strokes"]
+            ]
         elif obj["kind"] == "highlight":
             parts = [self.to_scene(r, pno).translated(-rect.topLeft()) for r in obj["rects"]]
         return ObjItem(self, obj, pno, rect, image, parts)
@@ -1214,9 +1340,9 @@ class EditTab(QWidget):
         for position, p in enumerate(self.order):
             entries = []
             for obj in self.items.get(p, []):
-                if obj["kind"] in ("highlight", "note"):
+                if obj["kind"] in ("highlight", "note", "ink"):
                     rgb = obj.get("rgb", NOTE_RGB)
-                    label = MARK_STYLES[obj.get("style", "highlight")] if obj["kind"] == "highlight" else "Note"
+                    label = {"highlight": MARK_STYLES[obj.get("style", "highlight")], "note": "Note", "ink": "Drawing"}[obj["kind"]]
                     entries.append((label, obj.get("quote", ""), obj.get("text", ""), rgb, ("obj", obj)))
             page = self.doc[p]
             for annot in page.annots():
@@ -1306,7 +1432,7 @@ class EditTab(QWidget):
             return
         self.goto(p)
         target = None
-        if kind in ("redact", "text", "note", "sign", "highlight") and key < len(self.items.get(p, [])):
+        if kind in PLACED and key < len(self.items.get(p, [])):
             target = self.scene_item(p, ("obj", self.items[p][key]))
         elif kind == "comment":
             target = self.scene_item(p, ("annot", key[1]))
@@ -1427,13 +1553,18 @@ class EditTab(QWidget):
         item = self.thumbs.itemAt(pos)
         if item is None or not self.doc:
             return
-        pages = self.target_pages(item.data(Qt.UserRole))
-        label = f"{len(pages)} pages" if len(pages) > 1 else "page"
         menu = QMenu(self)
+        self.add_page_actions(menu, self.target_pages(item.data(Qt.UserRole)))
+        menu.exec(self.thumbs.viewport().mapToGlobal(pos))
+
+    def add_page_actions(self, menu, pages):
+        """Rotate / crop / insert / remove entries for `pages` (thumbnail and page right-click menus)."""
+        label = f"{len(pages)} pages" if len(pages) > 1 else "page"
         for text, act, icon in (
             (f"Rotate {label} left", lambda: self.rotate_pages(pages, -90), "rotate-left"),
             (f"Rotate {label} right", lambda: self.rotate_pages(pages, 90), "rotate"),
             (f"Crop {label} to content", lambda: self.crop_to_content(pages), "crop"),
+            ("Crop to an area (Crop tool)", lambda: self.tool_actions["crop"].trigger(), "crop"),
         ):
             icons.bind(menu.addAction(text, act), icon)
         if any(p in self.crop for p in pages):
@@ -1442,7 +1573,6 @@ class EditTab(QWidget):
         icons.bind(menu.addAction("Insert pages from PDF after this...", lambda: self.insert_pages(pages[-1])), "add")
         menu.addSeparator()
         icons.bind(menu.addAction(f"Remove {label}", lambda: self.remove_pages(pages)), "remove")
-        menu.exec(self.thumbs.viewport().mapToGlobal(pos))
 
     def scene_item(self, pno, ref):
         for it in self.view.scene().items():
@@ -1532,7 +1662,8 @@ class EditTab(QWidget):
         self.a_copy.setEnabled(has_doc and bool(self.text_sel))
         for a in (
             self.a_print, self.a_print_preview, self.a_split, self.a_protect, self.a_rotate_left, self.a_rotate_right,
-            self.a_remove_pages, self.a_insert_pages, self.a_fit_content, self.a_uncrop,
+            self.a_remove_pages, self.a_insert_pages, self.a_fit_content, self.a_uncrop, self.a_copy_path,
+            self.a_redact_colour, self.a_tick, self.a_untick,
         ):
             a.setEnabled(has_doc)
         self.a_unprotect.setEnabled(has_doc and bool(self.password))
@@ -1624,10 +1755,11 @@ class EditTab(QWidget):
 
     def snapshot(self):
         """A copy of the edits for the undo history (the state() keys)."""
-        items = {
-            p: [dict(o, rect=pymupdf.Rect(o["rect"]), **({"rects": list(o["rects"])} if "rects" in o else {})) for o in objs]
-            for p, objs in self.items.items()
-        }
+        def copy(o):
+            lists = {k: [list(v) for v in o[k]] if k == "strokes" else list(o[k]) for k in ("rects", "strokes") if k in o}
+            return dict(o, rect=pymupdf.Rect(o["rect"]), **lists)
+
+        items = {p: [copy(o) for o in objs] for p, objs in self.items.items()}
         return {
             "items": items, "deleted": frozenset(self.deleted), "forms": dict(self.forms),
             "annot_text": dict(self.annot_text), "order": self.order, "rotation": dict(self.rotation),
@@ -1648,6 +1780,9 @@ class EditTab(QWidget):
             if isinstance(it, ObjItem) and it.kind not in ("annot", "highlight"):
                 rect = self.to_pdf(it.mapRectToScene(it.rect()), it.pno)
                 if max(abs(a - b) for a, b in zip(rect, it.obj["rect"])) > 0.01:
+                    if it.kind == "ink":
+                        shift = rect.tl - it.obj["rect"].tl
+                        it.obj["strokes"] = [[pt + shift for pt in stroke] for stroke in it.obj["strokes"]]
                     it.obj["rect"] = rect
                     if it.kind == "crop":
                         self.crop[it.pno] = rect
@@ -1784,8 +1919,10 @@ class EditTab(QWidget):
             return "rect" if alt else "flow"
         if self.tool == "redact":
             return "rect" if alt or not self.a_snap.isChecked() else "flow"
-        if self.tool in ("crop", "text"):
+        if self.tool in ("crop", "text", "image"):
             return "rect"
+        if self.tool == "draw":
+            return "draw"
         return None
 
     def page_words(self, pno):
@@ -1864,8 +2001,15 @@ class EditTab(QWidget):
         self.render()
 
     def on_context(self, scene_pos, global_pos):
-        """Right-click on a text selection: copy, highlight (optionally with a comment) or redact it."""
-        if not (self.doc and self.text_sel and self.text_sel[0] in self.offsets):
+        """Right-click on the page: copy / mark / redact the text selection, if any, then the page commands."""
+        if not self.doc:
+            return
+        clicked = self.page_at(scene_pos)
+        if not (self.text_sel and self.text_sel[0] in self.offsets):
+            if clicked is not None:
+                menu = QMenu(self)
+                self.add_page_actions(menu, self.target_pages(clicked))
+                menu.exec(global_pos)
             return
         pno, rects, text = self.text_sel
         menu = QMenu(self)
@@ -1886,7 +2030,76 @@ class EditTab(QWidget):
         )
         menu.addSeparator()
         menu.addAction("Redact", lambda: self.from_selection(lambda: self.redact_rects(pno, rects)))
+        menu.addSeparator()
+        self.add_page_actions(menu.addMenu("Page"), self.target_pages(clicked if clicked is not None else pno))
         menu.exec(global_pos)
+
+    def item_menu(self, obj, pno, kind, pos):
+        """Right-click on a placed edit, a PDF annotation or a crop frame: its own commands, then the page's."""
+        if not self.doc or pno not in self.offsets:
+            return
+        menu = QMenu(self)
+        delete = partial(self.remove_obj, pno, obj)
+        if kind == "text":
+            menu.addAction("Edit text", lambda: self.edit_obj(obj))
+        elif kind == "image":
+            menu.addAction("Replace image...", lambda: self.replace_image(pno, obj))
+        elif kind == "ink":
+            colours = menu.addMenu("Colour")
+            for name, rgb in PEN_COLOURS:
+                a = colours.addAction(swatch_icon(rgb), name, lambda rgb=rgb: self.set_ink(pno, obj, rgb=rgb))
+                a.setCheckable(True)
+                a.setChecked(tuple(obj["rgb"]) == rgb)
+            widths = menu.addMenu("Width")
+            for name, width in PEN_WIDTHS:
+                a = widths.addAction(name, lambda width=width: self.set_ink(pno, obj, width=width))
+                a.setCheckable(True)
+                a.setChecked(obj["width"] == width)
+        elif kind == "note":
+            menu.addAction("Edit note...", lambda: self.item_clicked(obj, pno, kind))
+        elif kind == "highlight":
+            menu.addAction("Comment...", lambda: self.item_clicked(obj, pno, kind))
+            styles = menu.addMenu("Style")
+            for key, label in MARK_STYLES.items():
+                a = styles.addAction(label, lambda key=key: self.restyle_mark(pno, obj, key))
+                a.setCheckable(True)
+                a.setChecked(obj.get("style", "highlight") == key)
+                icons.bind(a, STYLE_ICONS[key])
+            colours = menu.addMenu("Colour")
+            for name, rgb in palette_for(obj.get("style", "highlight")):
+                a = colours.addAction(swatch_icon(rgb), name, lambda rgb=rgb: self.recolour(pno, obj, rgb))
+                a.setCheckable(True)
+                a.setChecked(tuple(obj["rgb"]) == tuple(rgb))
+            colours.addAction("Custom...", lambda: self.pick_obj_colour(pno, obj))
+        elif kind == "redact":
+            fill = menu.addMenu("Fill colour")
+            fill.addAction("Colour around it", lambda: self.recolour(pno, obj, self.sample_background(pno, obj["rect"])))
+            fill.addAction(swatch_icon((0, 0, 0)), "Black", lambda: self.recolour(pno, obj, (0, 0, 0)))
+            fill.addAction(swatch_icon((255, 255, 255)), "White", lambda: self.recolour(pno, obj, (255, 255, 255)))
+            fill.addAction("Custom...", lambda: self.pick_obj_colour(pno, obj))
+        elif kind == "annot":
+            menu.addAction("Comment...", lambda: self.item_clicked(obj, pno, kind))
+            delete = partial(self.delete_annot, (pno, obj["xref"]))
+        elif kind == "crop":
+            menu.addAction("Crop to content instead", lambda: self.crop_to_content([pno]))
+            delete = partial(self.set_crops, {pno: None})
+        menu.addSeparator()
+        icons.bind(menu.addAction("Remove crop" if kind == "crop" else "Delete", delete), "remove")
+        menu.addSeparator()
+        self.add_page_actions(menu.addMenu("Page"), self.target_pages(pno))
+        menu.exec(pos)
+
+    def restyle_mark(self, pno, obj, style):
+        if obj.get("style", "highlight") != style:
+            self.push_undo(self.snapshot())
+            obj["style"] = style
+            obj["rgb"] = self.mark_colour(style)
+            self.render()
+
+    def pick_obj_colour(self, pno, obj):
+        c = QColorDialog.getColor(QColor(*obj["rgb"]), self, "Colour")
+        if c.isValid():
+            self.recolour(pno, obj, (c.red(), c.green(), c.blue()))
 
     def from_selection(self, act):
         self.text_sel = None
@@ -1908,6 +2121,8 @@ class EditTab(QWidget):
             self.crop_menu(pno, sel)
         elif self.tool == "text":
             self.start_text(pno, sel.tl, sel.width)
+        elif self.tool == "image":
+            self.place_image(pno, sel)
         else:
             self.apply_selection(pno, *self.line_rects(sel, pno))
 
@@ -2009,6 +2224,8 @@ class EditTab(QWidget):
             self.start_text(pno, pos)
         elif self.tool == "sign":
             self.place_signature(pos, pno)
+        elif self.tool == "image":
+            self.place_image(pno, pymupdf.Rect(pos, pos))
         elif self.tool == "note":
             self.place_note(pos, pno)
 
@@ -2170,6 +2387,45 @@ class EditTab(QWidget):
         h = w * img.height() / max(img.width(), 1)
         rect = pymupdf.Rect(pos.x - w / 2, pos.y - h / 2, pos.x + w / 2, pos.y + h / 2)
         self.add_obj(pno, {"kind": "sign", "rect": rect, "png": data})
+
+    def pick_image(self):
+        """Bytes of an image the user picks (PNG/JPEG as they are, other formats as PNG) and its size, or None."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Place image", self.settings.get("last_folder") or str(Path.home()), IMAGE_FILTER
+        )
+        if not path:
+            return None
+        data = Path(path).read_bytes()
+        image = QImage.fromData(data)
+        if image.isNull():
+            QMessageBox.warning(self, APP_NAME, f"{Path(path).name} is not an image this app can read.")
+            return None
+        if not data.startswith((b"\x89PNG", b"\xff\xd8")):
+            data = png_bytes(image)
+        return data, image.width(), image.height()
+
+    def place_image(self, pno, box):
+        """Place a picture: a click puts it there at up to half the page width, a dragged box fits it inside."""
+        picked = self.pick_image()
+        if not picked:
+            return
+        data, w, h = picked
+        if box.width > 4 and box.height > 4:
+            scale = min(box.width / w, box.height / h)
+        else:
+            # pixels at 96 dpi, but never wider than half the page
+            scale = min(72 / 96, self.doc[pno].rect.width / 2 / w)
+        rect = pymupdf.Rect(box.x0, box.y0, box.x0 + w * scale, box.y0 + h * scale)
+        self.add_obj(pno, {"kind": "image", "rect": rect, "data": data})
+
+    def replace_image(self, pno, obj):
+        picked = self.pick_image()
+        if picked:
+            data, w, h = picked
+            self.push_undo(self.snapshot())
+            r = obj["rect"]
+            obj.update(data=data, rect=pymupdf.Rect(r.x0, r.y0, r.x0 + r.width, r.y0 + r.width * h / w))
+            self.render()
 
     def edit_obj(self, obj):
         self.pending = None

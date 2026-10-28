@@ -25,13 +25,13 @@ class StartPage(QWidget):
     """Shown when no PDF is open: open, merge, recent files."""
 
     open_requested = Signal(str)
-    merge_requested = Signal()
+    workspace_requested = Signal()
 
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
         box = QWidget()
-        box.setMaximumWidth(560)
+        box.setMaximumWidth(620)
         col = QVBoxLayout(box)
         col.setSpacing(10)
         logo = QLabel()
@@ -55,13 +55,13 @@ class StartPage(QWidget):
         row.setSpacing(12)
         for text, slot, name in (
             ("Open PDF...", lambda: self.open_requested.emit(""), "open"),
-            ("Merge PDFs...", self.merge_requested.emit, "merge"),
+            ("Combine && split PDFs...", self.workspace_requested.emit, "merge"),
         ):
             button = QPushButton(text)
             icons.bind(button, name)
             button.setIconSize(QSize(20, 20))
             button.setMinimumHeight(44)
-            button.setMinimumWidth(180)
+            button.setMinimumWidth(160)
             button.clicked.connect(slot)
             row.addWidget(button)
         col.addLayout(row)

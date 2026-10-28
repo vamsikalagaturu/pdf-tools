@@ -13,14 +13,15 @@ from PySide6.QtWidgets import QApplication
 from pdf_tools import cli
 from pdf_tools.core import desktop
 from pdf_tools.core.config import Settings, migrate_legacy
-from pdf_tools.ui.main_window import MainWindow
+from pdf_tools.ui.main_window import MainWindow, dispatch
 from pdf_tools.ui.theme import apply_theme, saved_theme
 from pdf_tools.ui.util import app_icon
 
 DESKTOP_ID = desktop.DESKTOP_ID
 NO_NATIVE_DIALOG_THEMES = ("", "qt5ct", "qt6ct")
 USAGE = """usage:
-  pdf-tools [file.pdf ...]                       open in the window (the running one, if any)
+  pdf-tools [file.pdf ...]                       open in the window used last (starts one if needed)
+  pdf-tools --new-window [file.pdf ...]          open in a new window
   pdf-tools --forward file.pdf LINE source.tex   SyncTeX: show where a source line is typeset
   pdf-tools --install-desktop | --uninstall-desktop
   pdf-tools COMMAND ...                          without the window, JSON output:
@@ -31,12 +32,13 @@ USAGE = """usage:
 
 
 def request(args):
-    """The message for the running window: {"open": [paths]} or {"forward": [pdf, line, source]}."""
+    """The message for the running app: {"open": [paths], "new_window": bool} or {"forward": [pdf, line, source]}."""
     if args[:1] == ["--forward"]:
         if len(args) != 4 or not args[2].isdigit():
             sys.exit(USAGE)
         return {"forward": [str(Path(args[1]).resolve()), int(args[2]), str(Path(args[3]).resolve())]}
-    return {"open": [str(Path(a).resolve()) for a in args]}
+    new_window = args[:1] == ["--new-window"]
+    return {"open": [str(Path(a).resolve()) for a in args[new_window:]], "new_window": new_window}
 
 
 def send_to_running(name, message):
@@ -113,7 +115,7 @@ def main():
     apply_theme(saved_theme(settings))
     win = MainWindow(settings)
     win.show()
-    server = serve(server_name, win.handle_message)
+    server = serve(server_name, dispatch)
     if message.get("open") or message.get("forward"):
         QTimer.singleShot(0, lambda: win.handle_message(message))
     code = app.exec()
