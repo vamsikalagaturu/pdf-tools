@@ -28,5 +28,19 @@ void pt_add_stroke(fz_context *ctx, pdf_document *doc, int page,
 void pt_rotate(fz_context *ctx, pdf_document *doc, int page, int degrees);
 
 /* Returns NULL on non-success only when called outside fz_try. */
+/* Page content, image, flatten, scrubbing, annotations; no GUI dependency. */
+void pt_place_image(fz_context *, pdf_document *, int page, const char *filename, fz_rect);
+void pt_place_text(fz_context *, pdf_document *, int page, const char *text,
+                   float x, float y, float fontsize, const float rgb[3]);
+void pt_append_image_page(fz_context *, pdf_document *, const char *filename);
+pdf_document *pt_flatten(fz_context *, pdf_document *, int dpi);
+int pt_redact_text(fz_context *, pdf_document *, const char *needle, int page_or_minus_1);
+#ifdef PT_USE_PCRE2
+int pt_redact_regex(fz_context *, pdf_document *, const char *pattern, int page_or_minus_1, int case_sensitive);
+#endif
+void pt_scrub(fz_context *, pdf_document *);
+void pt_crop_content(fz_context *, pdf_document *, int page, float margin);
+int pt_modify_annot(fz_context *, pdf_document *, int page, int index, int remove, const char *comment);
+
 fz_pixmap *pt_render(fz_context *ctx, pdf_document *doc, int page, float zoom);
 #endif
