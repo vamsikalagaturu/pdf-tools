@@ -33,6 +33,8 @@ void pt_place_image(fz_context *, pdf_document *, int page, const char *filename
 void pt_place_text(fz_context *, pdf_document *, int page, const char *text,
                    float x, float y, float fontsize, const float rgb[3]);
 void pt_append_image_page(fz_context *, pdf_document *, const char *filename);
+void pt_prepare_signature(fz_context *, const char *input, const char *output_png);
+void pt_graft_pages_with_forms(fz_context *, pdf_document *target, pdf_document *source, const int *pages, int count);
 pdf_document *pt_flatten(fz_context *, pdf_document *, int dpi);
 int pt_redact_text(fz_context *, pdf_document *, const char *needle, int page_or_minus_1);
 #ifdef PT_USE_PCRE2

@@ -314,11 +314,14 @@ int pt_redact_regex(fz_context *ctx,pdf_document *doc,const char *pattern,int on
                                 cap*=2;
                                 if(cap>2*1024*1024)fz_throw(ctx,FZ_ERROR_LIMIT,"page text exceeds regex limit");
                                 char *ss=realloc(str,cap);
-                                if(!ss)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");str=ss;
+                                if(!ss)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
+                                str=ss;
                                 fz_rect *rr=realloc(boxes,cap*sizeof(*rr));
-                                if(!rr)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");boxes=rr;
+                                if(!rr)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
+                                boxes=rr;
                                 int *ll=realloc(lines,cap*sizeof(*ll));
-                                if(!ll)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");lines=ll;
+                                if(!ll)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
+                                lines=ll;
                             }
                             for(int k=0;k<byte_count;k++){
                                 str[n]=bytes[k];boxes[n]=fz_rect_from_quad(c->quad);lines[n]=line_id;n++;
@@ -363,3 +366,105 @@ int pt_redact_regex(fz_context *ctx,pdf_document *doc,const char *pattern,int on
     return total;
 }
 #endif
+
+/* Copy form widget hierarchies as well as page objects. pdf_graft_page alone
+ * transfers /Annots but does not register those widgets under /AcroForm. */
+void pt_graft_pages_with_forms(fz_context *ctx,pdf_document *dst,pdf_document *src,
+                              const int *pages,int count)
+{
+    pdf_graft_map *map=pdf_new_graft_map(ctx,dst);
+    fz_try(ctx){
+        pdf_obj *srcroot=pdf_dict_get(ctx,pdf_trailer(ctx,src),PDF_NAME(Root));
+        pdf_obj *srcform=pdf_dict_get(ctx,srcroot,PDF_NAME(AcroForm));
+        pdf_obj *dstroot=pdf_dict_get(ctx,pdf_trailer(ctx,dst),PDF_NAME(Root));
+        pdf_obj *dstform=NULL,*fields=NULL;
+        for(int j=0;j<count;j++){
+            int id=pages[j];
+            pdf_graft_mapped_page(ctx,map,-1,src,id);
+            /* MuPDF page grafting omits /Annots by design: restore them via
+             * the same object map before registering AcroForm roots. */
+            pdf_obj *original=pdf_lookup_page_obj(ctx,src,id);
+            pdf_obj *source_annots=pdf_dict_get(ctx,original,PDF_NAME(Annots));
+            if(source_annots){
+                pdf_obj *copy_annots=pdf_graft_mapped_object(ctx,map,source_annots);
+                pdf_obj *newpage=pdf_lookup_page_obj(ctx,dst,pdf_count_pages(ctx,dst)-1);
+                pdf_dict_put(ctx,newpage,PDF_NAME(Annots),copy_annots);
+                pdf_drop_obj(ctx,copy_annots);
+            }
+            if(!srcform)continue;
+            pdf_page *pg=pdf_load_page(ctx,src,id);
+            fz_try(ctx){
+                for(pdf_annot *w=pdf_first_widget(ctx,pg);w;w=pdf_next_widget(ctx,w)){
+                    pdf_obj *field=pdf_annot_obj(ctx,w);
+                    pdf_obj *parent;
+                    while((parent=pdf_dict_get(ctx,field,PDF_NAME(Parent))))field=parent;
+                    pdf_obj *copy=pdf_graft_mapped_object(ctx,map,field);
+                    fz_try(ctx){
+                        if(!dstform){
+                            dstform=pdf_dict_get(ctx,dstroot,PDF_NAME(AcroForm));
+                            if(!dstform){
+                                pdf_obj *d=pdf_new_dict(ctx,dst,3);
+                                pdf_dict_put(ctx,dstroot,PDF_NAME(AcroForm),d);pdf_drop_obj(ctx,d);
+                                dstform=pdf_dict_get(ctx,dstroot,PDF_NAME(AcroForm));
+                            }
+                            fields=pdf_dict_get(ctx,dstform,PDF_NAME(Fields));
+                            if(!fields){
+                                pdf_obj *a=pdf_new_array(ctx,dst,4);
+                                pdf_dict_put(ctx,dstform,PDF_NAME(Fields),a);pdf_drop_obj(ctx,a);
+                                fields=pdf_dict_get(ctx,dstform,PDF_NAME(Fields));
+                            }
+                            pdf_obj *dr=pdf_dict_get(ctx,srcform,PDF_NAME(DR));
+                            if(dr && !pdf_dict_get(ctx,dstform,PDF_NAME(DR))){
+                                pdf_obj *clone=pdf_graft_mapped_object(ctx,map,dr);
+                                pdf_dict_put(ctx,dstform,PDF_NAME(DR),clone);pdf_drop_obj(ctx,clone);
+                            }
+                        }
+                        if(!pdf_array_contains(ctx,fields,copy))pdf_array_push(ctx,fields,copy);
+                    }
+                    fz_always(ctx)pdf_drop_obj(ctx,copy);
+                    fz_catch(ctx)fz_rethrow(ctx);
+                }
+            }
+            fz_always(ctx)pdf_drop_page(ctx,pg);
+            fz_catch(ctx)fz_rethrow(ctx);
+        }
+    }
+    fz_always(ctx)pdf_drop_graft_map(ctx,map);
+    fz_catch(ctx)fz_rethrow(ctx);
+}
+
+/* Turn a white-paper scanned signature into a tightly-cropped transparent PNG.
+ * Pixels above the white threshold become transparent; foreground is black. */
+void pt_prepare_signature(fz_context *ctx,const char *input,const char *output)
+{
+    fz_image *img=fz_new_image_from_file(ctx,input);
+    fz_pixmap *source=NULL,*rgb=NULL,*result=NULL;
+    fz_try(ctx){
+        source=fz_get_pixmap_from_image(ctx,img,NULL,NULL,NULL,NULL);
+        rgb=fz_convert_pixmap(ctx,source,fz_device_rgb(ctx),NULL,NULL,fz_default_color_params,0);
+        int w=rgb->w,h=rgb->h,minx=w,miny=h,maxx=-1,maxy=-1;
+        if(w>10000||h>10000)fz_throw(ctx,FZ_ERROR_LIMIT,"signature image too large");
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++){
+            const unsigned char *p=rgb->samples+y*rgb->stride+x*3;
+            int gray=(p[0]*299+p[1]*587+p[2]*114)/1000;
+            if(gray<225){
+                if(x<minx)minx=x;if(x>maxx)maxx=x;
+                if(y<miny)miny=y;if(y>maxy)maxy=y;
+            }
+        }
+        if(maxx<minx||maxy<miny)fz_throw(ctx,FZ_ERROR_ARGUMENT,"no signature ink found");
+        int ow=maxx-minx+1,oh=maxy-miny+1;
+        result=fz_new_pixmap(ctx,fz_device_rgb(ctx),ow,oh,NULL,1);
+        for(int y=0;y<oh;y++)for(int x=0;x<ow;x++){
+            const unsigned char *in=rgb->samples+(miny+y)*rgb->stride+(minx+x)*3;
+            unsigned char *out=result->samples+y*result->stride+x*4;
+            int gray=(in[0]*299+in[1]*587+in[2]*114)/1000;
+            int a=(225-gray)*2;
+            if(a<0)a=0;if(a>255)a=255;
+            out[0]=out[1]=out[2]=0;out[3]=(unsigned char)a;
+        }
+        fz_save_pixmap_as_png(ctx,result,output);
+    }
+    fz_always(ctx){fz_drop_pixmap(ctx,result);fz_drop_pixmap(ctx,rgb);fz_drop_pixmap(ctx,source);fz_drop_image(ctx,img);}
+    fz_catch(ctx)fz_rethrow(ctx);
+}

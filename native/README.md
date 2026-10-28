@@ -1,66 +1,91 @@
-# Native PDF Tools (C / MuPDF / raylib)
+# Native PDF Tools — C / MuPDF / raylib
 
-A **work-in-progress native port** of [pdf-tools](https://github.com/vamsikalagaturu/pdf-tools), isolated in `native/` on the `c-raylib-port` branch. The original Python/PySide6 application on `main` is unchanged. This is **not feature parity yet**.
+Native PDF-processing library and command-line interface. Developed in `native/`
+(on the `c-raylib-port` branch) alongside the original PyMuPDF/PySide6 application.
+The original application on `main` is unchanged. The backend can be reused by a
+future desktop/mobile raylib UI; the existing raylib editor is only a prototype.
 
-- `src/pdf.c`: shared MuPDF C engine for PDF documents, rendering and changes.
-- `src/cli.c`: headless PDF operations.
-- `src/gui.c`: minimal desktop editing canvas built with raylib (optional when raylib is installed).
-- `tests/`: page-range and PDF round-trip integration tests.
+## Build and test
 
-## Build
+Requirements: C11, CMake >=3.20, MuPDF C development headers and library.
+Optional: PCRE2 (regular-expression redaction), raylib (prototype GUI),
+`synctex` executable (LaTeX source synchronization).
 
-Install MuPDF headers and library (e.g. `libmupdf-dev`), a C11 compiler and CMake. Install raylib 5+ for the GUI.
-
-```bash
-cmake -S native -B build/native -DPT_BUILD_GUI=ON
+```sh
+cmake -S native -B build/native -DPT_BUILD_GUI=OFF
 cmake --build build/native -j
 ctest --test-dir build/native --output-on-failure
 ```
 
-Integration tests use PyMuPDF only for checking output files. The app itself has no Python runtime dependency.
+If MuPDF is not found automatically, set `-DMUPDF_INCLUDE_DIR=...` and
+`-DMUPDF_LIBRARY=...`. Library targets: `ptcore` (C API), `pdf-tools-c` (CLI).
+All mutating CLI commands write a new file; never overwrite the original.
 
-If MuPDF is not discoverable, set `-DMUPDF_INCLUDE_DIR=/path/to/include -DMUPDF_LIBRARY=/path/to/libmupdf.so`.
+## Commands
 
-## CLI
-
-```bash
-build/native/pdf-tools-c info input.pdf
-build/native/pdf-tools-c merge -o combined.pdf a.pdf b.pdf
-build/native/pdf-tools-c split input.pdf --every 2 -d parts
-build/native/pdf-tools-c pages input.pdf -o reordered.pdf --order 3,1-2 --rotate 1:90
-build/native/pdf-tools-c annotate input.pdf -o marked.pdf --page 1 --type highlight --rect 30,30,140,55
-build/native/pdf-tools-c annotate input.pdf -o note.pdf --page 1 --type note --rect 40,40,50,50 --text "Check this"
-build/native/pdf-tools-c annotate input.pdf -o text.pdf --page 1 --type text --rect 50,50,300,100 --text "Hello"
-build/native/pdf-tools-c draw input.pdf -o ink.pdf --page 1 --points '30,40;60,80;120,45'
-build/native/pdf-tools-c redact input.pdf -o clean.pdf --page 1 --rect 10,10,200,80
-build/native/pdf-tools-c search input.pdf --text 'example'
-build/native/pdf-tools-c render input.pdf -o preview.png --page 1 --dpi 144
-build/native/pdf-tools-c protect input.pdf -o private.pdf --new-password '...'
-build/native/pdf-tools-c unprotect private.pdf -o open.pdf --password '...'
+```sh
+pdf-tools-c info input.pdf
+pdf-tools-c inspect input.pdf                           # annotations and form field names/values
+pdf-tools-c search input.pdf --text 'hello'
+pdf-tools-c merge -o out.pdf a.pdf:1-3 b.pdf scan.png  # selected pages or image sources
+pdf-tools-c split input.pdf --every 2 -d parts
+pdf-tools-c split input.pdf --at 3,7 -d parts
+pdf-tools-c pages input.pdf -o out.pdf --order 3,1,2 --remove 2 --rotate 1:90
+pdf-tools-c pages input.pdf -o out.pdf --crop 1:20,20,400,500
+pdf-tools-c pages input.pdf -o out.pdf --crop-content 1-3
+pdf-tools-c fill input.pdf -o filled.pdf --field name=Jane
+pdf-tools-c annotate input.pdf -o out.pdf --page 1 --type highlight --rect 30,40,200,70
+pdf-tools-c annotate input.pdf -o out.pdf --page 1 --type note --rect 30,40,60,70 --text 'Review'
+pdf-tools-c edit-annotation input.pdf -o out.pdf --page 1 --index 0 --text 'Updated comment'
+pdf-tools-c edit-annotation input.pdf -o out.pdf --page 1 --index 0 --remove
+pdf-tools-c draw input.pdf -o out.pdf --page 1 --points '10,20;40,60;100,25'
+pdf-tools-c redact input.pdf -o out.pdf --page 1 --rect 10,10,100,60
+pdf-tools-c redact-text input.pdf -o out.pdf --text 'Secret'
+pdf-tools-c redact-text input.pdf -o out.pdf --regex 'AB[0-9]+'    # when compiled with PCRE2
+pdf-tools-c insert-text input.pdf -o out.pdf --page 1 --at 40,150 --text 'Hello' --size 18
+pdf-tools-c insert-image input.pdf -o out.pdf --page 1 --image photo.png --rect 30,40,120,100
+pdf-tools-c prepare-signature scan.jpg -o signature.png     # remove white background
+pdf-tools-c sign input.pdf -o out.pdf --page 1 --image signature.png --rect 30,40,140,90
+pdf-tools-c flatten input.pdf -o out.pdf --dpi 200          # rasterize pages
+pdf-tools-c scrub input.pdf -o out.pdf                      # remove common hidden data
+pdf-tools-c render input.pdf -o page.png --page 1 --dpi 144
+pdf-tools-c protect input.pdf -o out.pdf --new-password '...'
+pdf-tools-c unprotect input.pdf -o out.pdf --password '...'
+pdf-tools-c synctex input.pdf --source chapter.tex --line 42
+pdf-tools-c synctex input.pdf --page 2 --at 100,100
 ```
 
-For graphical editing, launch `build/native/pdf-tools-gui input.pdf`. Use the displayed shortcut keys and Save As path argument (`pdf-tools-gui input.pdf output.pdf`). Drawing, rectangle marks and ink are PDF objects (not rasterized). The GUI does not yet support forms, SyncTeX or full thumbnail/multitab UX.
+Numbers and page ranges are 1-based; annotation indices are 0-based. Coordinates
+are points (1/72 inch) relative to the page's top-left corner. Output is JSON
+where applicable. `--password` can unlock encrypted inputs.
 
-## Feature status
+## Functional coverage and limitations
 
-| Feature | Native CLI | raylib UI |
-|---|---|---|
-| Open/view/zoom/scroll | Render | Basic single-page viewer |
-| Merge/split/reorder/rotate | Yes | Not wired yet |
-| Highlight/underline/strikeout/squiggly | Yes | Highlight |
-| Notes / free-text annotations | Yes | Basic note/text placement |
-| Freehand drawing | Yes | Pen |
-| Apply redactions | Yes | Rectangle redaction |
-| Search | Yes | Not yet |
-| Password protect/unprotect | Yes | Not yet |
-| Form filling | Yes | Not yet |
-| Signatures/image insertion | Not yet | Not yet |
-| Undo/redo, SyncTeX, multi-page continuous layout | Not yet | Not yet |
+**Implemented in the C core:** page rendering, text search, merge/split (including
+selected pages and images), reorder/rotate/crop, crop-to-content, form values,
+markup/free-text/note/shape/ink annotations, update/remove annotations, text and
+regex redaction, direct ASCII text content insertion, image and visual signature
+insertion, scanned signature conversion, password protection, flattening, common
+metadata/script/attachment cleanup, and page/source SyncTeX lookups on desktop.
+The merge and page operations preserve simple AcroForm widgets.
 
-## Safety and licensing
+**Not yet at full parity:** rich Unicode and multi-line font-accurate text insertion;
+editing existing PDF text objects; full PDF metadata/font inventory; image/text
+object replacement; exact preservation of complex forms/signatures in every merge;
+secure deletion outside crops; exhaustive forensic redaction sanitization;
+platform-native Android/macOS file integrations; integrated SyncTeX parser (the
+CLI currently calls external `synctex`); complete undo/redo/edit-state model;
+and the production-quality UI.
 
-Redaction applies the MuPDF redaction operation; it is **not** a colored rectangle overlay. Thorough information sanitization and redaction verification from the Python implementation are **not yet replicated**, so do not rely on the native port for sensitive-document redaction yet. It writes a separate output file rather than overwriting its input. Passwords passed on the command line can appear in process lists.
+**Redaction:** MuPDF removes content at redaction rectangles and saves with garbage
+collection. The scrub routine additionally removes common metadata, embedded-file,
+script, and thumbnail references. This is **not** a guarantee that every hidden or
+historical data source was removed. Verify results before handling sensitive PDFs.
 
-The port is licensed AGPL-3.0-or-later, consistent with the original project and MuPDF's AGPL distribution. See the parent repository's `LICENSE`.
+**Signatures:** `sign` places a visual signature image. It does not create or
+verify cryptographic PDF signatures. `flatten` is rasterization (discards searchable
+text and form interactivity). The crop commands currently change page visibility;
+content outside the box may still exist in the PDF. Password arguments can be
+visible in process listings.
 
-**Platforms:** The portable engine can be compiled for Linux, macOS, Windows and Android, but the Android project/packaging and platform-native file pickers have not been ported yet. The raylib UI is initial desktop code, not a verified production-grade editor.
+**License:** AGPL-3.0-or-later (same as the parent repository and MuPDF's AGPL use).

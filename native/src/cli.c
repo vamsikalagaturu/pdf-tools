@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
+#include <ctype.h>
 #include <math.h>
 #include <errno.h>
 #ifdef _WIN32
@@ -28,6 +28,7 @@ static void help(void) {
          "  fill INPUT -o OUT --field NAME=VALUE (repeat --field)\n"
          "  flatten INPUT -o OUT [--dpi 200] (rasterize pages)\n"
          "  insert-image INPUT -o OUT --image PNG/JPG --page N --rect X0,Y0,X1,Y1\n"
+         "  prepare-signature SCAN.JPG -o SIGNATURE.PNG\n"
          "  sign INPUT -o OUT --image SIGNATURE.PNG --page N --rect X0,Y0,X1,Y1\n"
          "  insert-text INPUT -o OUT --page N --at X,Y --text WORDS [--size 12]\n"
          "  edit-annotation INPUT -o OUT --page N --index ZERO_BASED [--remove | --text COMMENT]\n"
@@ -89,10 +90,16 @@ static void cmd_info(fz_context *ctx,pdf_document *doc) {
     }
     puts("]}");
 }
+static int extension_is(const char *path, const char *ext) {
+    size_t n=strlen(path),k=strlen(ext);
+    if(n<k)return 0;
+    for(size_t i=0;i<k;i++)if(tolower((unsigned char)path[n-k+i])!=(unsigned char)ext[i])return 0;
+    return 1;
+}
 static int ends_image(const char *s) {
-    size_t n=strlen(s);
-    return (n>=4 && (!strcasecmp(s+n-4,".png")||!strcasecmp(s+n-4,".jpg")||!strcasecmp(s+n-4,".bmp"))) ||
-           (n>=5 && (!strcasecmp(s+n-5,".jpeg")||!strcasecmp(s+n-5,".tiff")));
+    return extension_is(s,".png") || extension_is(s,".jpg") ||
+           extension_is(s,".jpeg") || extension_is(s,".bmp") ||
+           extension_is(s,".tiff") || extension_is(s,".tif");
 }
 /* A source may be a PDF, an image, or file.pdf:1-3 (same syntax as Python CLI). */
 static void cmd_merge(fz_context *ctx,int argc,char **argv) {
@@ -105,22 +112,23 @@ static void cmd_merge(fz_context *ctx,int argc,char **argv) {
             const char *arg=argv[i];
             if(!strcmp(arg,out))fz_throw(ctx,FZ_ERROR_ARGUMENT,"output cannot be an input");
             if(ends_image(arg)) {pt_append_image_page(ctx,dst,arg);count++;continue;}
-            char *path=strdup(arg);
+            char *path=malloc(strlen(arg)+1);
             if(!path)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
+            strcpy(path,arg);
             char *rangestr=strstr(path,".pdf:");
             if(!rangestr)rangestr=strstr(path,".PDF:");
             if(rangestr){rangestr[4]=0;rangestr+=5;}
             fz_try(ctx){
                 src=pt_open(ctx,path,NULL);
                 int n=pdf_count_pages(ctx,src);
-                if(rangestr){
-                    int *chosen=malloc((size_t)(n+8192)*sizeof(int));
-                    if(!chosen)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
-                    int k=pt_parse_pages(rangestr,n,chosen,(size_t)n+8192);
-                    if(k<=0)fz_throw(ctx,FZ_ERROR_ARGUMENT,"invalid source page range: %s",arg);
-                    for(int j=0;j<k;j++){pdf_graft_page(ctx,dst,-1,src,chosen[j]);count++;}
-                    free(chosen);
-                } else for(int j=0;j<n;j++){pdf_graft_page(ctx,dst,-1,src,j);count++;}
+                int *chosen=malloc((size_t)(n+8192)*sizeof(int));
+                if(!chosen)fz_throw(ctx,FZ_ERROR_SYSTEM,"out of memory");
+                int k=rangestr?pt_parse_pages(rangestr,n,chosen,(size_t)n+8192):n;
+                if(!rangestr)for(int j=0;j<n;j++)chosen[j]=j;
+                if(k<=0)fz_throw(ctx,FZ_ERROR_ARGUMENT,"invalid source page range: %s",arg);
+                pt_graft_pages_with_forms(ctx,dst,src,chosen,k);
+                count+=k;
+                free(chosen);
             }
             fz_always(ctx){pdf_drop_document(ctx,src);src=NULL;free(path);}
             fz_catch(ctx)fz_rethrow(ctx);
@@ -519,9 +527,14 @@ static void cmd_redact_text(fz_context *ctx,int argc,char **argv,pdf_document *d
     printf("{\"redactions\":%d,\"ok\":true}\n",hits);
 }
 
+static void cmd_signature_file(fz_context *ctx,int argc,char **argv) {
+    pt_prepare_signature(ctx,argv[2],out_path(argc,argv,argv[2],ctx));
+    printf("{\"output\":");json_string(opt(argc,argv,"-o"));puts(",\"ok\":true}");
+}
 static void dispatch(fz_context *ctx,int argc,char **argv) {
     const char *cmd=argv[1];
     if(!strcmp(cmd,"merge")){cmd_merge(ctx,argc,argv);return;}
+    if(!strcmp(cmd,"prepare-signature")){if(argc<3)fz_throw(ctx,FZ_ERROR_ARGUMENT,"missing INPUT");cmd_signature_file(ctx,argc,argv);return;}
     if(!strcmp(cmd,"synctex")){if(argc<3)fz_throw(ctx,FZ_ERROR_ARGUMENT,"missing INPUT");cmd_synctex(ctx,argc,argv);return;}
     if(argc<3)fz_throw(ctx,FZ_ERROR_ARGUMENT,"missing INPUT");
     const char *input=argv[2];

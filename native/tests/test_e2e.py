@@ -80,6 +80,23 @@ def main():
              "--rect", "50,120,180,160")
         with pymupdf.open(stamped) as doc:
             assert len(doc[0].get_images()) == 1
+        # Signature scan preprocessing produces a transparent, cropped asset.
+        sign_scan = root / "scan.png"
+        sign_doc = pymupdf.open()
+        sign_page = sign_doc.new_page(width=250, height=140)
+        sign_page.insert_text((60, 70), "Signature", fontsize=18)
+        sign_page.get_pixmap(alpha=False).save(sign_scan)
+        sign_doc.close()
+        prepared = root / "signature.png"
+        call("prepare-signature", sign_scan, "-o", prepared)
+        parsed = pymupdf.Pixmap(str(prepared))
+        assert parsed.alpha and parsed.width < 250 and parsed.height < 140
+        # Grafting only pages loses /Annots and AcroForm registration: test both.
+        merged_form = root / "merged-form.pdf"
+        call("merge", "-o", merged_form, a, b)
+        with pymupdf.open(merged_form) as doc:
+            assert next(doc[0].widgets()).field_name == "fullname"
+            assert len(doc) == 3
         merged_img = root / "merged-img.pdf"
         call("merge", "-o", merged_img, f"{a}:2", img)
         with pymupdf.open(merged_img) as doc:
