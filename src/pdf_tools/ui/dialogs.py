@@ -4,11 +4,8 @@ from PySide6.QtCore import QFile, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QColorDialog,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -18,17 +15,15 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSpinBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from pdf_tools.core.fonts import resolve_font
 from pdf_tools.core.signatures import ink_from_scan, list_signatures, store_signature
-from pdf_tools.ui.util import png_bytes, swatch_icon
+from pdf_tools.ui.util import png_bytes
 
 
 class ExportDialog(QDialog):
@@ -56,51 +51,68 @@ class ExportDialog(QDialog):
         form.addRow(buttons)
 
 
-class TextDialog(QDialog):
-    def __init__(self, parent, doc, fonts, text, font, size, rgb):
+class PasswordDialog(QDialog):
+    def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Text box")
-        self.doc = doc
-        self.rgb = rgb
+        self.setWindowTitle("Protect with password")
         form = QFormLayout(self)
-        self.text = QPlainTextEdit(text)
-        self.text.setMinimumSize(380, 110)
-        form.addRow("Text:", self.text)
-        self.font = QComboBox()
-        self.font.addItems(fonts if font in fonts else [font, *fonts])
-        self.font.setCurrentText(font)
-        form.addRow("Font:", self.font)
-        self.used = QLabel()
-        self.used.setEnabled(False)
-        form.addRow("", self.used)
-        self.size = QDoubleSpinBox()
-        self.size.setRange(4, 96)
-        self.size.setSingleStep(0.5)
-        self.size.setValue(size)
-        form.addRow("Size (pt):", self.size)
-        self.colour = QToolButton()
-        self.colour.setIcon(swatch_icon(rgb))
-        self.colour.clicked.connect(self.pick_colour)
-        form.addRow("Colour:", self.colour)
+        form.addRow(QLabel("Saves an AES-256 encrypted copy; it opens only with this password."))
+        self.first, self.second = QLineEdit(), QLineEdit()
+        for edit in (self.first, self.second):
+            edit.setEchoMode(QLineEdit.Password)
+            edit.textChanged.connect(self.check)
+        form.addRow("Password:", self.first)
+        form.addRow("Repeat:", self.second)
+        self.hint = QLabel()
+        self.hint.setEnabled(False)
+        form.addRow("", self.hint)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Save copy...")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        form.addRow(self.buttons)
+        self.check()
+
+    def check(self):
+        a, b = self.first.text(), self.second.text()
+        self.hint.setText("" if not b or a == b else "The passwords differ")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(a) and a == b)
+
+    def password(self):
+        return self.first.text()
+
+
+class SplitDialog(QDialog):
+    def __init__(self, parent, pages, ticked):
+        super().__init__(parent)
+        self.setWindowTitle("Split")
+        self.ticked = ticked
+        form = QFormLayout(self)
+        self.by_count = QRadioButton("Every")
+        self.count = QSpinBox()
+        self.count.setRange(1, max(1, pages))
+        self.count.setValue(1)
+        self.count.setSuffix(" page(s)")
+        row = QHBoxLayout()
+        row.addWidget(self.by_count)
+        row.addWidget(self.count)
+        row.addStretch()
+        form.addRow(row)
+        starts = ", ".join(str(i + 1) for i in ticked if i)
+        self.by_ticks = QRadioButton(f"Before each ticked page ({starts})" if starts else "Before each ticked page (none ticked)")
+        self.by_ticks.setEnabled(bool(starts))
+        form.addRow(self.by_ticks)
+        (self.by_ticks if starts else self.by_count).setChecked(True)
+        form.addRow(QLabel(f"{pages} pages; parts are saved as name-part1.pdf, name-part2.pdf, ... in a folder you choose."))
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Split...")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
-        self.font.currentTextChanged.connect(lambda _: self.update_used())
-        self.text.textChanged.connect(self.update_used)
-        self.update_used()
 
-    def update_used(self):
-        self.used.setText("Renders with: " + resolve_font(self.doc, self.font.currentText(), self.text.toPlainText())[3])
-
-    def pick_colour(self):
-        c = QColorDialog.getColor(QColor(*self.rgb), self, "Text colour")
-        if c.isValid():
-            self.rgb = (c.red(), c.green(), c.blue())
-            self.colour.setIcon(swatch_icon(self.rgb))
-
-    def values(self):
-        return self.text.toPlainText().rstrip("\n"), self.font.currentText(), self.size.value(), self.rgb
+    def choice(self):
+        """(every, at) for core.pages.split_points."""
+        return (None, self.ticked) if self.by_ticks.isChecked() else (self.count.value(), ())
 
 
 class SignaturePad(QWidget):

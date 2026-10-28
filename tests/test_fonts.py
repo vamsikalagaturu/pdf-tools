@@ -3,13 +3,43 @@ import pytest
 
 from pdf_tools.core.fonts import (
     base_font_name,
+    font_family,
+    font_style,
     fontconfig,
     fontconfig_pattern,
     pdf_font_names,
     resolve_font,
+    styled_font,
     system_font_file,
     text_size,
+    wrap_lines,
 )
+
+
+@pytest.mark.parametrize("name, bold, italic, expected", [
+    ("Helvetica", True, False, "Helvetica-Bold"),
+    ("Helvetica-Bold", True, True, "Helvetica-BoldOblique"),
+    ("Times-Bold", False, False, "Times-Roman"),
+    ("ArialMT", True, False, "Arial-Bold"),
+    ("Arial-BoldItalicMT", False, True, "Arial-Italic"),
+])
+def test_styled_font_names(name, bold, italic, expected):
+    assert styled_font(name, bold, italic) == expected
+    assert font_style(expected) == (bold, italic)
+
+
+def test_styled_font_prefers_the_documents_own_variant():
+    assert styled_font("ArialMT", True, False, ["ArialMT", "Arial-BoldMT"]) == "Arial-BoldMT"
+    assert font_family("ABCDEF+Arial-BoldMT") == "Arial"
+
+
+def test_wrap_lines_breaks_at_the_box_width():
+    font = pymupdf.Font("helv")
+    obj = {"text": "one two three four five six", "size": 10, "width": 60}
+    lines = wrap_lines(font, obj)
+    assert len(lines) > 1 and " ".join(lines) == obj["text"]
+    assert all(font.text_length(line, fontsize=10) <= 60 for line in lines)
+    assert text_size(font, obj)[0] == 60
 
 needs_fontconfig = pytest.mark.skipif(not fontconfig(), reason="libfontconfig not available")
 

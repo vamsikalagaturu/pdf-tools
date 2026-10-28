@@ -1,7 +1,11 @@
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
+    QColorDialog,
+    QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -11,6 +15,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from pdf_tools.ui import icons
 from pdf_tools.ui.util import swatch_icon
 
 STYLE = """
@@ -97,3 +102,65 @@ class Popover(QFrame):
         self.hide()
         self.deleteLater()
         self.on_delete()
+
+
+class FormatBar(QFrame):
+    """Floating font controls over a text box being typed: family, size, bold, italic, colour."""
+
+    def __init__(self, parent, families, family, size, bold, italic, rgb, on_change):
+        super().__init__(parent)
+        self.setObjectName("formatbar")
+        self.setCursor(Qt.ArrowCursor)
+        self.setStyleSheet(
+            "QFrame#formatbar { background: palette(window); border: 1px solid palette(mid); border-radius: 6px; }"
+        )
+        self.rgb, self.on_change = tuple(rgb), on_change
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(4)
+        self.family = QComboBox()
+        self.family.addItems(families if family in families else [family, *families])
+        self.family.setCurrentText(family)
+        self.size = QDoubleSpinBox()
+        self.size.setRange(4, 96)
+        self.size.setSingleStep(0.5)
+        self.size.setValue(size)
+        self.size.setSuffix(" pt")
+        self.bold, self.italic, self.colour = QToolButton(), QToolButton(), QToolButton()
+        for button, name, tip, on in ((self.bold, "bold", "Bold", bold), (self.italic, "italic", "Italic", italic)):
+            button.setCheckable(True)
+            button.setChecked(on)
+            button.setToolTip(tip)
+            icons.bind(button, name)
+        self.colour.setIcon(swatch_icon(self.rgb))
+        self.colour.setToolTip("Text colour")
+        self.hint = QLabel()
+        self.hint.setEnabled(False)
+        for w in (self.family, self.size, self.bold, self.italic, self.colour, self.hint):
+            lay.addWidget(w)
+        self.family.currentTextChanged.connect(lambda _: self.changed())
+        self.size.valueChanged.connect(lambda _: self.changed())
+        self.bold.toggled.connect(lambda _: self.changed())
+        self.italic.toggled.connect(lambda _: self.changed())
+        self.colour.clicked.connect(self.pick_colour)
+
+    def values(self):
+        return self.family.currentText(), self.size.value(), self.bold.isChecked(), self.italic.isChecked(), self.rgb
+
+    def changed(self):
+        self.on_change(*self.values())
+
+    def pick_colour(self):
+        self.picking = True
+        c = QColorDialog.getColor(QColor(*self.rgb), self, "Text colour")
+        self.picking = False
+        if c.isValid():
+            self.rgb = (c.red(), c.green(), c.blue())
+            self.colour.setIcon(swatch_icon(self.rgb))
+            self.changed()
+
+    def has_focus(self):
+        if getattr(self, "picking", False):
+            return True
+        focused = QApplication.focusWidget()
+        return focused is not None and (focused is self or self.isAncestorOf(focused) or self.family.view().isAncestorOf(focused))

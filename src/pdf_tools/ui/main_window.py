@@ -177,9 +177,11 @@ class MainWindow(QMainWindow):
                 tab = self.new_tab()
                 self.docs.setCurrentWidget(tab)
                 try:
-                    tab.load(path)
+                    loaded = tab.load(path)
                 except Exception as e:
                     QMessageBox.critical(self, APP_NAME, f"Cannot open {path.name}:\n{e}")
+                    loaded = None
+                if not loaded:
                     self.remove_tab(tab)
                     continue
                 # the tab was just made visible; fit once its size is laid out
@@ -187,6 +189,20 @@ class MainWindow(QMainWindow):
             self.docs.setCurrentWidget(tab)
         if from_home and self.tabs():
             self.drop_page(self.start)
+
+    def handle_message(self, message):
+        """A launch request: {"open": [paths]} or {"forward": [pdf, line, source]} (SyncTeX forward search)."""
+        if message.get("forward"):
+            pdf, line, source = message["forward"]
+            self.open_paths([pdf])
+            tab = next((t for t in self.tabs() if t.doc and t.doc_path.resolve() == Path(pdf).resolve()), None)
+            if tab:
+                # after open_paths' deferred fit, which would scroll back to the top
+                QTimer.singleShot(0, lambda: tab.forward_search(source, line))
+        elif message.get("open"):
+            self.open_paths(message["open"])
+        self.raise_()
+        self.activateWindow()
 
     def new_tab(self):
         tab = EditTab(self.settings)
@@ -268,7 +284,9 @@ class MainWindow(QMainWindow):
         f.addActions([self.a_open, self.a_close_tab])
         if e:
             f.addSeparator()
-            f.addActions([e.a_save, e.a_save_as, e.a_export])
+            f.addActions([e.a_save, e.a_save_as, e.a_export, e.a_split])
+            f.addSeparator()
+            f.addActions([e.a_protect, e.a_unprotect])
             f.addSeparator()
             f.addActions([e.a_print, e.a_print_preview])
         f.addSeparator()
@@ -293,7 +311,13 @@ class MainWindow(QMainWindow):
             t.addActions([e.a_snap, e.a_auto])
             t.addSeparator()
             t.addAction(e.a_highlight_colour)
-            subs += [m, t]
+            p = menu.addMenu("Pages")
+            p.addActions([e.a_rotate_left, e.a_rotate_right])
+            p.addSeparator()
+            p.addActions([e.a_fit_content, e.a_uncrop])
+            p.addSeparator()
+            p.addActions([e.a_insert_pages, e.a_remove_pages])
+            subs += [m, t, p]
         v = menu.addMenu("View")
         if e:
             v.addActions([e.a_sidebar, e.a_continuous])

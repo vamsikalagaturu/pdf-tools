@@ -12,6 +12,21 @@ def parse_ranges(text, n):
     return sorted(pages)
 
 
+def ordered_ranges(text, n):
+    """Parse '3,1-2,9-7' into 0-based page indices in the given order (descending ranges count down)."""
+    pages = []
+    for part in text.replace(" ", "").split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        lo, hi = int(lo), int(hi or lo)
+        if not (1 <= lo <= n and 1 <= hi <= n):
+            raise ValueError(part)
+        step = 1 if hi >= lo else -1
+        pages += range(lo - 1, hi - 1 + step, step)
+    return pages
+
+
 def format_ranges(pages):
     out, i = [], 0
     while i < len(pages):

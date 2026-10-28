@@ -1,11 +1,18 @@
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsProxyWidget, QGraphicsRectItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import (
+    QGraphicsItem,
+    QGraphicsProxyWidget,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsTextItem,
+    QGraphicsView,
+)
 
 HANDLE_PX = 10
 CLICK_SLOP_PX = 4
-MOVABLE = {"redact", "text", "sign", "note"}
-RESIZABLE = {"redact", "sign"}
+MOVABLE = {"redact", "text", "sign", "note", "crop"}
+RESIZABLE = {"redact", "sign", "crop"}
 EDITABLE = {"text"}
 CURSORS = {
     "view": Qt.IBeamCursor,
@@ -14,6 +21,7 @@ CURSORS = {
     "note": Qt.PointingHandCursor,
     "text": Qt.IBeamCursor,
     "sign": Qt.CrossCursor,
+    "crop": Qt.CrossCursor,
 }
 
 
@@ -36,7 +44,7 @@ class ObjItem(QGraphicsRectItem):
         self.hovered = False
 
     def resizable(self):
-        return self.kind in RESIZABLE and self.isSelected()
+        return self.kind in RESIZABLE and (self.isSelected() or self.kind == "crop")
 
     def handle_rect(self):
         s = HANDLE_PX / self.scene().views()[0].transform().m11()
@@ -58,6 +66,12 @@ class ObjItem(QGraphicsRectItem):
             for i in (1, 2, 3):
                 y = r.top() + r.height() * i / 4.5
                 p.drawLine(QPointF(r.left() + 3, y), QPointF(r.right() - 3, y))
+        elif self.kind == "crop":
+            p.setPen(QPen(QColor("#1a73e8"), 0, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r)
+            p.fillRect(self.handle_rect(), QColor("#1a73e8"))
+            return
         elif self.image is not None:
             p.drawImage(r, self.image)
         if self.isSelected() or (self.kind == "annot" and self.hovered):
@@ -135,6 +149,41 @@ class ObjItem(QGraphicsRectItem):
             QTimer.singleShot(0, lambda obj=self.obj: self.editor.edit_obj(obj))
 
 
+class TextEditItem(QGraphicsTextItem):
+    """A text box being typed on the page; `finished` fires on Esc, Ctrl+Enter or when focus leaves it and `bar`."""
+
+    finished = Signal()
+
+    def __init__(self, bar_has_focus):
+        super().__init__()
+        self.bar_has_focus = bar_has_focus
+        self.setTextInteractionFlags(Qt.TextEditorInteraction)
+        self.document().setDocumentMargin(0)
+        self.setZValue(4)
+
+    def paint(self, p, option, widget=None):
+        super().paint(p, option, widget)
+        p.setPen(QPen(QColor("#1a73e8"), 0, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        r = self.boundingRect()
+        p.drawRect(r.adjusted(-2, -2, 2, 2) if r.width() > 4 else QRectF(-2, -2, 12, r.height() + 4))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape or (e.key() in (Qt.Key_Return, Qt.Key_Enter) and e.modifiers() & Qt.ControlModifier):
+            self.finished.emit()
+            return
+        super().keyPressEvent(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        # deferred: focus has not reached its new owner yet
+        QTimer.singleShot(0, self.check_focus)
+
+    def check_focus(self):
+        if self.scene() is not None and not self.hasFocus() and not self.bar_has_focus():
+            self.finished.emit()
+
+
 class PageView(QGraphicsView):
     """Page canvas. Drags become a rectangle band or a text-flow selection, as `selection_mode` decides."""
 
@@ -144,6 +193,7 @@ class PageView(QGraphicsView):
     flow_changed = Signal(QPointF, QPointF, bool)
     clicked = Signal(QPointF)
     zoom_step = Signal(float)
+    sync_clicked = Signal(QPointF)
 
     def __init__(self, tool, selection_mode):
         super().__init__()
@@ -165,10 +215,13 @@ class PageView(QGraphicsView):
         self.viewport().setCursor(CURSORS[self.tool()])
 
     def on_object(self, pos):
-        return any(isinstance(i, (ObjItem, QGraphicsProxyWidget)) for i in self.items(pos))
+        return any(isinstance(i, (ObjItem, QGraphicsProxyWidget, TextEditItem)) for i in self.items(pos))
 
     def mousePressEvent(self, e):
         pos = e.position().toPoint()
+        if e.button() == Qt.LeftButton and e.modifiers() & Qt.ControlModifier:
+            self.sync_clicked.emit(self.mapToScene(pos))
+            return
         if e.button() == Qt.LeftButton:
             self.pressed.emit()
         if e.button() != Qt.LeftButton or self.on_object(pos):

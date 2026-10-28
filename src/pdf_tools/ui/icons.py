@@ -45,6 +45,14 @@ LUCIDE = {
     "copy": "copy",
     "print": "printer",
     "about": "info",
+    "rotate": "rotate-cw",
+    "rotate-left": "rotate-ccw",
+    "crop": "crop",
+    "lock": "lock",
+    "unlock": "lock-open",
+    "split": "scissors",
+    "bold": "bold",
+    "italic": "italic",
 }
 SIZE = 48
 

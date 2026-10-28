@@ -17,6 +17,7 @@ SETTINGS = {
     "highlight_colour": ("#ffe45c", "Colour of new background highlights"),
     "ink_colour": ("#c62828", "Colour of new underline / strikethrough / squiggly / text-colour marks"),
     "highlight_style": ("highlight", "highlight | underline | strikeout | squiggly | textcolour"),
+    "editor_command": ("", "SyncTeX Ctrl+click opens the source with this; %f = file, %l = line (e.g. code -g %f:%l)"),
     "last_folder": ("", "Folder the Open dialog starts in"),
     "last_signature": ("", "Signature preselected in the Sign dialog"),
     "recent_files": ([], "Recently opened PDFs, newest first"),

@@ -126,10 +126,70 @@ def resolve_font(doc, name, text):
     return "helv", None, pymupdf.Font("helv"), "Helvetica (fallback)"
 
 
+BASE14_FAMILIES = {
+    "helvetica": ("Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique"),
+    "times": ("Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"),
+    "courier": ("Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"),
+}
+
+
+def name_tokens(name):
+    return [re.sub(r"(PSMT|MT|PS)$", "", t) for t in re.split(r"[-\s,]+", base_font_name(name)) if t]
+
+
+def font_style(name):
+    """(bold, italic) as the font name says."""
+    words = " ".join(name_tokens(name)).lower()
+    return "bold" in words or "black" in words, "italic" in words or "oblique" in words
+
+
+def font_family(name):
+    for family, variants in BASE14_FAMILIES.items():
+        if base_font_name(name) in variants:
+            return variants[0]
+    style = re.compile(r"(bold|italic|oblique|regular|roman|book)+$", re.I)
+    kept = [t for t in name_tokens(name) if not style.fullmatch(t)]
+    return " ".join(kept) or base_font_name(name)
+
+
+def styled_font(name, bold, italic, candidates=()):
+    """The bold/italic variant of font `name`: a matching font from `candidates` (e.g. the PDF's), a standard
+    variant for the base-14 families, else 'Family-Bold' style names that system font matching resolves."""
+    family = font_family(name)
+    for candidate in candidates:
+        if font_family(candidate) == family and font_style(candidate) == (bold, italic):
+            return candidate
+    for variants in BASE14_FAMILIES.values():
+        if family == variants[0]:
+            return variants[bold + 2 * italic]
+    suffix = ("Bold" if bold else "") + ("Italic" if italic else "")
+    return f"{family}-{suffix}" if suffix else family
+
+
+def wrap_lines(font, obj):
+    """The text's lines, word-wrapped to obj["width"] when the box has one."""
+    width, size = obj.get("width"), obj["size"]
+    lines = []
+    for para in obj["text"].split("\n"):
+        if not width:
+            lines.append(para)
+            continue
+        line = ""
+        for word in para.split(" "):
+            candidate = f"{line} {word}" if line else word
+            if line and font.text_length(candidate, fontsize=size) > width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        lines.append(line)
+    return lines
+
+
 def text_size(font, obj):
-    lines = obj["text"].split("\n")
+    lines = wrap_lines(font, obj)
     size = obj["size"]
-    width = max(font.text_length(line, fontsize=size) for line in lines)
+    width = obj.get("width") or max(font.text_length(line, fontsize=size) for line in lines)
     height = size * (LINE_SPACING * (len(lines) - 1) + font.ascender - font.descender)
     return max(width, 1), max(height, 1)
 
@@ -140,6 +200,6 @@ def draw_text(page, obj, fonts_doc):
         page.insert_font(fontname=key, fontbuffer=buf)
     size = obj["size"]
     x, y = obj["rect"].x0, obj["rect"].y0 + font.ascender * size
-    for line in obj["text"].split("\n"):
+    for line in wrap_lines(font, obj):
         page.insert_text((x, y), line, fontname=key, fontsize=size, color=unit(obj["rgb"]))
         y += size * LINE_SPACING

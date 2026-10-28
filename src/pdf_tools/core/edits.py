@@ -53,15 +53,70 @@ def set_annot_texts(doc, texts):
             annot.update()
 
 
-def apply_edits(path, items, pages=None, forms=None, sizes=None, deleted=(), annot_text=None):
-    """Return the edited PDF bytes (optionally only `pages`) and any text left under redactions.
+class PasswordError(ValueError):
+    pass
+
+
+def open_pdf(path, password=None, inserted=()):
+    """Open `path` (unlocked with `password`) with the pages of each inserted (path, page count) appended."""
+    doc = pymupdf.open(path)
+    if doc.needs_pass and not doc.authenticate(password or ""):
+        doc.close()
+        raise PasswordError(f"Wrong password for {path}")
+    for extra, _ in inserted:
+        src = pymupdf.open(extra)
+        doc.insert_pdf(src)
+        src.close()
+    return doc
+
+
+def text_under(page, rect):
+    """Text whose characters are centred inside `rect` (a neighbour's glyph box may only touch it)."""
+    chars = [
+        c["c"] for block in page.get_text("rawdict", clip=rect)["blocks"] for line in block.get("lines", [])
+        for span in line["spans"] for c in span["chars"]
+        if pymupdf.Rect(c["bbox"]).tl + (pymupdf.Rect(c["bbox"]).br - pymupdf.Rect(c["bbox"]).tl) * 0.5 in rect
+    ]
+    return "".join(chars).strip()
+
+
+def crop_page(page, rect):
+    """Crop to `rect` (page coordinates) and delete the text, images and drawings entirely outside it."""
+    full = page.rect * page.derotation_matrix
+    rect = pymupdf.Rect(rect) & full
+    for strip in (
+        pymupdf.Rect(full.x0, full.y0, full.x1, rect.y0), pymupdf.Rect(full.x0, rect.y1, full.x1, full.y1),
+        pymupdf.Rect(full.x0, rect.y0, rect.x0, rect.y1), pymupdf.Rect(rect.x1, rect.y0, full.x1, rect.y1),
+    ):
+        if not strip.is_empty:
+            page.add_redact_annot(strip, fill=False)
+    page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS, graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED)
+    page.set_cropbox(rect + (page.cropbox_position.x, page.cropbox_position.y) * 2)
+
+
+def scrub(doc):
+    """Remove what a redacted file must not carry: metadata, attachments, scripts, hidden text, thumbnails."""
+    doc.scrub(
+        clean_pages=False, redactions=False, remove_links=False, reset_fields=False, reset_responses=False,
+        attached_files=True, embedded_files=True, hidden_text=True, javascript=True, metadata=True,
+        thumbnails=True, xml_metadata=True,
+    )
+
+
+def apply_edits(
+    path, items, pages=None, forms=None, sizes=None, deleted=(), annot_text=None,
+    rotation=None, crop=None, inserted=(), password=None,
+):
+    """Return the edited PDF bytes and any text left under redactions.
 
     items: {page: [{"kind": "redact"|"text"|"sign"|"highlight"|"note", "rect": Rect, ...}]};
     forms: {(page, xref): value}; sizes: {(page, xref): fontsize} for fields shrunk to fit;
-    deleted: {(page, xref)} of existing annotations to remove; annot_text: {(page, xref): new comment}.
+    deleted: {(page, xref)} of existing annotations to remove; annot_text: {(page, xref): new comment};
+    rotation: {page: degrees added}; crop: {page: Rect}; inserted: PDFs appended after the file's own pages;
+    pages: the output pages in order (default all). Pages are numbered as in open_pdf(path, password, inserted). Redactions and crops also scrub hidden data.
     """
-    doc = pymupdf.open(path)
-    fonts_doc = pymupdf.open(path)
+    doc = open_pdf(path, password, inserted)
+    fonts_doc = open_pdf(path, password, inserted)
     sizes = sizes or {}
     leaks = []
     remove_annots(doc, deleted)
@@ -79,7 +134,7 @@ def apply_edits(path, items, pages=None, forms=None, sizes=None, deleted=(), ann
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
             for o in redacts:
                 page.draw_rect(o["rect"] + BLEED, color=None, fill=unit(o["rgb"]))
-            leaks += [(pno + 1, t.strip()) for o in redacts if (t := page.get_text(clip=o["rect"])).strip()]
+            leaks += [(pno + 1, t) for o in redacts if (t := text_under(page, o["rect"]))]
         for o in objs:
             if o["kind"] == "text":
                 draw_text(page, o, fonts_doc)
@@ -87,12 +142,26 @@ def apply_edits(path, items, pages=None, forms=None, sizes=None, deleted=(), ann
                 page.insert_image(o["rect"], stream=o["png"])
             elif o["kind"] in ("highlight", "note"):
                 add_annotation(page, o)
+    for pno, rect in (crop or {}).items():
+        crop_page(doc[pno], rect)
+    for pno, degrees in (rotation or {}).items():
+        doc[pno].set_rotation((doc[pno].rotation + degrees) % 360)
+    if crop or any(o["kind"] == "redact" for objs in items.values() for o in objs):
+        scrub(doc)
     if pages is not None:
         doc.select(pages)
     data = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
     fonts_doc.close()
     return data, leaks
+
+
+def protect(data, password):
+    """The same PDF encrypted with AES-256, opened by `password` (also the owner password)."""
+    doc = pymupdf.open("pdf", data)
+    out = doc.tobytes(garbage=4, deflate=True, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw=password, owner_pw=password)
+    doc.close()
+    return out
 
 
 def flatten(data, dpi):

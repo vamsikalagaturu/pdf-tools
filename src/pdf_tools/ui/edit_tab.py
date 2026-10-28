@@ -1,49 +1,56 @@
 import os
+import shlex
 import statistics
 import tempfile
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QEvent, QFile, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QFile,
+    QFileSystemWatcher,
+    QPoint,
+    QPointF,
+    QProcess,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QBrush,
     QColor,
-    QFontMetrics,
+    QCursor,
+    QFont,
+    QFontDatabase,
     QIcon,
     QImage,
     QKeySequence,
-    QPainter,
     QPixmap,
     QShortcut,
-    QTextLayout,
-    QTextOption,
-    QTransform,
 )
-from PySide6.QtPrintSupport import QAbstractPrintDialog, QPrintDialog, QPrinter, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QColorDialog,
-    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
-    QRadioButton,
     QMenu,
     QSizePolicy,
     QSplitter,
-    QHeaderView,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -54,28 +61,48 @@ from PySide6.QtWidgets import (
 )
 
 from pdf_tools import APP_NAME
-from pdf_tools.core.edits import apply_edits, flatten, remove_annots
-from pdf_tools.core.fonts import DEFAULT_FONTS, base_font_name, draw_text, pdf_font_names, resolve_font, text_size
-from pdf_tools.core.forms import is_on
+from pdf_tools.core.edit_list import DOCUMENT, count_edits, discard, edit_entries
+from pdf_tools.core.edits import apply_edits, flatten, open_pdf, protect, remove_annots
+from pdf_tools.core.fonts import (
+    DEFAULT_FONTS,
+    base_font_name,
+    draw_text,
+    font_family,
+    font_style,
+    pdf_font_names,
+    resolve_font,
+    styled_font,
+    text_size,
+)
+from pdf_tools.core.pages import content_rect, split_points
 from pdf_tools.core.ranges import format_ranges, parse_ranges
 from pdf_tools.core.selection import flow_select, reading_order_words
+from pdf_tools.core.synctex import SyncTex
 from pdf_tools.ui import icons
-from pdf_tools.ui.dialogs import ExportDialog, SignatureDialog, TextDialog
-from pdf_tools.ui.page_view import ObjItem, PageView
-from pdf_tools.ui.popover import Popover
+from pdf_tools.ui.dialogs import ExportDialog, PasswordDialog, SignatureDialog, SplitDialog
+from pdf_tools.ui.edits_panel import EditsPanel, shorten
+from pdf_tools.ui.form_fields import FormFields
+from pdf_tools.ui.page_view import ObjItem, PageView, TextEditItem
+from pdf_tools.ui.popover import FormatBar, Popover
+from pdf_tools.ui.printing import print_pdf
 from pdf_tools.ui.util import hex_to_rgb, rgb_to_hex, swatch_icon, to_qimage
 
 THUMB_ZOOM = 0.22
 PREVIEW_SCALE = 4
-MIN_FIELD_PX = 5
 SIGNATURE_WIDTH = 150
 NOTE_SIZE = 18
 PAGE_GAP = 12
 PIXMAP_CACHE = 12
-PRINT_DPI = 300
 PATH_WIDTH = 360
 THUMB_CHECK_WIDTH = 24
-FIELD_STYLE = "background: rgb(220, 232, 255); color: black; border: none; padding: 0px;"
+CROP_DIM = QColor(32, 33, 36, 150)
+KEEP = object()
+RELOAD_SETTLE_MS = 300
+RELOAD_TRIES = 10
+SYNC_MARK = QColor(255, 200, 0, 110)
+SYNC_MARK_MS = 1500
+# text being typed is laid out at this pixel size and scaled to its point size (Qt font sizes are integers)
+TEXT_EDIT_PX = 100
 SKIP_ANNOTS = {pymupdf.PDF_ANNOT_POPUP, pymupdf.PDF_ANNOT_WIDGET}
 MARKUP_ANNOTS = {
     pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_UNDERLINE, pymupdf.PDF_ANNOT_STRIKE_OUT, pymupdf.PDF_ANNOT_SQUIGGLY,
@@ -85,8 +112,9 @@ TOOLS = (
     ("redact", "Redact", "R", "Drag over text to redact it; Alt-drag or Snap off for a free rectangle (R)"),
     ("highlight", "Highlight", "H", "Drag over text to highlight it, then add an optional comment (H)"),
     ("note", "Note", "N", "Click to add a sticky note; click one to read or edit it (N)"),
-    ("text", "Text", "T", "Click to add a text box; double-click one to edit (T)"),
+    ("text", "Text", "T", "Click to type on the page, or drag first to set a width; double-click a box to edit it (T)"),
     ("sign", "Sign", "S", "Click to place a signature (S)"),
+    ("crop", "Crop", "C", "Drag a rectangle to crop to it; drag the frame or its corner to adjust (C)"),
 )
 FLOW_COLOURS = {"view": QColor(26, 115, 232, 70), "redact": QColor(0, 0, 0, 90)}
 
@@ -95,11 +123,13 @@ ANNOT_LIST_STYLE = """
 QTreeWidget::item { padding: 6px 4px; border-bottom: 1px solid rgba(128, 128, 128, 70); }
 QTreeWidget::item:has-children { padding: 8px 4px 4px 4px; border-bottom: none; }
 """
-DISCARD_STYLE = """
-QToolButton { border: none; border-radius: 4px; padding: 2px; }
-QToolButton:hover { background: rgb(220, 60, 60); }
-"""
-EDIT_ICONS = {"redact": "redact", "text": "text", "sign": "sign", "note": "note", "form": "file", "deleted": "remove", "comment": "note"}
+# Edits tab: kind -> (label, icon)
+EDIT_KINDS = {
+    "redact": ("Redaction", "redact"), "text": ("Text", "text"), "sign": ("Signature", "sign"), "note": ("Note", "note"),
+    "form": ("Field", "file"), "deleted": ("Removed", "remove"), "comment": ("Comment", "note"),
+    "rotate": ("Rotated", "rotate"), "crop": ("Cropped", "crop"), "remove_page": ("Page removed", "remove"),
+    "insert": ("Inserted from", "add"), "reorder": ("Pages reordered", "sort"),
+}
 NOTE_RGB = (255, 213, 79)
 MARK_STYLES = {
     "highlight": "Highlight",
@@ -130,17 +160,20 @@ INK_PRESETS = (
 )
 
 
+def file_stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
 def palette_for(style):
     return HIGHLIGHT_PRESETS if style == "highlight" else INK_PRESETS
 
 
 def colour_key(style):
     return "highlight_colour" if style == "highlight" else "ink_colour"
-
-
-def shorten(text, limit):
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 class EditTab(QWidget):
@@ -163,11 +196,14 @@ class EditTab(QWidget):
         self.items = {}
         self.deleted = set()
         self.forms = {}
-        self.form_original = {}
-        self.form_editors = {}
-        self.form_proxies = {}
-        self.form_fit = {}
-        self.form_edit_key = None
+        self.order = ()
+        self.rotation = {}
+        self.crop = {}
+        self.inserted = ()
+        self.own = 0
+        self.password = None
+        self.annot_types = {}
+        self.fields = FormFields(self)
         self.history = []
         self.future = []
         self.matches = []
@@ -180,17 +216,26 @@ class EditTab(QWidget):
         self.font_cache = {}
         self.preview_cache = {}
         self.annot_text = {}
-        self.form_names = {}
         self.edits_sig = None
         self.words_cache = {}
+        self.thumb_done = set()
         self.flow_items = []
         self.popover = None
+        self.text_edit = None
+        self.qt_families = {}
 
         self.thumbs = QListWidget()
         self.thumbs.setIconSize(QSize(130, 184))
         self.thumbs.setSpacing(4)
-        self.thumbs.currentRowChanged.connect(self.goto)
+        self.thumbs.setDragDropMode(QAbstractItemView.InternalMove)
+        self.thumbs.setDefaultDropAction(Qt.MoveAction)
+        self.thumbs.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.thumbs.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.thumbs.customContextMenuRequested.connect(self.on_thumb_menu)
+        self.thumbs.currentRowChanged.connect(lambda row: row >= 0 and self.goto(self.thumbs.item(row).data(Qt.UserRole)))
         self.thumbs.itemChanged.connect(lambda _: self.update_state())
+        self.thumbs.model().rowsMoved.connect(self.on_thumbs_moved)
+        self.thumbs.verticalScrollBar().valueChanged.connect(lambda _: self.render_thumbs())
 
         self.annot_tree = QTreeWidget()
         self.annot_tree.setHeaderHidden(True)
@@ -199,21 +244,9 @@ class EditTab(QWidget):
         self.annot_tree.setStyleSheet(ANNOT_LIST_STYLE)
         self.annot_tree.itemClicked.connect(lambda item, _: self.on_annot_entry(item))
         self.annot_tree.itemActivated.connect(lambda item, _: self.on_annot_entry(item))
-        self.edits_tree = QTreeWidget()
-        self.edits_tree.setHeaderHidden(True)
-        self.edits_tree.setColumnCount(2)
-        self.edits_tree.setIndentation(12)
-        self.edits_tree.setIconSize(QSize(14, 14))
-        self.edits_tree.setStyleSheet(ANNOT_LIST_STYLE)
-        header = self.edits_tree.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.resizeSection(1, 30)
-        self.edits_tree.itemClicked.connect(lambda item, _: self.on_edit_entry(item))
-        self.edits_tree.setMouseTracking(True)
-        self.edits_tree.itemEntered.connect(lambda item, _: self.show_discard(item))
-        self.edits_tree.viewport().installEventFilter(self)
+        self.edits_tree = EditsPanel()
+        self.edits_tree.discard_requested.connect(self.discard)
+        self.edits_tree.activated.connect(self.on_edit_entry)
         self.thumbs.viewport().installEventFilter(self)
         self.side = QTabWidget()
         self.side.setDocumentMode(True)
@@ -230,6 +263,17 @@ class EditTab(QWidget):
         self.view.flow_changed.connect(self.on_flow)
         self.view.clicked.connect(self.on_click)
         self.view.zoom_step.connect(lambda f: self.set_zoom(self.zoom * f))
+        self.view.sync_clicked.connect(self.inverse_search)
+        self.sync = None
+        self.sync_marks = []
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(lambda _: self.reload_timer.start())
+        self.reload_timer = QTimer(self)
+        self.reload_timer.setSingleShot(True)
+        self.reload_timer.setInterval(RELOAD_SETTLE_MS)
+        self.reload_timer.timeout.connect(self.reload_if_changed)
+        self.disk_stamp = self.seen_stamp = None
+        self.reload_tries = 0
         self.view.verticalScrollBar().valueChanged.connect(lambda _: self.on_scroll())
 
         self.viewer = QWidget()
@@ -355,6 +399,15 @@ class EditTab(QWidget):
         self.a_export = self.action("Export pages...", self.export_pages, "Ctrl+E")
         self.a_print = self.action("Print...", self.print_doc, QKeySequence.Print)
         self.a_print_preview = self.action("Print preview...", lambda: self.print_doc(preview=True))
+        self.a_split = self.action("Split...", self.split_doc)
+        self.a_protect = self.action("Protect with password...", self.protect_copy)
+        self.a_unprotect = self.action("Remove password...", self.unprotect_copy)
+        self.a_rotate_left = self.action("Rotate left", lambda: self.rotate_pages(self.target_pages(), -90), "Ctrl+Shift+L")
+        self.a_rotate_right = self.action("Rotate right", lambda: self.rotate_pages(self.target_pages(), 90), "Ctrl+Shift+R")
+        self.a_remove_pages = self.action("Remove page(s)", lambda: self.remove_pages(self.target_pages()))
+        self.a_insert_pages = self.action("Insert pages from PDF...", lambda: self.insert_pages(after=self.pno))
+        self.a_fit_content = self.action("Crop to content", lambda: self.crop_to_content(self.target_pages()))
+        self.a_uncrop = self.action("Remove crop", lambda: self.set_crops({p: None for p in self.target_pages()}))
         self.a_sidebar = self.action("Show sidebar", self.toggle_sidebar, "F9", checkable=True)
         self.a_sidebar.setChecked(s.get("show_sidebar"))
         self.a_sidebar.setToolTip("Show or hide the sidebar (F9)")
@@ -369,8 +422,8 @@ class EditTab(QWidget):
         self.a_zoom_in = self.action("Zoom in", lambda: self.set_zoom(self.zoom * 1.25), QKeySequence.ZoomIn)
         self.a_zoom_out = self.action("Zoom out", lambda: self.set_zoom(self.zoom / 1.25), QKeySequence.ZoomOut)
         self.a_fit = self.action("Fit width", self.fit_width, "Ctrl+0")
-        self.a_prev = self.action("Previous page", lambda: self.goto(self.pno - 1), ["Left", "PgUp"])
-        self.a_next = self.action("Next page", lambda: self.goto(self.pno + 1), ["Right", "PgDown"])
+        self.a_prev = self.action("Previous page", lambda: self.step_page(-1), ["Left", "PgUp"])
+        self.a_next = self.action("Next page", lambda: self.step_page(1), ["Right", "PgDown"])
         self.a_continuous = self.action("Continuous", self.toggle_continuous, checkable=True)
         self.a_continuous.setChecked(s.get("view_mode") == "continuous")
         self.a_continuous.setToolTip("Scroll through all pages (off: one page at a time)")
@@ -422,10 +475,14 @@ class EditTab(QWidget):
             (self.a_fit, "fit"), (self.a_continuous, "continuous"), (self.a_find, "find"), (self.a_save, "save"),
             (self.a_save_as, "save"), (self.a_export, "export"), (self.a_open, "open"), (self.a_close, "close"),
             (self.a_print, "print"), (self.a_print_preview, "print"), (self.a_sidebar, "sidebar"),
+            (self.a_split, "split"), (self.a_protect, "lock"), (self.a_unprotect, "unlock"),
+            (self.a_rotate_left, "rotate-left"), (self.a_rotate_right, "rotate"), (self.a_remove_pages, "remove"),
+            (self.a_insert_pages, "add"), (self.a_fit_content, "crop"), (self.a_uncrop, "close"),
             *((self.tool_actions[key], key) for key in self.tool_actions),
         ):
             icons.bind(a, name)
         tb = self.toolbar = QToolBar()
+        tb.installEventFilter(self)
         tb.setIconSize(QSize(18, 18))
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         tb.addActions([self.a_sidebar, self.a_undo, self.a_redo])
@@ -441,6 +498,10 @@ class EditTab(QWidget):
             self.option_group(self.tool_button(self.a_snap), self.tool_button(self.a_auto), self.swatch)
         )
         self.highlight_opts = tb.addWidget(self.build_mark_options())
+        fit_content, uncrop = self.tool_button(self.a_fit_content), self.tool_button(self.a_uncrop)
+        for b in (fit_content, uncrop):
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.crop_opts = tb.addWidget(self.option_group(fit_content, uncrop))
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -460,7 +521,9 @@ class EditTab(QWidget):
         save.setPopupMode(QToolButton.MenuButtonPopup)
         save.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         menu = QMenu(save)
-        menu.addActions([self.a_save, self.a_save_as, self.a_export])
+        menu.addActions([self.a_save, self.a_save_as, self.a_export, self.a_split])
+        menu.addSeparator()
+        menu.addActions([self.a_protect, self.a_unprotect])
         menu.addSeparator()
         menu.addActions([self.a_print, self.a_print_preview])
         save.setMenu(menu)
@@ -542,10 +605,25 @@ class EditTab(QWidget):
         tool = self.tool
         self.redact_opts.setVisible(tool == "redact")
         self.highlight_opts.setVisible(tool == "highlight")
-        self.opts_sep.setVisible(tool in ("redact", "highlight"))
+        self.crop_opts.setVisible(tool == "crop")
+        self.opts_sep.setVisible(tool in ("redact", "highlight", "crop"))
         self.view.update_cursor()
         self.close_popover()
         self.clear_flow()
+        self.fit_toolbar()
+        if self.doc:
+            # crop frames are only interactive (and in the way) while the Crop tool is active
+            self.render()
+
+    def fit_toolbar(self):
+        """Tool buttons drop their labels when the toolbar is too narrow to show them."""
+        tb = self.toolbar
+        buttons = [tb.widgetForAction(a) for a in self.tool_actions.values()]
+        for b in buttons:
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        if tb.sizeHint().width() > tb.width():
+            for b in buttons:
+                b.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
     @property
     def tool(self):
@@ -557,23 +635,33 @@ class EditTab(QWidget):
     def continuous(self):
         return self.a_continuous.isChecked()
 
-    def load(self, path):
+    def load(self, path, password=None):
+        """Open `path` here; False when it is password protected and the password prompt was cancelled."""
         self.activate_requested.emit()
         self.unload()
-        self.doc_path = Path(path)
-        self.settings.set("last_folder", str(self.doc_path.parent))
-        self.settings.add_recent(self.doc_path.resolve())
-        self.doc = pymupdf.open(path)
+        path = Path(path)
+        doc = pymupdf.open(path)
+        locked, tried = doc.needs_pass, password is not None
+        while locked and not doc.authenticate(password or ""):
+            prompt = "Wrong password, try again:" if tried else f"{path.name} is password protected.\n\nPassword:"
+            password, ok = QInputDialog.getText(self, APP_NAME, prompt, QLineEdit.Password)
+            if not ok:
+                doc.close()
+                return False
+            tried = True
+        self.doc_path, self.doc = path, doc
+        self.password = password if locked else None
+        self.disk_stamp = self.seen_stamp = file_stamp(path)
+        self.sync = None
+        if self.watcher.files():
+            self.watcher.removePaths(self.watcher.files())
+        self.watcher.addPath(str(path))
+        self.settings.set("last_folder", str(path.parent))
+        self.settings.add_recent(path.resolve())
+        self.own = len(doc)
+        self.order = tuple(range(self.own))
         self.pno = 0
-        self.thumbs.blockSignals(True)
-        for i, page in enumerate(self.doc):
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(THUMB_ZOOM, THUMB_ZOOM), alpha=False)
-            item = QListWidgetItem(QIcon(QPixmap.fromImage(to_qimage(pix))), str(i + 1))
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked)
-            self.thumbs.addItem(item)
-        self.thumbs.setCurrentRow(0)
-        self.thumbs.blockSignals(False)
+        self.rebuild_thumbs()
         self.tool_actions["view"].setChecked(True)
         self.on_tool()
         self.fit_width()
@@ -582,6 +670,157 @@ class EditTab(QWidget):
         QTimer.singleShot(0, self.scroll_home)
         if self.findbar.isVisible():
             self.run_search()
+        return True
+
+    def reload_if_changed(self):
+        """Reload after the file changed on disk and has stopped changing (TeX writes the PDF in steps)."""
+        if not self.doc:
+            return
+        stamp = file_stamp(self.doc_path)
+        if str(self.doc_path) not in self.watcher.files() and stamp:
+            # replaced by a new file (rename over it): watch the new one
+            self.watcher.addPath(str(self.doc_path))
+        if stamp is None or stamp != self.seen_stamp:
+            self.seen_stamp = stamp
+            self.reload_timer.start()
+            return
+        if stamp == self.disk_stamp:
+            return
+        n = self.edit_count()
+        if n and QMessageBox.question(
+            self, APP_NAME, f"{self.doc_path.name} changed on disk.\n\nReload it and discard {n} unsaved edit(s)?"
+        ) != QMessageBox.Yes:
+            self.disk_stamp = stamp
+            return
+        position = self.order.index(self.pno) if self.pno in self.order else 0
+        zoom, scroll = self.zoom, self.view.verticalScrollBar().value()
+        try:
+            loaded = self.load(self.doc_path, self.password)
+        except Exception:
+            # still being written: try again shortly, a few times
+            self.reload_tries += 1
+            if self.reload_tries < RELOAD_TRIES:
+                self.reload_timer.start()
+            return
+        self.reload_tries = 0
+        if not loaded:
+            return
+        self.zoom = zoom
+        self.pno = self.order[min(position, len(self.order) - 1)]
+        self.sync_thumb()
+        self.render()
+        # after load()'s own deferred scroll to the top
+        QTimer.singleShot(0, lambda: self.view.verticalScrollBar().setValue(scroll))
+        self.status(f"Reloaded {self.doc_path.name} (changed on disk)")
+
+    def synctex(self):
+        """This PDF's SyncTeX data, re-read when the .synctex file changed; None if there is none."""
+        if self.sync is None or self.sync.stale():
+            self.sync = SyncTex(self.doc_path)
+        return self.sync if self.sync.path else None
+
+    def inverse_search(self, scene_pos):
+        """Ctrl+click: open the TeX source line typeset at this point."""
+        pno = self.page_at(scene_pos) if self.doc else None
+        if pno is None or pno >= self.own:
+            return
+        sync = self.synctex()
+        if not sync:
+            self.status("No SyncTeX data for this PDF (compile with -synctex=1)")
+            return
+        point = self.to_pdf_point(scene_pos, pno)
+        found = sync.inverse(pno, point.x, point.y)
+        if found:
+            self.open_source(*found)
+
+    def open_source(self, path, line):
+        command = self.settings.get("editor_command")
+        if not command:
+            command, ok = QInputDialog.getText(
+                self, "Open TeX source with",
+                "Command to open a file at a line (%f = file, %l = line), for example\n"
+                "  code -g %f:%l\n  nvim --server /tmp/nvim.sock --remote-send ':e %f | %l<CR>'",
+                text="code -g %f:%l",
+            )
+            if not ok or not command.strip():
+                return
+            self.settings.set("editor_command", command.strip())
+        args = [a.replace("%f", path).replace("%l", str(line)) for a in shlex.split(command)]
+        if QProcess.startDetached(args[0], args[1:]):
+            self.status(f"Opened {Path(path).name}:{line}")
+        else:
+            QMessageBox.warning(self, APP_NAME, f"Could not run {args[0]}.\n\nChange editor_command in {self.settings.path}.")
+
+    def forward_search(self, source, line):
+        """Show where `source` line `line` is typeset, flashing its lines."""
+        sync = self.synctex() if self.doc else None
+        hits = sync.forward(source, line) if sync else []
+        if not hits or hits[0][0] not in self.order:
+            self.status(f"No typeset text for {Path(source).name}:{line}")
+            return
+        pno = hits[0][0]
+        if not (self.continuous and pno in self.offsets):
+            self.goto(pno)
+        scene = self.view.scene()
+        marks = []
+        for _, rect in hits:
+            mark = scene.addRect(self.to_scene(rect, pno), Qt.NoPen, QBrush(SYNC_MARK))
+            mark.setZValue(3)
+            mark.setAcceptedMouseButtons(Qt.NoButton)
+            marks.append(mark)
+        self.view.centerOn(marks[0])
+        self.sync_marks = marks
+        QTimer.singleShot(SYNC_MARK_MS, lambda: self.clear_sync_marks(marks))
+
+    def clear_sync_marks(self, marks):
+        # render() replaces the list after deleting the scene's items, so only still-current marks are removed
+        if self.sync_marks is marks:
+            for mark in marks:
+                self.view.scene().removeItem(mark)
+            self.sync_marks = []
+
+    def rebuild_thumbs(self):
+        """One row per page in display order; images are drawn as rows scroll into view (render_thumbs)."""
+        ticked = {
+            self.thumbs.item(i).data(Qt.UserRole) for i in range(self.thumbs.count())
+            if self.thumbs.item(i).checkState() == Qt.Checked
+        }
+        self.thumbs.blockSignals(True)
+        self.thumbs.clear()
+        for p in self.order:
+            w, h = self.doc[p].rect.width * THUMB_ZOOM, self.doc[p].rect.height * THUMB_ZOOM
+            blank = QPixmap(max(1, round(w)), max(1, round(h)))
+            blank.fill(QColor(235, 235, 235))
+            item = QListWidgetItem(QIcon(blank), "")
+            item.setData(Qt.UserRole, p)
+            item.setFlags((item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled) & ~Qt.ItemIsDropEnabled)
+            item.setCheckState(Qt.Checked if p in ticked else Qt.Unchecked)
+            self.thumbs.addItem(item)
+        if self.pno in self.order:
+            self.thumbs.setCurrentRow(self.order.index(self.pno))
+        self.thumbs.blockSignals(False)
+        self.thumb_done = set()
+        QTimer.singleShot(0, self.render_thumbs)
+
+    def render_thumbs(self):
+        """Draw the thumbnails of rows in (or near) the visible part of the Pages list."""
+        if not self.doc:
+            return
+        view = self.thumbs.viewport().rect()
+        near = view.adjusted(0, -view.height(), 0, view.height())
+        for row in range(self.thumbs.count()):
+            rect = self.thumbs.visualItemRect(self.thumbs.item(row))
+            if rect.top() > near.bottom():
+                break
+            item = self.thumbs.item(row)
+            p = item.data(Qt.UserRole)
+            if rect.bottom() < near.top() or p in self.thumb_done:
+                continue
+            pix = self.doc[p].get_pixmap(matrix=pymupdf.Matrix(THUMB_ZOOM, THUMB_ZOOM), alpha=False)
+            self.thumbs.blockSignals(True)
+            item.setIcon(QIcon(QPixmap.fromImage(to_qimage(pix))))
+            self.thumbs.blockSignals(False)
+            self.thumb_done.add(p)
 
     def scroll_home(self):
         self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().minimum())
@@ -589,22 +828,30 @@ class EditTab(QWidget):
 
     def unload(self):
         self.close_popover(commit=False)
+        if self.text_edit:
+            self.text_edit[3].deleteLater()
+            self.text_edit = None
         self.flow_items = []
-        self.detach_form_editors(self.form_editors.values())
+        self.reload_timer.stop()
+        if self.watcher.files():
+            self.watcher.removePaths(self.watcher.files())
+        self.fields.detach()
         # clear the scene before closing the document: closing first crashes PySide (seen with form fields)
         self.view.scene().clear()
+        self.sync_marks = []
         if self.doc:
             self.doc.close()
         self.doc = None
         self.items, self.deleted, self.history, self.future = {}, set(), [], []
-        self.annot_text, self.words_cache = {}, {}
+        self.annot_text, self.words_cache, self.annot_types = {}, {}, {}
+        self.order, self.rotation, self.crop, self.inserted, self.own, self.password = (), {}, {}, (), 0, None
         self.annot_tree.clear()
         self.side.setTabText(1, "Annotations")
-        self.form_names, self.edits_sig = {}, None
+        self.edits_sig = None
         self.edits_tree.clear()
         self.side.setTabText(2, "Edits")
-        self.form_edit_key = None
-        self.forms, self.form_original, self.form_editors, self.form_proxies, self.form_fit = {}, {}, {}, {}, {}
+        self.forms = {}
+        self.fields.reset()
         self.matches, self.match_idx = [], -1
         self.text_sel = None
         self.offsets, self.page_items, self.pix_cache = {}, {}, {}
@@ -615,11 +862,19 @@ class EditTab(QWidget):
         self.thumbs.blockSignals(False)
 
     def reload_display(self):
-        """Reopen the document for display with deleted annotations removed (never saved)."""
+        """Rebuild the display copy the way saving builds the output: inserted pages, removed annotations, rotation."""
+        self.finish_text(rerender=False)
+        self.fields.detach()
+        self.view.scene().clear()
+        self.page_items, self.offsets, self.sync_marks = {}, {}, []
+        self.fields.clear_scene_refs()
         self.doc.close()
-        self.doc = pymupdf.open(self.doc_path)
+        self.doc = open_pdf(self.doc_path, self.password, self.inserted)
         remove_annots(self.doc, self.deleted)
-        self.pix_cache = {}
+        for p, degrees in self.rotation.items():
+            self.doc[p].set_rotation((self.doc[p].rotation + degrees) % 360)
+        self.pix_cache, self.words_cache, self.thumb_done = {}, {}, set()
+        self.render_thumbs()
 
     def close_doc(self):
         if self.doc and self.confirm_discard():
@@ -635,9 +890,17 @@ class EditTab(QWidget):
         return reply == QMessageBox.Yes
 
     def edited(self, pages=None):
+        """The output PDF bytes and redaction leaks; `pages` (page numbers, in order) defaults to the page order."""
         return apply_edits(
-            self.doc_path, self.items, pages, self.forms, self.shrunk_fields(), self.deleted, self.annot_text
+            self.doc_path, self.items, list(self.order) if pages is None else pages, self.forms, self.fields.shrunk(),
+            self.deleted, self.annot_text, rotation=self.rotation, crop=self.crop, inserted=self.inserted,
+            password=self.password,
         )
+
+    def scrubs(self, pages=None):
+        """Whether writing `pages` removes hidden data (it does when they carry redactions or crops)."""
+        pages = self.order if pages is None else pages
+        return any(p in self.crop or any(o["kind"] == "redact" for o in self.items.get(p, [])) for p in pages)
 
     def save(self):
         if not self.edit_count():
@@ -653,76 +916,129 @@ class EditTab(QWidget):
         if reply != QMessageBox.Yes:
             return
         data, leaks = self.edited()
+        if self.password:
+            data = protect(data, self.password)
         fd, tmp = tempfile.mkstemp(dir=self.doc_path.parent, prefix=f".{self.doc_path.name}.", suffix=".tmp")
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        path = self.doc_path
+        path, password, scrubbed = self.doc_path, self.password, self.scrubs()
         if not QFile.moveToTrash(str(path)):
             os.unlink(tmp)
             QMessageBox.critical(self, APP_NAME, "Could not move the original to the trash; nothing changed.")
             return
         os.replace(tmp, path)
         self.items, self.forms, self.deleted, self.annot_text = {}, {}, set(), {}
-        self.report(path, leaks)
-        self.load(path)
+        self.report(path, leaks, scrubbed)
+        self.load(path, password)
 
     def save_as(self):
         if self.edit_count():
             self.write_copy(None, f"{self.doc_path.stem}-edited.pdf")
 
+    def ticked_positions(self):
+        return [i for i in range(self.thumbs.count()) if self.thumbs.item(i).checkState() == Qt.Checked]
+
     def export_pages(self):
         if not self.doc:
             return
         s = self.settings
-        ticked = [i for i in range(self.thumbs.count()) if self.thumbs.item(i).checkState() == Qt.Checked]
-        ranges = format_ranges(ticked) or f"1-{len(self.doc)}"
-        dlg = ExportDialog(self, len(self.doc), ranges, s.get("export_flatten"), s.get("export_dpi"))
+        n = len(self.order)
+        ranges = format_ranges(self.ticked_positions()) or f"1-{n}"
+        dlg = ExportDialog(self, n, ranges, s.get("export_flatten"), s.get("export_dpi"))
         if dlg.exec() != QDialog.Accepted or not dlg.pages.text().strip():
             return
         text = dlg.pages.text()
         s.set("export_flatten", dlg.flat.isChecked())
         s.set("export_dpi", dlg.dpi.value())
         try:
-            pages = parse_ranges(text, len(self.doc))
+            positions = parse_ranges(text, n)
         except ValueError:
             QMessageBox.critical(self, APP_NAME, f"Invalid page range: {text}")
             return
-        if pages:
+        if positions:
             dpi = dlg.dpi.value() if dlg.flat.isChecked() else None
-            name = f"{self.doc_path.stem}-p{format_ranges(pages).replace(',', '_')}{'-flat' if dpi else ''}.pdf"
-            self.write_copy(pages, name, dpi)
+            name = f"{self.doc_path.stem}-p{format_ranges(positions).replace(',', '_')}{'-flat' if dpi else ''}.pdf"
+            self.write_copy([self.order[i] for i in positions], name, dpi)
 
-    def write_copy(self, pages, default_name, flatten_dpi=None):
+    def write_copy(self, pages, default_name, flatten_dpi=None, password=KEEP):
+        """Save the edited `pages` (default: all, in order) to a chosen file; `password` None writes it unprotected."""
         out, _ = QFileDialog.getSaveFileName(self, "Save copy", str(self.doc_path.parent / default_name), "PDF (*.pdf)")
         if not out:
             return
         if Path(out).resolve() == self.doc_path.resolve():
             QMessageBox.critical(self, APP_NAME, "That is the open file; use File > Save to overwrite it.")
             return
+        data, leaks = self.output(pages, flatten_dpi, self.password if password is KEEP else password)
+        Path(out).write_bytes(data)
+        self.report(out, leaks, self.scrubs(pages) or bool(flatten_dpi))
+
+    def output(self, pages, flatten_dpi=None, password=None):
         data, leaks = self.edited(pages)
         if flatten_dpi:
             data = flatten(data, flatten_dpi)
             check = pymupdf.open("pdf", data)
             leaks += [(i + 1, "selectable text after flatten") for i, p in enumerate(check) if p.get_text().strip()]
             check.close()
-        Path(out).write_bytes(data)
-        self.report(out, leaks)
+        return (protect(data, password) if password else data), leaks
 
-    def report(self, out, leaks):
+    def report(self, out, leaks, scrubbed=False):
         if leaks:
             QMessageBox.warning(self, APP_NAME, f"Saved {out}\n\nText remains under redactions:\n{leaks[:10]}")
-        else:
-            self.status(f"Saved {out} - no text left under any redaction.", 8000)
+            return
+        hidden = " Removed hidden data (metadata, attachments, scripts, hidden text)." if scrubbed else ""
+        self.status(f"Saved {out} - no text left under any redaction.{hidden}", 10000)
+
+    def split_doc(self):
+        if not self.doc:
+            return
+        dlg = SplitDialog(self, len(self.order), self.ticked_positions())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        every, at = dlg.choice()
+        parts = split_points(len(self.order), every=every, at=at)
+        folder = QFileDialog.getExistingDirectory(self, "Save parts in", str(self.doc_path.parent))
+        if not folder:
+            return
+        names = [Path(folder) / f"{self.doc_path.stem}-part{i + 1}.pdf" for i in range(len(parts))]
+        existing = [p.name for p in names if p.exists()]
+        if existing and QMessageBox.question(self, APP_NAME, f"Overwrite {', '.join(existing)}?") != QMessageBox.Yes:
+            return
+        for name, part in zip(names, parts):
+            name.write_bytes(self.output([self.order[i] for i in part], password=self.password)[0])
+        self.status(f"Saved {len(parts)} parts to {folder}", 8000)
+
+    def protect_copy(self):
+        if not self.doc:
+            return
+        dlg = PasswordDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            self.write_copy(None, f"{self.doc_path.stem}-protected.pdf", password=dlg.password())
+
+    def unprotect_copy(self):
+        if not self.password:
+            QMessageBox.information(self, APP_NAME, f"{self.doc_path.name} has no password.")
+            return
+        self.write_copy(None, f"{self.doc_path.stem}-unlocked.pdf", password=None)
+
+    def print_doc(self, preview=False):
+        if self.doc:
+            position = self.order.index(self.pno) if self.pno in self.order else 0
+            print_pdf(self, lambda: self.edited()[0], len(self.order), position, self.doc_path.name, preview)
+
+    def state(self):
+        """The current edits (not copied; snapshot() copies)."""
+        return {
+            "items": self.items, "deleted": frozenset(self.deleted), "forms": self.forms, "annot_text": self.annot_text,
+            "order": self.order, "rotation": self.rotation, "crop": self.crop, "inserted": self.inserted,
+        }
 
     def edit_count(self):
-        if not self.doc:
-            return 0
-        changed = len(set(self.annot_text) - self.deleted)
-        return sum(len(v) for v in self.items.values()) + len(self.forms) + len(self.deleted) + changed
+        return count_edits(self.state(), self.own, len(self.doc)) if self.doc else 0
 
     def page_edits(self, pno):
         keyed = list(self.forms) + list(self.deleted) + list(set(self.annot_text) - self.deleted)
-        return len(self.items.get(pno, [])) + sum(p == pno for p, _ in keyed)
+        own = len(self.items.get(pno, [])) + (pno in self.rotation) + (pno in self.crop)
+        return own + sum(p == pno for p, _ in keyed)
 
     def page_rect(self, pno):
         r, o = self.doc[pno].rect, self.offsets[pno]
@@ -766,172 +1082,15 @@ class EditTab(QWidget):
             del self.pix_cache[far]
         return pix
 
-    def add_form_editors(self, scene, pno):
-        proxies = []
-        for widget in self.doc[pno].widgets():
-            style = FIELD_STYLE
-            kind, key = widget.field_type, (pno, widget.xref)
-            self.form_original.setdefault(key, widget.field_value)
-            self.form_names[key] = widget.field_label or widget.field_name
-            value = self.forms.get(key, widget.field_value)
-            rect = self.to_scene(widget.rect, pno)
-            if kind == pymupdf.PDF_WIDGET_TYPE_TEXT:
-                if widget.field_flags & pymupdf.PDF_TX_FIELD_IS_MULTILINE:
-                    editor = QPlainTextEdit(value or "")
-                    editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-                    editor.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-                    editor.document().setDocumentMargin(1)
-                else:
-                    editor = QLineEdit(value or "")
-                    editor.setTextMargins(1, 0, 1, 0)
-                editor.textChanged.connect(lambda *_, e=editor, key=key, s=widget.text_fontsize: self.on_text(e, key, s))
-            elif kind in (pymupdf.PDF_WIDGET_TYPE_CHECKBOX, pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON):
-                editor = QCheckBox() if kind == pymupdf.PDF_WIDGET_TYPE_CHECKBOX else QRadioButton()
-                editor.setAutoExclusive(False)
-                editor.setChecked(is_on(value))
-                editor.toggled.connect(lambda v, key=key, name=widget.field_name: self.set_check(key, name, v))
-                side = max(4, int(min(rect.width(), rect.height())) - 2)
-                style += f" QCheckBox::indicator, QRadioButton::indicator {{ width: {side}px; height: {side}px; }}"
-            elif kind in (pymupdf.PDF_WIDGET_TYPE_COMBOBOX, pymupdf.PDF_WIDGET_TYPE_LISTBOX):
-                editor = QComboBox()
-                editor.addItems([c[0] if isinstance(c, (list, tuple)) else str(c) for c in widget.choice_values or []])
-                editor.setEditable(bool(widget.field_flags & pymupdf.PDF_CH_FIELD_IS_EDIT))
-                editor.setCurrentText(value or "")
-                editor.currentTextChanged.connect(lambda v, key=key: self.set_form(key, v, coalesce=False))
-            else:
-                continue
-            editor.installEventFilter(self)
-            if isinstance(editor, QPlainTextEdit):
-                editor.viewport().installEventFilter(self)
-            editor.setToolTip(widget.field_name)
-            editor.setStyleSheet(style)
-            editor.setMinimumSize(0, 0)
-            editor.setFixedSize(round(rect.width()), round(rect.height()))
-            if isinstance(editor, (QPlainTextEdit, QLineEdit)):
-                self.fit_text(editor, key, widget.text_fontsize)
-            if isinstance(editor, QLineEdit):
-                editor.setCursorPosition(0)
-            if isinstance(editor, QComboBox):
-                self.fit_combo(editor)
-            proxy = scene.addWidget(editor)
-            proxy.setGeometry(rect)
-            proxy.setZValue(1.5)
-            self.form_editors[key] = editor
-            proxies.append(proxy)
-        self.form_proxies[pno] = proxies
-
     def eventFilter(self, obj, event):
-        if obj is self.edits_tree.viewport():
-            if event.type() == QEvent.Leave:
-                self.show_discard(None)
-            return False
         if obj is self.thumbs.viewport():
             if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
                 self.on_thumb_clicked(event.position().toPoint())
-            return False
-        # the wheel over a form field scrolls/zooms the page instead of the field (or changing a dropdown)
-        if event.type() != QEvent.Wheel:
-            return False
-        if event.modifiers() & Qt.ControlModifier:
-            self.set_zoom(self.zoom * (1.25 if event.angleDelta().y() > 0 else 0.8))
-        else:
-            bar = self.view.verticalScrollBar()
-            bar.setValue(bar.value() - event.angleDelta().y())
-        return True
-
-    def page_has_focus(self, pno):
-        focused = QApplication.focusWidget()
-        return any(e is focused or e.isAncestorOf(focused) for k, e in self.form_editors.items() if k[0] == pno)
-
-    def remove_form_editors(self, pno):
-        self.detach_form_editors(e for k, e in self.form_editors.items() if k[0] == pno)
-        for proxy in self.form_proxies.pop(pno, []):
-            self.view.scene().removeItem(proxy)
-        self.form_editors = {k: e for k, e in self.form_editors.items() if k[0] != pno}
-
-    def detach_form_editors(self, editors):
-        """Silence field widgets before the scene destroys them: signals or filter calls from a half-destroyed
-        widget crash PySide."""
-        for editor in list(editors):
-            editor.blockSignals(True)
-            editor.removeEventFilter(self)
-            if isinstance(editor, QPlainTextEdit):
-                editor.viewport().removeEventFilter(self)
-
-    def fit_combo(self, editor):
-        font = editor.font()
-        px = max(MIN_FIELD_PX, min(12, round(editor.height() * 0.75)))
-        longest = max([editor.itemText(i) for i in range(editor.count())] + [editor.currentText()], key=len)
-        font.setPixelSize(px)
-        while px > MIN_FIELD_PX and QFontMetrics(font).horizontalAdvance(longest) > editor.width() - 22:
-            px -= 1
-            font.setPixelSize(px)
-        editor.setFont(font)
-
-    def text_fits(self, editor, font, text):
-        if isinstance(editor, QLineEdit):
-            return QFontMetrics(font).horizontalAdvance(text) <= editor.width() - 4
-        # count wrapped lines the way QPlainTextEdit lays them out (one QTextLayout per paragraph)
-        margin = editor.document().documentMargin()
-        width = max(editor.width() - 2 * margin - 4, 1)
-        option = QTextOption()
-        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        lines = 0
-        for para in text.split("\n"):
-            layout = QTextLayout(para, font)
-            layout.setTextOption(option)
-            layout.beginLayout()
-            while (line := layout.createLine()).isValid():
-                line.setLineWidth(width)
-                lines += 1
-            layout.endLayout()
-        return lines * QFontMetrics(font).lineSpacing() <= editor.height() - 2 * margin - 2
-
-    def fit_text(self, editor, key, size):
-        """Use the field's font size, shrinking it (as auto-size fields do) until the text fits the box."""
-        multiline = isinstance(editor, QPlainTextEdit)
-        text = editor.toPlainText() if multiline else editor.text()
-        start = round(size) if size else (12 if multiline else min(12, round(editor.height() * 0.75)))
-        font = editor.font()
-        px = max(start, MIN_FIELD_PX)
-        font.setPixelSize(px)
-        while px > MIN_FIELD_PX and not self.text_fits(editor, font, text):
-            px -= 1
-            font.setPixelSize(px)
-        editor.setFont(font)
-        self.form_fit[key] = px if px < start else None
-
-    def on_text(self, editor, key, size):
-        self.fit_text(editor, key, size)
-        self.set_form(key, editor.toPlainText() if isinstance(editor, QPlainTextEdit) else editor.text())
-
-    def shrunk_fields(self):
-        return {k: px for k, px in self.form_fit.items() if px and k in self.forms}
-
-    def set_form(self, key, value, coalesce=True, record=True):
-        """Store a field value; consecutive typing in one field is a single undo step."""
-        if record and not (coalesce and key == self.form_edit_key):
-            self.push_undo(self.snapshot())
-        self.form_edit_key = key if coalesce else None
-        original = self.form_original.get(key)
-        if isinstance(value, bool):
-            original = is_on(original)
-        if value == original or (not value and not original):
-            self.forms.pop(key, None)
-        else:
-            self.forms[key] = value
-        self.update_state()
-
-    def set_check(self, key, name, on):
-        self.set_form(key, on, coalesce=False)
-        if not (on and isinstance(self.form_editors.get(key), QRadioButton)):
-            return
-        for other, editor in self.form_editors.items():
-            if other != key and isinstance(editor, QRadioButton) and editor.toolTip() == name:
-                editor.blockSignals(True)
-                editor.setChecked(False)
-                editor.blockSignals(False)
-                self.set_form(other, False, coalesce=False, record=False)
+            elif event.type() == QEvent.Resize:
+                QTimer.singleShot(0, self.render_thumbs)
+        elif obj is self.toolbar and event.type() == QEvent.Resize:
+            self.fit_toolbar()
+        return False
 
     def font_for(self, name, text):
         key = (name, text)
@@ -940,7 +1099,7 @@ class EditTab(QWidget):
         return self.font_cache[key]
 
     def text_image(self, obj):
-        key = (obj["text"], obj["font"], obj["size"], obj["rgb"])
+        key = (obj["text"], obj["font"], obj["size"], obj["rgb"], obj.get("width"))
         if key not in self.preview_cache:
             w, h = obj["rect"].width, obj["rect"].height
             tmp = pymupdf.open()
@@ -964,21 +1123,23 @@ class EditTab(QWidget):
         return ObjItem(self, obj, pno, rect, image, parts)
 
     def scene_pages(self):
-        return list(range(len(self.doc))) if self.continuous else [self.pno]
+        return list(self.order) if self.continuous else [self.pno]
 
     def render(self, scroll_to=None):
         """Rebuild the scene: page frames, edits, existing annotations, overlays; pixmaps come from the cache."""
         if not self.doc:
             return
         self.close_popover()
+        self.finish_text(rerender=False)
         scene = self.view.scene()
         keep = [i.obj for i in scene.selectedItems() if isinstance(i, ObjItem)]
         hpos, vpos = self.view.horizontalScrollBar().value(), self.view.verticalScrollBar().value()
         self.view.verticalScrollBar().blockSignals(True)
         self.flow_items = []
-        self.detach_form_editors(self.form_editors.values())
+        self.fields.detach()
         scene.clear()
-        self.page_items, self.form_editors, self.form_proxies, self.offsets = {}, {}, {}, {}
+        self.fields.clear_scene_refs()
+        self.page_items, self.offsets, self.sync_marks = {}, {}, []
         pages = self.scene_pages()
         width = max(self.doc[p].rect.width for p in pages)
         y = 0.0
@@ -1001,6 +1162,8 @@ class EditTab(QWidget):
                     label = self.annot_comment(p, annot) or f"{annot.type[1]} annotation - click to comment or delete"
                     obj = {"kind": "annot", "xref": annot.xref, "rect": annot.rect, "label": label, "type": annot.type[1]}
                     scene.addItem(ObjItem(self, obj, p, self.to_scene(annot.rect, p)))
+            if p in self.crop:
+                self.add_crop_items(scene, p)
         overlays = [
             (p, rect, QColor(255, 140, 0, 130) if i == self.match_idx else QColor(255, 225, 0, 110))
             for i, (p, rect) in enumerate(self.matches) if p in self.offsets
@@ -1020,6 +1183,24 @@ class EditTab(QWidget):
         self.refresh_annotations()
         self.update_state()
 
+    def add_crop_items(self, scene, p):
+        """Dim the page outside its crop; with the Crop tool active, add a frame to move or resize the crop."""
+        page, kept = self.page_rect(p), self.to_scene(self.crop[p], p)
+        for strip in (
+            QRectF(page.left(), page.top(), page.width(), kept.top() - page.top()),
+            QRectF(page.left(), kept.bottom(), page.width(), page.bottom() - kept.bottom()),
+            QRectF(page.left(), kept.top(), kept.left() - page.left(), kept.height()),
+            QRectF(kept.right(), kept.top(), page.right() - kept.right(), kept.height()),
+        ):
+            if strip.width() > 0 and strip.height() > 0:
+                dim = scene.addRect(strip, Qt.NoPen, QBrush(CROP_DIM))
+                dim.setZValue(1.8)
+                dim.setAcceptedMouseButtons(Qt.NoButton)
+        if self.tool == "crop":
+            frame = ObjItem(self, {"kind": "crop", "rect": self.crop[p]}, p, kept)
+            frame.setZValue(2.5)
+            scene.addItem(frame)
+
     def annot_comment(self, pno, annot):
         return self.annot_text.get((pno, annot.xref), annot.info.get("content", ""))
 
@@ -1030,7 +1211,7 @@ class EditTab(QWidget):
         count = 0
         bold = tree.font()
         bold.setBold(True)
-        for p in range(len(self.doc)):
+        for position, p in enumerate(self.order):
             entries = []
             for obj in self.items.get(p, []):
                 if obj["kind"] in ("highlight", "note"):
@@ -1047,7 +1228,7 @@ class EditTab(QWidget):
                 entries.append((annot.type[1], quote, self.annot_comment(p, annot), rgb, ("annot", annot.xref)))
             if not entries:
                 continue
-            top = QTreeWidgetItem([f"Page {p + 1}  ({len(entries)})"])
+            top = QTreeWidgetItem([f"Page {position + 1}  ({len(entries)})"])
             top.setFlags(Qt.ItemIsEnabled)
             top.setFont(0, bold)
             for kind, quote, comment, rgb, ref in entries:
@@ -1066,132 +1247,71 @@ class EditTab(QWidget):
             top.setExpanded(True)
         self.side.setTabText(1, f"Annotations ({count})" if count else "Annotations")
 
-    def edit_entries(self):
-        """Unsaved edits by page, each (label, detail, icon, ref); ref = (kind, page, key) as discard() takes it."""
-        pages = {}
-        for p, objs in self.items.items():
-            for i, obj in enumerate(objs):
-                kind = obj["kind"]
-                if kind == "highlight":
-                    style = obj.get("style", "highlight")
-                    entry = (MARK_STYLES[style], obj.get("quote", ""), STYLE_ICONS[style])
-                elif kind == "redact":
-                    entry = ("Redaction", self.doc[p].get_textbox(obj["rect"]).strip(), "redact")
-                elif kind in ("text", "note"):
-                    entry = (kind.capitalize(), obj["text"], kind)
-                else:
-                    entry = ("Signature", "", "sign")
-                pages.setdefault(p, []).append((*entry, ("obj", p, i)))
-        for key, value in self.forms.items():
-            shown = ("checked" if value else "unchecked") if isinstance(value, bool) else str(value)
-            label = f"Field {self.form_names.get(key, '')}".strip()
-            pages.setdefault(key[0], []).append((label, shown, "form", ("form", key[0], key)))
-        if self.deleted:
-            # deleted annotations are gone from the display copy; name them from the file on disk
-            original = pymupdf.open(self.doc_path)
-            for key in sorted(self.deleted):
-                page = original[key[0]]
-                annot = page.load_annot(key[1])
-                name = annot.type[1] if annot else "annotation"
-                pages.setdefault(key[0], []).append((f"Removed {name}", "", "deleted", ("deleted", key[0], key)))
-            original.close()
-        for key in sorted(set(self.annot_text) - self.deleted):
-            pages.setdefault(key[0], []).append(("Comment", self.annot_text[key], "comment", ("comment", key[0], key)))
-        return pages
-
     def refresh_edits(self):
         """Rebuild the Edits tab when the set of edits changed."""
         sig = (
             tuple((p, id(o), o.get("text"), o.get("style")) for p, objs in sorted(self.items.items()) for o in objs),
-            tuple(sorted(self.forms.items(), key=lambda kv: kv[0])),
-            frozenset(self.deleted),
-            tuple(sorted(self.annot_text.items())),
+            tuple(sorted(self.forms.items(), key=lambda kv: kv[0])), frozenset(self.deleted),
+            tuple(sorted(self.annot_text.items())), self.order, tuple(sorted(self.rotation.items())),
+            tuple(sorted((p, tuple(r)) for p, r in self.crop.items())),
         )
         if sig == self.edits_sig:
             return
         self.edits_sig = sig
-        tree = self.edits_tree
-        tree.clear()
-        bold = tree.font()
-        bold.setBold(True)
-        total = 0
-        for p, entries in sorted(self.edit_entries().items()):
-            top = QTreeWidgetItem([f"Page {p + 1}  ({len(entries)})"])
-            top.setFlags(Qt.ItemIsEnabled)
-            top.setFont(0, bold)
-            top.setData(0, Qt.UserRole, ("page", p, None))
-            tree.addTopLevelItem(top)
-            self.add_discard(top, [ref for *_, ref in entries], f"Discard all edits on page {p + 1}")
-            for label, detail, icon, ref in entries:
-                child = QTreeWidgetItem([label + (f'\n"{shorten(detail, 34)}"' if detail else "")])
-                child.setIcon(0, icons.icon(EDIT_ICONS.get(icon, icon)))
-                child.setData(0, Qt.UserRole, ref)
-                child.setToolTip(0, detail or label)
-                top.addChild(child)
-                self.add_discard(child, [ref], "Discard this edit")
-            top.setExpanded(True)
-            total += len(entries)
+        entries = edit_entries(self.doc, self.state(), self.own, self.fields.names, self.annot_types)
+
+        def position(page):
+            if page is DOCUMENT:
+                return -1
+            return self.order.index(page) if page in self.order else len(self.order) + page
+
+        groups = []
+        for page in sorted(entries, key=position):
+            if page is DOCUMENT:
+                title = "Document"
+            elif page in self.order:
+                title = f"Page {self.order.index(page) + 1}"
+            else:
+                title = f"Removed page (was {page + 1})" if page < self.own else "Removed inserted page"
+            rows = [(self.edit_label(kind, name), detail, self.edit_icon(kind, name), ref) for kind, name, detail, ref in entries[page]]
+            groups.append((title, ("page", page), rows))
+        self.edits_tree.set_groups(groups)
+        total = sum(len(rows) for *_, rows in groups)
         self.side.setTabText(2, f"Edits ({total})" if total else "Edits")
 
-    def add_discard(self, item, refs, tip):
-        button = QToolButton()
-        button.setAutoRaise(True)
-        button.setIconSize(QSize(14, 14))
-        button.setToolTip(tip)
-        button.setStyleSheet(DISCARD_STYLE)
-        # deferred: discarding rebuilds the list, which deletes this button mid-click
-        button.clicked.connect(lambda: QTimer.singleShot(0, lambda: self.discard(refs)))
-        self.edits_tree.setItemWidget(item, 1, button)
+    @staticmethod
+    def edit_label(kind, name):
+        if kind == "highlight":
+            return MARK_STYLES.get(name or "highlight", "Highlight")
+        label = EDIT_KINDS[kind][0]
+        return f"{label} {name}" if name and kind in ("form", "deleted") else label
 
-    def show_discard(self, hovered):
-        """Only the hovered row shows its discard icon (item widgets cannot stay hidden: the view re-shows them)."""
-        icon = icons.icon("close")
-        icon.addPixmap(icons.pixmap("close", "#ffffff"), QIcon.Active)
-        tree = self.edits_tree
-        for i in range(tree.topLevelItemCount()):
-            top = tree.topLevelItem(i)
-            for item in (top, *(top.child(j) for j in range(top.childCount()))):
-                button = tree.itemWidget(item, 1)
-                if button:
-                    button.setIcon(icon if item is hovered else QIcon())
+    @staticmethod
+    def edit_icon(kind, name):
+        return STYLE_ICONS.get(name or "highlight", "highlight") if kind == "highlight" else EDIT_KINDS[kind][1]
 
     def discard(self, refs):
-        """Drop the given edits as one undo step."""
-        if not self.doc:
-            return
-        snap = self.snapshot()
-        items, deleted, forms, annot_text = self.snapshot()
-        deleted = set(deleted)
-        drop = {}
-        for kind, p, key in refs:
-            if kind == "obj":
-                drop.setdefault(p, set()).add(key)
-            elif kind == "form":
-                forms.pop(key, None)
-            elif kind == "deleted":
-                deleted.discard(key)
-            elif kind == "comment":
-                annot_text.pop(key, None)
-        for p, indexes in drop.items():
-            items[p] = [o for i, o in enumerate(items[p]) if i not in indexes]
-            if not items[p]:
-                del items[p]
-        self.push_undo(snap)
-        self.restore((items, frozenset(deleted), forms, annot_text))
+        """Drop the given edits (refs from the Edits tab) as one undo step."""
+        if self.doc:
+            changed = discard(self.snapshot(), refs, self.own)
+            # a second copy for the history: `changed` shares its edit dicts with the first
+            self.push_undo(self.snapshot())
+            self.restore(changed)
 
-    def on_edit_entry(self, entry):
-        ref = entry.data(0, Qt.UserRole)
+    def on_edit_entry(self, ref):
         if not ref:
             return
         kind, p, key = ref
+        if p is DOCUMENT or p not in self.order:
+            return
         self.goto(p)
         target = None
-        if kind == "obj" and key < len(self.items.get(p, [])):
+        if kind in ("redact", "text", "note", "sign", "highlight") and key < len(self.items.get(p, [])):
             target = self.scene_item(p, ("obj", self.items[p][key]))
         elif kind == "comment":
             target = self.scene_item(p, ("annot", key[1]))
-        elif kind == "form" and key in self.form_editors:
-            self.view.centerOn(self.form_editors[key].graphicsProxyWidget())
+        elif kind == "form" and key in self.fields.editors:
+            self.view.centerOn(self.fields.editors[key].graphicsProxyWidget())
         if target:
             self.view.scene().clearSelection()
             target.setSelected(True)
@@ -1202,71 +1322,127 @@ class EditTab(QWidget):
         item = self.thumbs.itemAt(pos)
         if item is None:
             return
-        row = self.thumbs.row(item)
+        p = item.data(Qt.UserRole)
         caption = self.thumbs.visualItemRect(item).left() + self.thumbs.iconSize().width() + THUMB_CHECK_WIDTH
-        if not self.page_edits(row) or pos.x() < caption:
+        if not self.page_edits(p) or pos.x() < caption:
             return
         self.side.setCurrentWidget(self.edits_tree)
-        for i in range(self.edits_tree.topLevelItemCount()):
-            top = self.edits_tree.topLevelItem(i)
-            if top.data(0, Qt.UserRole) == ("page", row, None):
-                self.edits_tree.scrollToItem(top, QAbstractItemView.PositionAtTop)
+        self.edits_tree.scroll_to_group(("page", p))
 
     def toggle_sidebar(self):
         self.settings.set("show_sidebar", self.a_sidebar.isChecked())
         self.side.setVisible(self.a_sidebar.isChecked())
 
-    def print_doc(self, preview=False):
+    def target_pages(self, clicked=None):
+        """Pages a page command acts on: the ticked ones (when `clicked` is one of them or not given), else `clicked`."""
+        ticked = [self.order[i] for i in self.ticked_positions()]
+        if ticked and (clicked is None or clicked in ticked):
+            return ticked
+        return [self.pno if clicked is None else clicked]
+
+    def change_pages(self, apply, reload=False):
+        """Run `apply()` (which changes order / rotation / crop / inserted) as one undo step and refresh the view."""
         if not self.doc:
             return
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setDocName(self.doc_path.name)
-        if preview:
-            dlg = QPrintPreviewDialog(printer, self)
-            dlg.setWindowTitle(f"Print preview - {self.doc_path.name}")
-            dlg.paintRequested.connect(self.paint_pages)
-            dlg.exec()
+        snap = self.snapshot()
+        if apply() is False:
             return
-        dlg = QPrintDialog(printer, self)
-        dlg.setMinMax(1, len(self.doc))
-        dlg.setOptions(
-            dlg.options() | QAbstractPrintDialog.PrintPageRange | QAbstractPrintDialog.PrintCurrentPage
-            | QAbstractPrintDialog.PrintCollateCopies
-        )
-        if dlg.exec() == QDialog.Accepted:
-            self.paint_pages(printer)
+        self.push_undo(snap)
+        if reload:
+            self.reload_display()
+        if self.pno not in self.order:
+            self.pno = self.order[0]
+        self.rebuild_thumbs()
+        self.render(scroll_to=self.pno if self.continuous else None)
 
-    def paint_pages(self, printer):
-        """Print what the view shows (edits applied) as page images, each fitted, and turned if needed, to the paper."""
-        data, _ = self.edited()
-        doc = pymupdf.open("pdf", data)
-        n = len(doc)
-        if printer.printRange() == QPrinter.PageRange:
-            pages = list(range(max(printer.fromPage(), 1) - 1, min(printer.toPage(), n)))
-        elif printer.printRange() == QPrinter.CurrentPage:
-            pages = [self.pno]
-        else:
-            pages = list(range(n))
-        if printer.pageOrder() == QPrinter.LastPageFirst:
-            pages.reverse()
-        dpi = min(printer.resolution(), PRINT_DPI)
-        area = QRectF(printer.pageLayout().paintRectPixels(printer.resolution()))
-        painter = QPainter()
-        if not painter.begin(printer):
-            doc.close()
-            QMessageBox.critical(self, APP_NAME, "Could not start printing.")
+    def rotate_pages(self, pages, degrees):
+        def apply():
+            for p in pages:
+                turned = (self.rotation.get(p, 0) + degrees) % 360
+                if turned:
+                    self.rotation[p] = turned
+                else:
+                    self.rotation.pop(p, None)
+        self.change_pages(apply, reload=True)
+
+    def remove_pages(self, pages):
+        remaining = tuple(p for p in self.order if p not in pages)
+        if not remaining:
+            QMessageBox.information(self, APP_NAME, "A document needs at least one page.")
             return
-        for i, p in enumerate(pages):
-            if i:
-                printer.newPage()
-            image = to_qimage(doc[p].get_pixmap(dpi=dpi, alpha=False))
-            if (image.width() > image.height()) != (area.width() > area.height()):
-                image = image.transformed(QTransform().rotate(90))
-            scale = min(area.width() / image.width(), area.height() / image.height())
-            w, h = image.width() * scale, image.height() * scale
-            painter.drawImage(QRectF((area.width() - w) / 2, (area.height() - h) / 2, w, h), image)
-        painter.end()
-        doc.close()
+        if self.pno in pages:
+            position = self.order.index(self.pno)
+            self.pno = next((p for p in self.order[position:] if p not in pages), remaining[-1])
+
+        def apply():
+            self.order = remaining
+        self.change_pages(apply)
+
+    def insert_pages(self, after):
+        path, _ = QFileDialog.getOpenFileName(self, "Insert pages from", str(self.doc_path.parent), "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            src = pymupdf.open(path)
+            count, locked = len(src), src.needs_pass
+            src.close()
+        except Exception as e:
+            QMessageBox.critical(self, APP_NAME, f"Cannot open {Path(path).name}:\n{e}")
+            return
+        if locked:
+            QMessageBox.information(self, APP_NAME, f"{Path(path).name} is password protected; remove its password first.")
+            return
+        start = len(self.doc)
+        new = tuple(range(start, start + count))
+        position = self.order.index(after) + 1 if after in self.order else len(self.order)
+
+        def apply():
+            self.inserted = (*self.inserted, (path, count))
+            self.order = self.order[:position] + new + self.order[position:]
+        self.change_pages(apply, reload=True)
+        self.goto(new[0])
+
+    def set_crops(self, crops):
+        """crops: {page: Rect, or None to remove its crop}."""
+        def apply():
+            if all(self.crop.get(p) == r for p, r in crops.items()):
+                return False
+            for p, rect in crops.items():
+                if rect is None:
+                    self.crop.pop(p, None)
+                else:
+                    self.crop[p] = pymupdf.Rect(rect)
+        self.change_pages(apply)
+
+    def crop_to_content(self, pages):
+        self.set_crops({p: content_rect(self.doc[p]) for p in pages})
+
+    def on_thumbs_moved(self, *_):
+        order = tuple(self.thumbs.item(i).data(Qt.UserRole) for i in range(self.thumbs.count()))
+        if order != self.order and len(order) == len(self.order):
+            # deferred: rebuilding the list inside its own drop handler crashes Qt
+            QTimer.singleShot(0, lambda: self.change_pages(lambda: setattr(self, "order", order)))
+
+    def on_thumb_menu(self, pos):
+        item = self.thumbs.itemAt(pos)
+        if item is None or not self.doc:
+            return
+        pages = self.target_pages(item.data(Qt.UserRole))
+        label = f"{len(pages)} pages" if len(pages) > 1 else "page"
+        menu = QMenu(self)
+        for text, act, icon in (
+            (f"Rotate {label} left", lambda: self.rotate_pages(pages, -90), "rotate-left"),
+            (f"Rotate {label} right", lambda: self.rotate_pages(pages, 90), "rotate"),
+            (f"Crop {label} to content", lambda: self.crop_to_content(pages), "crop"),
+        ):
+            icons.bind(menu.addAction(text, act), icon)
+        if any(p in self.crop for p in pages):
+            menu.addAction(f"Remove crop from {label}", lambda: self.set_crops({p: None for p in pages}))
+        menu.addSeparator()
+        icons.bind(menu.addAction("Insert pages from PDF after this...", lambda: self.insert_pages(pages[-1])), "add")
+        menu.addSeparator()
+        icons.bind(menu.addAction(f"Remove {label}", lambda: self.remove_pages(pages)), "remove")
+        menu.exec(self.thumbs.viewport().mapToGlobal(pos))
 
     def scene_item(self, pno, ref):
         for it in self.view.scene().items():
@@ -1307,10 +1483,10 @@ class EditTab(QWidget):
                     item.setTransformationMode(Qt.SmoothTransformation)
                     item.setZValue(0)
                     self.page_items[p] = item
-                    self.add_form_editors(scene, p)
-            elif p in self.page_items and not self.page_has_focus(p):
+                    self.fields.add(scene, p)
+            elif p in self.page_items and not self.fields.page_has_focus(p):
                 scene.removeItem(self.page_items.pop(p))
-                self.remove_form_editors(p)
+                self.fields.remove(p)
 
     def on_scroll(self):
         if not self.doc:
@@ -1326,9 +1502,10 @@ class EditTab(QWidget):
             self.update_state()
 
     def sync_thumb(self):
-        if self.thumbs.currentRow() != self.pno:
+        row = self.order.index(self.pno) if self.pno in self.order else -1
+        if self.thumbs.currentRow() != row:
             self.thumbs.blockSignals(True)
-            self.thumbs.setCurrentRow(self.pno)
+            self.thumbs.setCurrentRow(row)
             self.thumbs.blockSignals(False)
 
     def update_state(self):
@@ -1353,8 +1530,12 @@ class EditTab(QWidget):
         self.a_undo.setEnabled(has_doc and bool(self.history))
         self.a_redo.setEnabled(has_doc and bool(self.future))
         self.a_copy.setEnabled(has_doc and bool(self.text_sel))
-        for a in (self.a_print, self.a_print_preview):
+        for a in (
+            self.a_print, self.a_print_preview, self.a_split, self.a_protect, self.a_rotate_left, self.a_rotate_right,
+            self.a_remove_pages, self.a_insert_pages, self.a_fit_content, self.a_uncrop,
+        ):
             a.setEnabled(has_doc)
+        self.a_unprotect.setEnabled(has_doc and bool(self.password))
         self.info.setVisible(self.active)
         if not self.active:
             return
@@ -1374,21 +1555,28 @@ class EditTab(QWidget):
         ticked = 0
         for i in range(self.thumbs.count()):
             item = self.thumbs.item(i)
-            k = self.page_edits(i)
+            k = self.page_edits(item.data(Qt.UserRole))
             item.setText(f"{i + 1}" + (f"\n{k} edit{'s' * (k != 1)}" if k else ""))
             item.setForeground(QColor("#d93025") if k else self.thumbs.palette().text().color())
             ticked += item.checkState() == Qt.Checked
         self.thumbs.blockSignals(False)
-        pages = sum(1 for i in range(len(self.doc)) if self.page_edits(i))
+        pages = sum(1 for p in self.order if self.page_edits(p))
+        position = self.order.index(self.pno) + 1 if self.pno in self.order else 0
         self.stats.setText(
-            f"page {self.pno + 1}/{len(self.doc)}   |   {n} edit(s) on {pages} page(s)   |   {ticked} ticked for export   |"
+            f"page {position}/{len(self.order)}   |   {n} edit(s) on {pages} page(s)   |   {ticked} ticked   |"
         )
         path = str(self.doc_path)
         self.path_label.setText(self.path_label.fontMetrics().elidedText(path, Qt.ElideMiddle, PATH_WIDTH))
         self.path_label.setToolTip(path)
 
+    def step_page(self, delta):
+        if self.doc and self.pno in self.order:
+            position = self.order.index(self.pno) + delta
+            if 0 <= position < len(self.order):
+                self.goto(self.order[position])
+
     def goto(self, pno):
-        if not self.doc or not 0 <= pno < len(self.doc):
+        if not self.doc or pno not in self.order:
             return
         self.pno = pno
         self.sync_thumb()
@@ -1412,7 +1600,7 @@ class EditTab(QWidget):
     def fit_width(self):
         if self.doc:
             width = self.view.viewport().width()
-            page_w = max(page.rect.width for page in self.doc)
+            page_w = max(self.doc[p].rect.width for p in self.order)
             self.set_zoom((width - 40) / page_w if width > 100 else 1.5)
 
     def tick_all(self, value):
@@ -1435,16 +1623,21 @@ class EditTab(QWidget):
             self.sync_mark_options()
 
     def snapshot(self):
+        """A copy of the edits for the undo history (the state() keys)."""
         items = {
             p: [dict(o, rect=pymupdf.Rect(o["rect"]), **({"rects": list(o["rects"])} if "rects" in o else {})) for o in objs]
             for p, objs in self.items.items()
         }
-        return items, frozenset(self.deleted), dict(self.forms), dict(self.annot_text)
+        return {
+            "items": items, "deleted": frozenset(self.deleted), "forms": dict(self.forms),
+            "annot_text": dict(self.annot_text), "order": self.order, "rotation": dict(self.rotation),
+            "crop": {p: pymupdf.Rect(r) for p, r in self.crop.items()}, "inserted": self.inserted,
+        }
 
     def push_undo(self, snap):
         self.history.append(snap)
         self.future.clear()
-        self.form_edit_key = None
+        self.fields.edit_key = None
 
     def begin_change(self):
         self.pending = self.snapshot()
@@ -1456,6 +1649,8 @@ class EditTab(QWidget):
                 rect = self.to_pdf(it.mapRectToScene(it.rect()), it.pno)
                 if max(abs(a - b) for a, b in zip(rect, it.obj["rect"])) > 0.01:
                     it.obj["rect"] = rect
+                    if it.kind == "crop":
+                        self.crop[it.pno] = rect
                     changed = True
         if changed and self.pending is not None:
             self.push_undo(self.pending)
@@ -1468,18 +1663,27 @@ class EditTab(QWidget):
             QTimer.singleShot(0, lambda: self.item_clicked(obj, pno, kind))
 
     def restore(self, snap):
-        before, before_deleted, before_forms = self.items, self.deleted, self.forms
-        items, deleted, forms, annot_text = snap
-        self.items, self.deleted, self.forms, self.annot_text = items, set(deleted), dict(forms), dict(annot_text)
-        self.form_edit_key = None
-        if self.deleted != before_deleted:
+        """Make `snap` (a snapshot() dict) the current edits and show the first page it changes."""
+        before = self.state()
+        self.items, self.deleted, self.forms = snap["items"], set(snap["deleted"]), dict(snap["forms"])
+        self.annot_text, self.order, self.rotation = dict(snap["annot_text"]), snap["order"], dict(snap["rotation"])
+        self.crop, self.inserted = dict(snap["crop"]), snap["inserted"]
+        self.fields.edit_key = None
+        layout_changed = (before["rotation"], before["inserted"]) != (self.rotation, self.inserted)
+        if layout_changed or before["deleted"] != self.deleted:
             self.reload_display()
-        touched = {p for p in set(before) | set(self.items) if before.get(p) != self.items.get(p)}
-        touched |= {p for p, _ in before_deleted ^ self.deleted}
-        touched |= {key[0] for key, _ in set(before_forms.items()) ^ set(self.forms.items())}
-        first = min(touched) if touched else None
-        if first is not None and first not in self.offsets:
-            self.goto(first)
+        if layout_changed or before["order"] != self.order:
+            self.rebuild_thumbs()
+        touched = {p for p in set(before["items"]) | set(self.items) if before["items"].get(p) != self.items.get(p)}
+        touched |= {p for p, _ in before["deleted"] ^ self.deleted}
+        touched |= {key[0] for key, _ in set(before["forms"].items()) ^ set(self.forms.items())}
+        touched |= {p for p in set(before["rotation"]) | set(self.rotation) if before["rotation"].get(p) != self.rotation.get(p)}
+        touched |= {p for p in set(before["crop"]) | set(self.crop) if before["crop"].get(p) != self.crop.get(p)}
+        shown = [p for p in self.order if p in touched]
+        if self.pno not in self.order:
+            self.pno = self.order[0]
+        if shown and shown[0] not in self.offsets:
+            self.goto(shown[0])
         else:
             self.render()
 
@@ -1497,6 +1701,8 @@ class EditTab(QWidget):
         return next(p for p, objs in self.items.items() if any(o is obj for o in objs))
 
     def delete_selected(self):
+        if self.thumbs.hasFocus() and self.thumbs.currentItem():
+            return self.remove_pages(self.target_pages(self.thumbs.currentItem().data(Qt.UserRole)))
         entry = self.annot_tree.currentItem()
         if self.annot_tree.hasFocus() and entry and entry.data(0, Qt.UserRole):
             pno, ref = entry.data(0, Qt.UserRole)
@@ -1511,8 +1717,11 @@ class EditTab(QWidget):
             return
         self.push_undo(self.snapshot())
         annots = {(i.pno, i.obj["xref"]) for i in selected if i.kind == "annot"}
+        self.annot_types.update({(i.pno, i.obj["xref"]): i.obj["type"] for i in selected if i.kind == "annot"})
         for i in selected:
-            if i.kind != "annot":
+            if i.kind == "crop":
+                self.crop.pop(i.pno, None)
+            elif i.kind != "annot":
                 self.items[i.pno] = [o for o in self.items.get(i.pno, []) if o is not i.obj]
         if annots:
             self.deleted |= annots
@@ -1575,6 +1784,8 @@ class EditTab(QWidget):
             return "rect" if alt else "flow"
         if self.tool == "redact":
             return "rect" if alt or not self.a_snap.isChecked() else "flow"
+        if self.tool in ("crop", "text"):
+            return "rect"
         return None
 
     def page_words(self, pno):
@@ -1693,8 +1904,24 @@ class EditTab(QWidget):
             if self.add_redaction(pno, sel):
                 self.push_undo(snap)
             self.render()
+        elif self.tool == "crop":
+            self.crop_menu(pno, sel)
+        elif self.tool == "text":
+            self.start_text(pno, sel.tl, sel.width)
         else:
             self.apply_selection(pno, *self.line_rects(sel, pno))
+
+    def crop_menu(self, pno, rect):
+        """After drawing a crop rectangle: which pages get it."""
+        ticked = [self.order[i] for i in self.ticked_positions()]
+        menu = QMenu(self)
+        menu.addAction("Crop this page", lambda: self.set_crops({pno: rect}))
+        menu.addAction(f"Crop all {len(self.order)} pages to this area", lambda: self.set_crops({p: rect for p in self.order}))
+        if ticked:
+            menu.addAction(f"Crop {len(ticked)} ticked pages to this area", lambda: self.set_crops({p: rect for p in ticked}))
+        menu.addSeparator()
+        menu.addAction("Crop this page to its content instead", lambda: self.crop_to_content([pno]))
+        menu.exec(QCursor.pos())
 
     def close_popover(self, commit=True):
         pop, self.popover = self.popover, None
@@ -1761,6 +1988,8 @@ class EditTab(QWidget):
 
     def delete_annot(self, key):
         snap = self.snapshot()
+        annot = self.doc[key[0]].load_annot(key[1])
+        self.annot_types[key] = annot.type[1] if annot else "annotation"
         self.deleted.add(key)
         self.reload_display()
         self.push_undo(snap)
@@ -1777,7 +2006,7 @@ class EditTab(QWidget):
             return
         pos = self.to_pdf_point(pt, pno)
         if self.tool == "text":
-            self.place_text(pos, pno)
+            self.start_text(pno, pos)
         elif self.tool == "sign":
             self.place_signature(pos, pno)
         elif self.tool == "note":
@@ -1806,13 +2035,32 @@ class EditTab(QWidget):
                         style = (base_font_name(span["font"]), round(span["size"] * 2) / 2, rgb)
         return style
 
-    def font_choices(self):
-        names = pdf_font_names(self.doc)
-        return names + [f for f in DEFAULT_FONTS if f not in names]
+    def font_families(self):
+        families = []
+        for name in pdf_font_names(self.doc) + DEFAULT_FONTS:
+            if font_family(name) not in families:
+                families.append(font_family(name))
+        return families
 
-    def text_dialog(self, text, font, size, rgb):
-        dlg = TextDialog(self, self.doc, self.font_choices(), text, font, size, rgb)
-        return dlg.values() if dlg.exec() == QDialog.Accepted else None
+    def qt_font(self, name, text):
+        """A Qt font close to how PDF font `name` will render `text`, for typing on the page."""
+        code, buf, _, _ = self.font_for(name, text or "x")
+        font = QFont()
+        if buf:
+            if code not in self.qt_families:
+                ids = QFontDatabase.addApplicationFontFromData(QByteArray(buf))
+                families = QFontDatabase.applicationFontFamilies(ids) if ids >= 0 else []
+                self.qt_families[code] = families[0] if families else ""
+            font.setFamily(self.qt_families[code])
+        else:
+            hint = {"ti": QFont.Serif, "co": QFont.TypeWriter}.get(code[:2], QFont.SansSerif)
+            font.setStyleHint(hint)
+            font.setFamily({QFont.Serif: "Serif", QFont.TypeWriter: "Monospace"}.get(hint, "Sans Serif"))
+        bold, italic = font_style(name)
+        font.setBold(bold)
+        font.setItalic(italic)
+        font.setPixelSize(TEXT_EDIT_PX)
+        return font
 
     def sized(self, obj):
         w, h = text_size(self.font_for(obj["font"], obj["text"])[2], obj)
@@ -1825,13 +2073,83 @@ class EditTab(QWidget):
         self.push_undo(snap)
         self.render()
 
-    def place_text(self, pos, pno):
-        font, size, rgb = self.nearby_style(pos, pno)
-        values = self.text_dialog("", font, size, rgb)
-        if values and values[0].strip():
-            text, font, size, rgb = values
-            obj = {"kind": "text", "rect": pymupdf.Rect(pos, pos), "text": text, "font": font, "size": size, "rgb": rgb}
-            self.add_obj(pno, self.sized(obj))
+    def start_text(self, pno, pos, width=None, obj=None):
+        """Type a text box on the page at `pos` (a dragged `width` wraps it); `obj` re-edits a placed one."""
+        self.close_popover()
+        self.finish_text()
+        if obj is None:
+            font, size, rgb = self.nearby_style(pos, pno)
+            obj = {"kind": "text", "rect": pymupdf.Rect(pos, pos), "text": "", "font": font, "size": size, "rgb": rgb}
+            if width and width > 4:
+                obj["width"] = width
+        style = {k: obj[k] for k in ("font", "size", "rgb")}
+        for it in self.view.scene().items():
+            if isinstance(it, ObjItem) and it.obj is obj:
+                it.hide()
+        bar = None
+        item = TextEditItem(lambda: bar is not None and bar.has_focus())
+        item.setPlainText(obj["text"])
+        item.setPos(self.to_scene(pymupdf.Rect(obj["rect"].tl, obj["rect"].tl), pno).topLeft())
+        self.view.scene().addItem(item)
+
+        def restyle(family=None, size=None, bold=None, italic=None, rgb=None):
+            if family is not None:
+                style["font"] = styled_font(family, bold, italic, pdf_font_names(self.doc))
+                style["size"], style["rgb"] = size, rgb
+                bar.hint.setText(self.font_for(style["font"], item.toPlainText() or "x")[3])
+            scale = style["size"] / TEXT_EDIT_PX
+            item.setFont(self.qt_font(style["font"], item.toPlainText()))
+            item.setDefaultTextColor(QColor(*style["rgb"]))
+            item.setScale(scale)
+            item.setTextWidth(obj["width"] / scale if obj.get("width") else -1)
+
+        bold, italic = font_style(obj["font"])
+        bar = FormatBar(
+            self.view.viewport(), self.font_families(), font_family(obj["font"]), obj["size"], bold, italic, obj["rgb"],
+            restyle,
+        )
+        restyle()
+        bar.hint.setText(self.font_for(style["font"], obj["text"] or "x")[3])
+        bar.adjustSize()
+        anchor = self.view.mapFromScene(item.scenePos())
+        bar.move(max(4, min(anchor.x(), self.view.viewport().width() - bar.width() - 4)), max(4, anchor.y() - bar.height() - 8))
+        bar.show()
+        item.finished.connect(self.finish_text)
+        self.text_edit = (pno, obj, item, bar, style, self.snapshot())
+        self.view.setFocus()
+        item.setFocus()
+
+    def finish_text(self, rerender=True):
+        """Commit the text box being typed (an empty one is dropped) as one undo step."""
+        if not self.text_edit:
+            return
+        pno, obj, item, bar, style, snap = self.text_edit
+        self.text_edit = None
+        text = item.toPlainText().rstrip("\n")
+        bar.hide()
+        bar.deleteLater()
+        if item.scene() is not None:
+            item.scene().removeItem(item)
+        placed = any(o is obj for o in self.items.get(pno, []))
+        if not text.strip():
+            if not placed:
+                if rerender:
+                    QTimer.singleShot(0, self.render)
+                return
+            self.items[pno] = [o for o in self.items[pno] if o is not obj]
+        elif text != obj["text"] or any(obj[k] != v for k, v in style.items()) or not placed:
+            obj.update(style, text=text)
+            self.sized(obj)
+            if not placed:
+                self.items.setdefault(pno, []).append(obj)
+        else:
+            if rerender:
+                QTimer.singleShot(0, self.render)
+            return
+        self.push_undo(snap)
+        # deferred: this can run from the text item's own key or focus handler, and render() deletes it
+        if rerender:
+            QTimer.singleShot(0, self.render)
 
     def place_note(self, pos, pno):
         rect = pymupdf.Rect(pos.x, pos.y, pos.x + NOTE_SIZE, pos.y + NOTE_SIZE)
@@ -1855,18 +2173,7 @@ class EditTab(QWidget):
 
     def edit_obj(self, obj):
         self.pending = None
-        pno = self.owner(obj)
-        values = self.text_dialog(obj["text"], obj["font"], obj["size"], obj["rgb"])
-        if not values:
-            return
-        snap = self.snapshot()
-        if values[0].strip():
-            obj.update(zip(("text", "font", "size", "rgb"), values))
-            self.sized(obj)
-        else:
-            self.items[pno] = [o for o in self.items[pno] if o is not obj]
-        self.push_undo(snap)
-        self.render()
+        self.start_text(self.owner(obj), obj["rect"].tl, obj=obj)
 
     def show_find(self):
         if not self.doc:
@@ -1889,13 +2196,15 @@ class EditTab(QWidget):
         self.matches, self.match_idx = [], -1
         query = self.find_edit.text()
         if self.doc and query.strip():
-            for pno, page in enumerate(self.doc):
+            for pno in self.order:
+                page = self.doc[pno]
                 for rect in sorted(page.search_for(query), key=lambda r: (round(r.y0), r.x0)):
                     # search_for ignores case, so re-check the text under the hit
                     if not self.find_case.isChecked() or query in page.get_textbox(rect + (-1, -1, 1, 1)):
                         self.matches.append((pno, rect))
         if self.matches:
-            self.match_idx = next((i for i, (p, _) in enumerate(self.matches) if p >= self.pno), 0)
+            here = self.order.index(self.pno) if self.pno in self.order else 0
+            self.match_idx = next((i for i, (p, _) in enumerate(self.matches) if self.order.index(p) >= here), 0)
             self.show_match()
         elif self.doc:
             self.render()

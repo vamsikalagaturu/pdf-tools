@@ -1,6 +1,7 @@
+import pytest
 import pymupdf
 
-from pdf_tools.core.edits import apply_edits, flatten, merge
+from pdf_tools.core.edits import PasswordError, apply_edits, flatten, merge, protect
 
 
 def word_rect(path, word, pno=0):
@@ -104,3 +105,47 @@ def test_merge_respects_order_and_pages(text_pdf, tmp_path):
     doc.save(other)
     out = pymupdf.open("pdf", merge([(other, [0]), (text_pdf, [1])]))
     assert [p.get_text().split("\n")[0] for p in out] == ["Other document", "Page 2 John Smith IBAN DE07100110012628836361"]
+
+
+def test_crop_hides_and_deletes_outside_and_keeps_inside(text_pdf):
+    keep = word_rect(text_pdf, "John")
+    crop = pymupdf.Rect(0, 0, 595, 100)
+    page = pymupdf.open("pdf", apply_edits(text_pdf, {}, crop={0: crop})[0])[0]
+    assert page.rect == pymupdf.Rect(0, 0, 595, 100)
+    assert "John" in page.get_text() and keep.y1 < 100
+    assert "Rossmann" not in page.get_text(clip=pymupdf.INFINITE_RECT())
+
+
+def test_rotation_order_and_inserted_pages(text_pdf, tmp_path):
+    other = tmp_path / "other.pdf"
+    extra = pymupdf.open()
+    extra.new_page().insert_text((50, 80), "Inserted page", fontsize=11)
+    extra.save(other)
+    data, _ = apply_edits(text_pdf, {}, rotation={1: 90}, inserted=[(other, 1)], pages=[2, 1])
+    out = pymupdf.open("pdf", data)
+    assert len(out) == 2
+    assert "Inserted page" in out[0].get_text()
+    assert out[1].rotation == 90 and "Page 2" in out[1].get_text()
+
+
+def test_redaction_scrubs_metadata_but_plain_edits_keep_it(text_pdf, tmp_path):
+    src = pymupdf.open(text_pdf)
+    src.set_metadata({"author": "Jane Doe", "title": "Statement"})
+    tagged = tmp_path / "tagged.pdf"
+    src.save(tagged)
+    rect = word_rect(tagged, "Rossmann")
+    redacted = pymupdf.open("pdf", apply_edits(tagged, {0: [{"kind": "redact", "rect": rect, "rgb": (0, 0, 0)}]})[0])
+    plain = pymupdf.open("pdf", apply_edits(tagged, {})[0])
+    assert not redacted.metadata.get("author")
+    assert plain.metadata["author"] == "Jane Doe"
+
+
+def test_encrypted_output_and_input(text_pdf, tmp_path):
+    locked = tmp_path / "locked.pdf"
+    locked.write_bytes(protect(apply_edits(text_pdf, {})[0], "s3cret"))
+    doc = pymupdf.open(locked)
+    assert doc.needs_pass and not doc.authenticate("wrong") and doc.authenticate("s3cret")
+    with pytest.raises(PasswordError):
+        apply_edits(locked, {})
+    reopened = pymupdf.open("pdf", apply_edits(locked, {}, password="s3cret")[0])
+    assert not reopened.needs_pass and "John Smith" in reopened[0].get_text()

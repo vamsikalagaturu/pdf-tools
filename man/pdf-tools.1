@@ -1,0 +1,313 @@
+.TH PDF-TOOLS 1 2026-10-28 "PDF Tools" "User Commands"
+.SH NAME
+pdf-tools \- view, redact, fill, annotate, sign, crop and merge PDF files
+.SH SYNOPSIS
+.B pdf-tools
+.RI [ file.pdf " ...]"
+.br
+.B pdf-tools \-\-forward
+.I file.pdf line source.tex
+.br
+.B pdf-tools
+.I command
+.RI [ options ]
+.I input.pdf
+.br
+.B pdf-tools help
+|
+.B \-\-help
+|
+.B \-\-install\-desktop
+|
+.B \-\-uninstall\-desktop
+.SH DESCRIPTION
+.B pdf-tools
+opens PDF files in a window with one tab per document.
+Edits stay in the window until you save, and every edit can be undone.
+.PP
+Redaction removes the text, images and drawings under each box from the file;
+it does not just paint over them.
+A file saved with redactions or crops also loses its hidden data: metadata,
+attachments, scripts, hidden text (such as the invisible text layer of a
+scanned document) and embedded thumbnails.
+After saving, the status line says whether any text was still found under a
+redaction.
+.PP
+Only one window runs at a time: opening more files, from a terminal or the
+application launcher, adds tabs to the running window.
+.PP
+The same operations are also available as commands that run without the window
+(see
+.BR COMMANDS ).
+.SH THE WINDOW
+.SS Tools
+.TP
+.BR View " (V)"
+Read the document, fill form fields, drag to select text (Alt+drag selects a
+rectangle) and right-click the selection to copy, mark or redact it.
+.TP
+.BR Redact " (R)"
+Drag over text to redact it, or draw a free rectangle with Alt+drag or with
+.B Snap to text
+turned off.
+.B Auto fill
+paints each box in the colour around it.
+.TP
+.BR Highlight " (H)"
+Drag over text to mark it: highlight, underline, strikethrough, squiggly line or
+text colour, with an optional comment.
+.TP
+.BR Note " (N)"
+Click to add a sticky note.
+.TP
+.BR Text " (T)"
+Click and type on the page, or drag first to set a width and the text wraps
+inside it.
+The bar above the box sets the font, size, bold, italic and colour.
+Esc or clicking elsewhere finishes; double-click a box to edit it again.
+.TP
+.BR Sign " (S)"
+Click to place a saved signature, or draw or import a new one.
+.TP
+.BR Crop " (C)"
+Drag a rectangle, then crop this page, all pages or the ticked pages to it, or
+crop the page to its content.
+The area outside is dimmed while you work and removed when you save.
+.SS Pages
+The
+.B Pages
+sidebar shows a thumbnail per page.
+Drag thumbnails to reorder pages, tick pages to act on several at once, and
+right-click for rotate, crop to content, insert pages from another PDF and
+remove.
+The
+.B Edits
+tab lists every unsaved change by page; hover over one and click its X to drop
+just that change.
+The
+.B Annotations
+tab lists the notes and marks in the document.
+.SS Saving
+.B Save
+replaces the file and moves the original to the trash.
+.B Save As
+writes a copy,
+.B Export pages
+writes a copy of some pages (optionally flattened to images),
+.B Split
+writes several parts, and
+.B Protect with password
+writes an AES-256 encrypted copy.
+A password protected file asks for its password when opened and keeps it when
+saved.
+.SS Keyboard
+.TS
+l l.
+Ctrl+O	open files
+Ctrl+S	save
+Ctrl+Shift+S	save as
+Ctrl+E	export pages
+Ctrl+P	print
+Ctrl+Z	undo
+Ctrl+Shift+Z, Ctrl+Y	redo
+Ctrl+F	find; Enter and Shift+Enter step
+Ctrl+C	copy the selected text
+Delete	remove the selected edit or pages
+Ctrl++, Ctrl+\-	zoom in, zoom out
+Ctrl+0	fit the width
+Left, PgUp	previous page
+Right, PgDn	next page
+Ctrl+Shift+L, Ctrl+Shift+R	rotate left, right
+F9	show or hide the sidebar
+Ctrl+M	merge PDFs
+Ctrl+Tab, Ctrl+Shift+Tab	next, previous tab
+Ctrl+W	close the tab
+Ctrl+Q	quit
+Ctrl+click	open the TeX source line
+.TE
+.SH LATEX
+An open PDF reloads by itself whenever the file changes on disk, keeping the
+page, zoom and scroll position, so a running
+.B latexmk \-pvc
+shows every build.
+If the tab has unsaved edits, you are asked first.
+.PP
+Compile with
+.B \-synctex=1
+to link the PDF and its sources:
+.TP
+.B Ctrl+click
+in the PDF opens the source line that produced that spot.
+The editor command is asked for on first use and stored as
+.B editor_command
+in the settings file;
+.B %f
+is replaced by the file and
+.B %l
+by the line, for example
+.BR "code \-g %f:%l" .
+.TP
+.BI "pdf-tools \-\-forward " "file.pdf line source.tex"
+shows where a source line is typeset: the running window jumps there and
+briefly highlights it.
+Configure your editor to run this command for its "view in PDF" action.
+.SH COMMANDS
+These run without the window, never ask questions, and print one JSON object.
+Pages are numbered from 1; ranges look like
+.BR 1\-3,7 ;
+positions are PDF points (1/72 inch) from the top-left corner of the page.
+Output files must differ from the input.
+An encrypted input needs
+.BI \-\-password " pw"
+and the output keeps that password.
+Run
+.BI "pdf-tools " command " \-\-help"
+for the full option list of a command.
+.TP
+.BI "info " input.pdf
+Page count and sizes, fonts, form fields with their values, annotations,
+metadata, whether the file is encrypted and whether SyncTeX data exists.
+.TP
+.BI "redact " "input.pdf " \-o " output.pdf"
+Redact every match of
+.BI \-\-text " string"
+and
+.BI \-\-regex " pattern"
+(both repeatable; text matches ignore case unless
+.BR \-\-case\-sensitive ).
+.BI \-\-pages " ranges"
+limits the pages,
+.BI \-\-fill " #rrggbb"
+sets the box colour (default black).
+The output lists every match and any text still found under a box.
+.TP
+.BI "fill " "input.pdf " \-o " output.pdf " \-\-field " name=value"
+Fill form fields (repeatable); checkboxes take
+.B true
+or
+.BR false .
+Field names are listed by
+.BR info .
+.TP
+.BI "pages " "input.pdf " \-o " output.pdf"
+.BI \-\-order " 3,1,2"
+sets the page order (ranges may count down, as in
+.BR 5\-1 ;
+pages left out are dropped),
+.BI \-\-remove " ranges"
+removes pages,
+.BI \-\-rotate " page:degrees"
+rotates by a multiple of 90,
+.BI \-\-crop " page:x0,y0,x1,y1"
+crops to a box, and
+.BR \-\-crop\-content " [\fIranges\fR]"
+crops pages to their content.
+Content outside a crop is deleted.
+.TP
+.BI "merge " "a.pdf b.pdf:1-3 ... " \-o " output.pdf"
+Join files, each optionally limited to some pages.
+.TP
+.BI "split " "input.pdf " "\-\-every " n " \-d " folder
+.TQ
+.BI "split " "input.pdf " "\-\-at " pages " \-d " folder
+Write
+.IR name \-part1.pdf ", " name \-part2.pdf ", ..."
+with
+.I n
+pages each, or starting a new part at each listed page.
+.TP
+.BI "protect " "input.pdf " \-o " output.pdf " \-\-password " new"
+Write an AES-256 encrypted copy
+.RB ( \-\-current\-password
+for an input that already has one).
+.TP
+.BI "unprotect " "input.pdf " \-o " output.pdf " \-\-password " current"
+Write a copy without the password.
+.TP
+.BI "flatten " "input.pdf " \-o " output.pdf"
+Turn every page into an image
+.RB ( \-\-dpi ,
+default 200), so no text, layers or hidden content remain.
+.TP
+.BI "synctex " "input.pdf " "\-\-page " n " \-\-at " x,y
+Print the source file and line typeset at that point.
+.TP
+.BI "synctex " "input.pdf " "\-\-source " file.tex " \-\-line " n
+Print the page and boxes where that source line is typeset.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show a short usage summary.
+.TP
+.B help
+Print the guide for scripts and agents (AGENTS.md).
+.TP
+.B \-\-install\-desktop
+Add PDF Tools to the application launcher and install its icon, for the current
+user.
+.TP
+.B \-\-uninstall\-desktop
+Remove them again.
+.SH EXIT STATUS
+.TP
+.B 0
+Done.
+.TP
+.B 1
+Error; the JSON output has an
+.B error
+message.
+.TP
+.B 2
+.B redact
+wrote the file, but text was still found under a redaction.
+.TP
+.B 3
+Nothing matched; nothing was written.
+.SH FILES
+.TP
+.I ~/.config/pdf-tools/settings.toml
+Settings, with a comment for each; edit while the program is closed.
+.TP
+.I ~/.config/pdf-tools/signatures/
+Saved signatures.
+.TP
+.IB name .synctex.gz
+SyncTeX data written by TeX next to
+.IR name .pdf.
+.SH EXAMPLES
+Remove a name and every IBAN from a statement:
+.PP
+.RS
+.nf
+pdf-tools redact statement.pdf \-o statement\-redacted.pdf \e
+    \-\-text "Jane Doe" \-\-regex 'DE\ed{20}'
+.fi
+.RE
+.PP
+Keep pages 1 to 3 of a scan, turned upright and trimmed to their content:
+.PP
+.RS
+.nf
+pdf-tools pages scan.pdf \-o trimmed.pdf \-\-order 1\-3 \e
+    \-\-rotate 1:90 \-\-rotate 2:90 \-\-rotate 3:90 \-\-crop\-content
+.fi
+.RE
+.PP
+Write a LaTeX document with live preview:
+.PP
+.RS
+.nf
+latexmk \-pdf \-pvc \-synctex=1 paper.tex &
+pdf-tools paper.pdf
+.fi
+.RE
+.SH SEE ALSO
+.BR latexmk (1),
+.BR synctex (1),
+.BR qpdf (1)
+.PP
+https://github.com/vamsikalagaturu/pdf-tools
+.SH LICENSE
+AGPL-3.0-or-later.
+Icons from Lucide, ISC license.
