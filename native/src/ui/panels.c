@@ -12,7 +12,7 @@
 static const struct { const char *label, *icon; } EDIT_KINDS[] = {
     [PT_E_REDACT] = {"Redaction", "redact"}, [PT_E_TEXT] = {"Text", "text"}, [PT_E_NOTE] = {"Note", "note"},
     [PT_E_SIGN] = {"Signature", "sign"}, [PT_E_IMAGE] = {"Image", "image"}, [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
-    [PT_E_INK] = {"Drawing", "draw"}, [PT_E_FORM] = {"Field", "file"}, [PT_E_DELETED] = {"Removed", "remove"},
+    [PT_E_INK] = {"Drawing", "draw"}, [PT_E_SHAPE] = {"Shape", "shapes"}, [PT_E_FORM] = {"Field", "file"}, [PT_E_DELETED] = {"Removed", "remove"},
     [PT_E_COMMENT] = {"Comment", "note"}, [PT_E_ROTATE] = {"Rotated", "rotate"}, [PT_E_CROP] = {"Cropped", "crop"},
     [PT_E_REMOVE_PAGE] = {"Page removed", "remove"}, [PT_E_INSERT] = {"Inserted from", "add"},
     [PT_E_REORDER] = {"Pages reordered", "sort"},
@@ -215,8 +215,11 @@ static void collect_annotations(tab *t, int page, annot_rows *rows)
     static const unsigned char NOTE_RGB[3] = {255, 213, 79};
     for (int i = 0; i < t->st.items.n; i++) {
         pt_item *it = &t->st.items.v[i];
-        if (it->page != page || (it->kind != PT_HIGHLIGHT && it->kind != PT_NOTE && it->kind != PT_INK)) continue;
-        annot_row r = {page, SEL_ITEM, i, it->kind == PT_HIGHLIGHT ? MARK_LABELS[it->style] : it->kind == PT_NOTE ? "Note" : "Drawing",
+        if (it->page != page || (it->kind != PT_HIGHLIGHT && it->kind != PT_NOTE && it->kind != PT_INK && it->kind != PT_SHAPE)) continue;
+        static const char *SHAPES[4] = {"Rectangle", "Ellipse", "Line", "Arrow"};
+        const char *label = it->kind == PT_HIGHLIGHT ? MARK_LABELS[it->style] : it->kind == PT_NOTE ? "Note"
+                          : it->kind == PT_SHAPE ? SHAPES[it->shape] : "Drawing";
+        annot_row r = {page, SEL_ITEM, i, label,
                        pt_strdup(it->quote ? it->quote : ""), pt_strdup(it->text ? it->text : ""), {0}};
         memcpy(r.rgb, it->kind == PT_NOTE ? NOTE_RGB : it->rgb, 3);
         pt_push(*rows, r);
@@ -237,7 +240,7 @@ static int count_annotations(tab *t)
         int p = t->st.order.v[k];
         for (int i = 0; i < t->st.items.n; i++) {
             pt_kind kind = t->st.items.v[i].kind;
-            n += t->st.items.v[i].page == p && (kind == PT_HIGHLIGHT || kind == PT_NOTE || kind == PT_INK);
+            n += t->st.items.v[i].page == p && (kind == PT_HIGHLIGHT || kind == PT_NOTE || kind == PT_INK || kind == PT_SHAPE);
         }
         n += page_annots(t, p)->n;
     }
@@ -422,7 +425,7 @@ static void on_edit_entry(tab *t, const pt_ref *ref)
     if (p == PT_DOCUMENT || order_index(t, p) < 0) return;
     tab_goto(t, p);
     fz_rect target = fz_empty_rect;
-    if (ref->kind <= PT_E_INK) {
+    if (ref->kind <= PT_E_SHAPE) {
         for (int i = 0, k = 0; i < t->st.items.n; i++)
             if (t->st.items.v[i].page == p && k++ == ref->index) {
                 t->sel = SEL_ITEM, t->sel_page = p, t->sel_index = i;

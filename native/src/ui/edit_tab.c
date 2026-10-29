@@ -87,8 +87,11 @@ enum {
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
     A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_GOTO, A_TOOL0,
-    A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5,
+    A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5, A_SHAPE0 = A_MARKC0 + 5,
 };
+
+static const char *SHAPE_ICONS[4] = {"shape-rect", "shape-ellipse", "shape-line", "shape-arrow"};
+static const char *SHAPE_LABELS[4] = {"Rectangle", "Ellipse", "Line", "Arrow"};
 
 static void ask_goto(tab *t);
 
@@ -162,7 +165,7 @@ static void run(void *ctx, intptr_t a)
         else if (a >= A_MARKC0 && a < A_MARKC0 + 5) {
             const preset *p = mark_style() == PT_MARK_HIGHLIGHT ? HIGHLIGHT_PRESETS : INK_PRESETS;
             set_mark_colour(t, p[a - A_MARKC0].rgb);
-        }
+        } else if (a >= A_SHAPE0 && a < A_SHAPE0 + 4) t->shape = (pt_shape)(a - A_SHAPE0);
     }
     pt_vec_free(pages);
 }
@@ -388,7 +391,20 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         x += w1 + 2;
         if (draw && ui_button(bid(t, 51), (Rectangle){x, y, w2, h}, "Remove crop", "close", B_FLAT, NULL)) run(t, A_UNCROP);
         x += w2 + 2;
-    } else if (t->tool == T_DRAW) {
+    } else if (t->tool == T_DRAW || t->tool == T_SHAPE) {
+        /* shapes share the pen's colour and width */
+        if (t->tool == T_SHAPE) {
+            Rectangle sb = {x, y, 42, h};
+            if (draw && ui_button(bid(t, 64), sb, NULL, SHAPE_ICONS[t->shape], B_FLAT | B_MENU, NULL)) {
+                ui_menu *m = menu_new();
+                for (int i = 0; i < 4; i++) menu_item(m, SHAPE_LABELS[i], SHAPE_ICONS[i], NULL, run, t, A_SHAPE0 + i, 1, (int)t->shape == i);
+                menu_open_below(m, sb);
+            }
+            static char tip[48];
+            snprintf(tip, sizeof tip, "Shape: %s", SHAPE_LABELS[t->shape]);
+            if (draw) ui_tooltip(bid(t, 65), sb, tip);
+            x += 44;
+        }
         int known = 0;
         for (int i = 0; i < 6; i++) {
             int on = !memcmp(t->pen_rgb, PEN_COLOURS[i].rgb, 3);
@@ -421,7 +437,7 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
 
 static int tool_has_options(tab *t)
 {
-    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW;
+    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW || t->tool == T_SHAPE;
 }
 
 /* phone-sized windows: one picker for the tools, the rest in an overflow menu; tool options get their own row */

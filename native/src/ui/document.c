@@ -19,6 +19,7 @@ const tool_def TOOLS[T_COUNT] = {
     {"sign", "Sign", "sign", KEY_S, "Click to place a signature (S)"},
     {"image", "Image", "image", KEY_I, "Click, or drag a box, to place a picture; drag its corner to resize (I)"},
     {"draw", "Draw", "draw", KEY_D, "Draw freehand; strokes made in quick succession form one drawing (D)"},
+    {"shape", "Shape", "shapes", KEY_O, "Drag to draw a rectangle, ellipse, line or arrow (O)"},
     {"crop", "Crop", "crop", KEY_C, "Drag a rectangle to crop to it; drag the frame or its corner to adjust (C)"},
 };
 /* tints for background highlights on white paper; text under them stays black */
@@ -1738,6 +1739,7 @@ static void write_state(FILE *f, const pt_state *s)
             fwrite(it->strokes.v[k].v, sizeof(fz_point), (size_t)it->strokes.v[k].n, f);
         }
         w_float(f, it->pen_width);
+        w_int(f, (int)it->shape);
         w_int(f, (int)it->data.len);
         if (it->data.len) fwrite(it->data.data, 1, it->data.len, f);
     }
@@ -1785,6 +1787,7 @@ static void read_state(FILE *f, pt_state *s)
             pt_push(it.strokes, pts);
         }
         it.pen_width = r_float(f);
+        it.shape = (pt_shape)r_int(f);
         int len = r_int(f);
         if (len > 0) {
             it.data.data = malloc((size_t)len);

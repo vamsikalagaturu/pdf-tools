@@ -28,7 +28,8 @@ static const char *LUCIDE[][2] = {
     {"file", "file-text"}, {"sidebar", "panel-left"}, {"copy", "copy"}, {"print", "printer"}, {"about", "info"},
     {"rotate", "rotate-cw"}, {"rotate-left", "rotate-ccw"}, {"crop", "crop"}, {"lock", "lock"}, {"unlock", "lock-open"},
     {"split", "scissors"}, {"bold", "bold"}, {"italic", "italic"}, {"image", "image"}, {"draw", "pencil"},
-    {"more", "ellipsis-vertical"},
+    {"more", "ellipsis-vertical"}, {"shapes", "shapes"}, {"shape-rect", "square"}, {"shape-ellipse", "circle"},
+    {"shape-line", "slash"}, {"shape-arrow", "arrow-up-right"},
 };
 #define NLUCIDE (int)(sizeof LUCIDE / sizeof *LUCIDE)
 #define ICON_PX 48

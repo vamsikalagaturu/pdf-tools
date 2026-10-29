@@ -12,7 +12,8 @@
 #define BLEED 0.75f
 #define JPEG_QUALITY 90
 
-const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highlight", "ink"};
+const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highlight", "ink", "shape"};
+const char *pt_shape_names[] = {"rectangle", "ellipse", "line", "arrow"};
 const char *pt_mark_names[] = {"highlight", "underline", "strikeout", "squiggly", "textcolour"};
 
 int pt_mark_from_name(const char *name)
@@ -512,6 +513,21 @@ void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
             annot_rgb(ctx, a, it->rgb);
             pdf_set_annot_border_width(ctx, a, it->pen_width > 0 ? it->pen_width : 2);
             pdf_update_annot(ctx, a);
+        } else if (it->kind == PT_SHAPE) {
+            float w = it->pen_width > 0 ? it->pen_width : 2;
+            if (it->shape == PT_SHAPE_LINE || it->shape == PT_SHAPE_ARROW) {
+                a = pdf_create_annot(ctx, page, PDF_ANNOT_LINE);
+                fz_point p0 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[0] : (fz_point){it->rect.x0, it->rect.y0};
+                fz_point p1 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[1] : (fz_point){it->rect.x1, it->rect.y1};
+                pdf_set_annot_line(ctx, a, p0, p1);
+                if (it->shape == PT_SHAPE_ARROW) pdf_set_annot_line_ending_styles(ctx, a, PDF_ANNOT_LE_NONE, PDF_ANNOT_LE_OPEN_ARROW);
+            } else {
+                a = pdf_create_annot(ctx, page, it->shape == PT_SHAPE_ELLIPSE ? PDF_ANNOT_CIRCLE : PDF_ANNOT_SQUARE);
+                pdf_set_annot_rect(ctx, a, it->rect);
+            }
+            annot_rgb(ctx, a, it->rgb);
+            pdf_set_annot_border_width(ctx, a, w);
+            pdf_update_annot(ctx, a);
         } else {
             a = pdf_create_annot(ctx, page, PDF_ANNOT_TEXT);
             fz_point tl = {it->rect.x0, it->rect.y0};
@@ -744,7 +760,7 @@ static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *f
             if (it->kind == PT_TEXT) pt_draw_text(ctx, doc, page, it, fonts_doc);
             else if (it->kind == PT_SIGN || it->kind == PT_IMAGE)
                 pt_insert_image(ctx, doc, page, it->rect, it->data.data, it->data.len);
-            else if (it->kind == PT_HIGHLIGHT || it->kind == PT_NOTE || it->kind == PT_INK)
+            else if (it->kind == PT_HIGHLIGHT || it->kind == PT_NOTE || it->kind == PT_INK || it->kind == PT_SHAPE)
                 pt_add_annotation(ctx, page, it);
         }
     }

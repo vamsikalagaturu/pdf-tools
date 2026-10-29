@@ -439,6 +439,32 @@ void on_click(tab *t, fz_point scene)
     else if (t->tool == T_NOTE) place_note(t, pos, page);
 }
 
+void on_shape(tab *t)
+{
+    if (!t->doc || t->stroke.n < 2) return;
+    int page = page_at(t, t->stroke.v[0]);
+    if (page < 0) return;
+    fz_point a = scene_to_src_point(t, page, t->stroke.v[0]), b = scene_to_src_point(t, page, t->stroke.v[1]);
+    pt_item it = {0};
+    it.page = page, it.kind = PT_SHAPE, it.shape = t->shape, it.pen_width = t->pen_width;
+    memcpy(it.rgb, t->pen_rgb, 3);
+    fz_rect box = fz_make_rect(fminf(a.x, b.x), fminf(a.y, b.y), fmaxf(a.x, b.x), fmaxf(a.y, b.y));
+    if (t->shape == PT_SHAPE_LINE || t->shape == PT_SHAPE_ARROW) {
+        pt_points ends = {0};
+        pt_push(ends, a);
+        pt_push(ends, b);
+        pt_push(it.strokes, ends);
+        /* the box only selects and moves it: room for the pen and the arrowhead */
+        float pad = fmaxf(4, it.pen_width * 2) + (t->shape == PT_SHAPE_ARROW ? fmaxf(8, it.pen_width * 4) : 0);
+        box = fz_expand_rect(box, pad);
+    }
+    it.rect = box;
+    pt_state snap;
+    snapshot(t, &snap);
+    pt_push(t->st.items, it);
+    push_undo(t, &snap);
+}
+
 /* A finished pen stroke: joins the drawing made just before on the same page, else starts one. */
 void on_stroke(tab *t)
 {
@@ -539,8 +565,26 @@ static void a_ink_width(void *c, intptr_t a)
     snapshot(t, &snap);
     pt_item *it = &t->st.items.v[mc.index];
     it->pen_width = PEN_WIDTHS[a].width;
-    it->rect = ink_bounds(it);
+    if (it->kind == PT_INK) it->rect = ink_bounds(it);
     push_undo(t, &snap);
+}
+/* a favourite colour (its index in favourite_colours) for the item the menu is about */
+static void a_favourite_colour(void *c, intptr_t a)
+{
+    (void)c;
+    unsigned char fav[FAVOURITES_MAX][3];
+    if (a < favourite_colours(fav, FAVOURITES_MAX)) recolour(mc.t, mc.index, fav[a]);
+}
+static void favourite_items(ui_menu *m, const unsigned char current[3])
+{
+    unsigned char fav[FAVOURITES_MAX][3];
+    int n = favourite_colours(fav, FAVOURITES_MAX);
+    if (n) menu_sep(m);
+    for (int i = 0; i < n; i++) {
+        char name[16];
+        snprintf(name, sizeof name, "#%02x%02x%02x", fav[i][0], fav[i][1], fav[i][2]);
+        menu_swatch_item(m, name, fav[i], a_favourite_colour, NULL, i, !memcmp(current, fav[i], 3));
+    }
 }
 static void a_item_clicked(void *c, intptr_t a) { (void)c, (void)a; item_clicked(mc.t, mc.kind, mc.page, mc.index); }
 static void a_restyle(void *c, intptr_t style)
@@ -654,9 +698,12 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         mc.kind = SEL_ITEM;
         if (it->kind == PT_TEXT) menu_item(m, "Edit text", NULL, NULL, a_edit_text, NULL, 0, 1, 0);
         else if (it->kind == PT_IMAGE) menu_item(m, "Replace image...", NULL, NULL, a_replace_image, NULL, 0, 1, 0);
-        else if (it->kind == PT_INK) {
+        else if (it->kind == PT_INK || it->kind == PT_SHAPE) {
             ui_menu *c = menu_sub(m, "Colour", NULL);
             for (int i = 0; i < 6; i++) menu_swatch_item(c, PEN_COLOURS[i].name, PEN_COLOURS[i].rgb, a_ink_colour, NULL, i, !memcmp(it->rgb, PEN_COLOURS[i].rgb, 3));
+            favourite_items(c, it->rgb);
+            menu_sep(c);
+            menu_item(c, "Custom...", NULL, NULL, a_pick_obj_colour, NULL, 0, 1, 0);
             ui_menu *w = menu_sub(m, "Width", NULL);
             for (int i = 0; i < 3; i++) menu_item(w, PEN_WIDTHS[i].name, NULL, NULL, a_ink_width, NULL, i, 1, it->pen_width == PEN_WIDTHS[i].width);
         } else if (it->kind == PT_NOTE) menu_item(m, "Edit note...", NULL, NULL, a_item_clicked, NULL, 0, 1, 0);
@@ -667,6 +714,8 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
             ui_menu *c = menu_sub(m, "Colour", NULL);
             const preset *pal5 = palette_for(it->style);
             for (int i = 0; i < 5; i++) menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_recolour_preset, NULL, i, !memcmp(it->rgb, pal5[i].rgb, 3));
+            favourite_items(c, it->rgb);
+            menu_sep(c);
             menu_item(c, "Custom...", NULL, NULL, a_pick_obj_colour, NULL, 0, 1, 0);
         } else if (it->kind == PT_REDACT) {
             ui_menu *f = menu_sub(m, "Fill colour", NULL);

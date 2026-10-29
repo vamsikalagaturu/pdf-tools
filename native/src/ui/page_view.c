@@ -12,11 +12,51 @@
 
 static const cursor_kind TOOL_CURSORS[T_COUNT] = {
     [T_VIEW] = CUR_IBEAM, [T_REDACT] = CUR_CROSS, [T_HIGHLIGHT] = CUR_IBEAM, [T_NOTE] = CUR_HAND,
-    [T_TEXT] = CUR_IBEAM, [T_SIGN] = CUR_CROSS, [T_IMAGE] = CUR_CROSS, [T_DRAW] = CUR_PEN, [T_CROP] = CUR_CROSS,
+    [T_TEXT] = CUR_IBEAM, [T_SIGN] = CUR_CROSS, [T_IMAGE] = CUR_CROSS, [T_DRAW] = CUR_PEN, [T_SHAPE] = CUR_CROSS,
+    [T_CROP] = CUR_CROSS,
 };
 
-static int movable(pt_kind k) { return k == PT_REDACT || k == PT_TEXT || k == PT_SIGN || k == PT_IMAGE || k == PT_NOTE || k == PT_INK; }
-static int resizable(pt_kind k) { return k == PT_REDACT || k == PT_SIGN || k == PT_IMAGE; }
+static int movable(pt_kind k)
+{
+    return k == PT_REDACT || k == PT_TEXT || k == PT_SIGN || k == PT_IMAGE || k == PT_NOTE || k == PT_INK || k == PT_SHAPE;
+}
+/* lines and arrows are defined by their ends, not their box: they move but do not resize */
+static int resizable(const pt_item *it)
+{
+    return it->kind == PT_REDACT || it->kind == PT_SIGN || it->kind == PT_IMAGE || (it->kind == PT_SHAPE && it->shape <= PT_SHAPE_ELLIPSE);
+}
+
+/* A shape between two screen points, as its annotation is drawn: rectangle and ellipse strokes inside their box,
+ * lines with round ends, an arrow with an open head at b. */
+static void draw_shape(pt_shape shape, Vector2 a, Vector2 b, float w, Color c)
+{
+    Rectangle r = {fminf(a.x, b.x), fminf(a.y, b.y), fabsf(b.x - a.x), fabsf(b.y - a.y)};
+    if (shape == PT_SHAPE_RECT) {
+        DrawRectangleLinesEx(r, fminf(w, fminf(r.width, r.height) / 2 + 0.5f), c);
+    } else if (shape == PT_SHAPE_ELLIPSE) {
+        float cx = r.x + r.width / 2, cy = r.y + r.height / 2, rx = fmaxf(0, (r.width - w) / 2), ry = fmaxf(0, (r.height - w) / 2);
+        Vector2 prev = {cx + rx, cy};
+        for (int i = 1; i <= 72; i++) {
+            float th = (float)i / 72 * 2 * PI;
+            Vector2 p = {cx + rx * cosf(th), cy + ry * sinf(th)};
+            DrawLineEx(prev, p, w, c);
+            DrawCircleV(p, w / 2, c);
+            prev = p;
+        }
+    } else {
+        DrawLineEx(a, b, w, c);
+        DrawCircleV(a, w / 2, c);
+        DrawCircleV(b, w / 2, c);
+        if (shape == PT_SHAPE_ARROW && (a.x != b.x || a.y != b.y)) {
+            float ang = atan2f(b.y - a.y, b.x - a.x), len = fmaxf(10, w * 4);
+            for (int s = -1; s <= 1; s += 2) {
+                Vector2 h = {b.x - len * cosf(ang + s * PI / 6), b.y - len * sinf(ang + s * PI / 6)};
+                DrawLineEx(b, h, w, c);
+                DrawCircleV(h, w / 2, c);
+            }
+        }
+    }
+}
 
 /* ---- image caches for item previews ---- */
 
@@ -306,6 +346,19 @@ static void draw_item(tab *t, int index)
             DrawLineEx((Vector2){r.x + 3 * t->zoom, y}, (Vector2){r.x + r.width - 3 * t->zoom, y}, 1, (Color){138, 109, 0, 255});
         }
         break;
+    case PT_SHAPE: {
+        float w = fmaxf(1, it->pen_width * t->zoom);
+        Vector2 a = {r.x, r.y}, b = {r.x + r.width, r.y + r.height};
+        if (it->shape >= PT_SHAPE_LINE && it->strokes.n && it->strokes.v[0].n > 1) {
+            const pt_points *e = &it->strokes.v[0];
+            fz_rect s0 = to_scene(t, page, fz_make_rect(e->v[0].x, e->v[0].y, e->v[0].x, e->v[0].y));
+            fz_rect s1 = to_scene(t, page, fz_make_rect(e->v[1].x, e->v[1].y, e->v[1].x, e->v[1].y));
+            a = scene_to_screen(t, (fz_point){s0.x0, s0.y0}), b = scene_to_screen(t, (fz_point){s1.x0, s1.y0});
+            a.x += shift.x, a.y += shift.y, b.x += shift.x, b.y += shift.y;
+        }
+        draw_shape(it->shape, a, b, w, rgb3(it->rgb));
+        break;
+    }
     case PT_INK:
         for (int s = 0; s < it->strokes.n; s++) {
             const pt_points *pts = &it->strokes.v[s];
@@ -333,7 +386,7 @@ static void draw_item(tab *t, int index)
     }
     if (t->sel == SEL_ITEM && t->sel_index == index) {
         dashed_rect(r, FRAME_BLUE);
-        if (resizable(it->kind)) DrawRectangleRec(handle_rect(r), FRAME_BLUE);
+        if (resizable(it)) DrawRectangleRec(handle_rect(r), FRAME_BLUE);
     }
 }
 
@@ -363,7 +416,7 @@ static hit_obj hit_test(tab *t)
         if (t->tb.active && t->tb.index == i) continue;
         Rectangle r = item_screen_rect(t, i);
         if (in_screen(r)) {
-            int handle = t->sel == SEL_ITEM && t->sel_index == i && resizable(it->kind) && in_screen(handle_rect(r));
+            int handle = t->sel == SEL_ITEM && t->sel_index == i && resizable(it) && in_screen(handle_rect(r));
             return (hit_obj){SEL_ITEM, it->page, i, handle};
         }
     }
@@ -405,6 +458,7 @@ static gesture_kind selection_mode(tab *t)
     case T_REDACT: return alt || !t->snap_text ? G_BAND : G_FLOW;
     case T_CROP: case T_TEXT: case T_IMAGE: return G_BAND;
     case T_DRAW: return G_STROKE;
+    case T_SHAPE: return G_SHAPE;
     default: return G_NONE;
     }
 }
@@ -529,13 +583,14 @@ static void handle_input(tab *t, Rectangle area)
         t->sel = SEL_NONE;
         t->gesture = selection_mode(t);
         if (t->gesture == G_BAND) t->band = fz_make_rect(scene.x, scene.y, scene.x, scene.y);
-        else if (t->gesture == G_STROKE) {
-            /* ink starts on a page and stays on it */
+        else if (t->gesture == G_STROKE || t->gesture == G_SHAPE) {
+            /* ink and shapes start on a page and stay on it; a shape keeps {start, end} */
             int p = page_at(t, scene);
             if (p < 0 || !fz_is_point_inside_rect(scene, page_scene_rect(t, p))) t->gesture = G_NONE;
             else {
                 t->stroke.n = 0;
                 pt_push(t->stroke, scene);
+                if (t->gesture == G_SHAPE) pt_push(t->stroke, scene);
             }
         } else if (t->gesture == G_NONE) t->gesture = G_CLICK;
     }
@@ -550,12 +605,13 @@ static void handle_input(tab *t, Rectangle area)
     if (t->gesture == G_NONE) return;
     fz_point now = screen_to_scene(t, ui.mouse);
     if (ui.down) {
-        if (t->gesture == G_STROKE) {
+        if (t->gesture == G_STROKE || t->gesture == G_SHAPE) {
             fz_rect pr = page_scene_rect(t, page_at(t, t->stroke.v[0]));
             now.x = fminf(fmaxf(now.x, pr.x0), pr.x1);
             now.y = fminf(fmaxf(now.y, pr.y0), pr.y1);
             fz_point last = t->stroke.v[t->stroke.n - 1];
-            if (fabsf(now.x - last.x) + fabsf(now.y - last.y) > 0.4f / t->zoom) pt_push(t->stroke, now);
+            if (t->gesture == G_SHAPE) t->stroke.v[1] = now;
+            else if (fabsf(now.x - last.x) + fabsf(now.y - last.y) > 0.4f / t->zoom) pt_push(t->stroke, now);
         } else if (t->gesture == G_BAND) {
             t->band = fz_make_rect(fminf(t->press_scene.x, now.x), fminf(t->press_scene.y, now.y),
                                    fmaxf(t->press_scene.x, now.x), fmaxf(t->press_scene.y, now.y));
@@ -572,6 +628,9 @@ static void handle_input(tab *t, Rectangle area)
     if (g == G_STROKE) {
         if (t->stroke.n > 1) on_stroke(t);
         t->stroke.n = 0;
+    } else if (g == G_SHAPE) {
+        if (far) on_shape(t);
+        t->stroke.n = 0;
     } else if (g == G_BAND) {
         if (far) on_band(t, t->band);
         else on_click(t, t->press_scene);
@@ -586,7 +645,7 @@ static void handle_input(tab *t, Rectangle area)
         if (moved && t->sel == SEL_ITEM) {
             pt_item *it = &t->st.items.v[t->sel_index];
             fz_rect src = scene_to_src(t, it->page, r);
-            if (it->kind == PT_INK) {
+            if (it->kind == PT_INK || it->kind == PT_SHAPE) {
                 float dx = src.x0 - it->rect.x0, dy = src.y0 - it->rect.y0;
                 for (int s = 0; s < it->strokes.n; s++)
                     for (int k = 0; k < it->strokes.v[s].n; k++) it->strokes.v[s].v[k].x += dx, it->strokes.v[s].v[k].y += dy;
@@ -759,6 +818,9 @@ void view_frame(tab *t, Rectangle area)
         DrawRectangleRec(b, (Color){26, 115, 232, 40});
         dashed_rect(b, FRAME_BLUE);
     }
+    if (t->gesture == G_SHAPE && t->stroke.n == 2)
+        draw_shape(t->shape, scene_to_screen(t, t->stroke.v[0]), scene_to_screen(t, t->stroke.v[1]),
+                   fmaxf(1, t->pen_width * t->zoom), rgb3(t->pen_rgb));
     if (t->gesture == G_STROKE)
         for (int k = 1; k < t->stroke.n; k++) {
             Vector2 a = scene_to_screen(t, t->stroke.v[k - 1]), b = scene_to_screen(t, t->stroke.v[k]);

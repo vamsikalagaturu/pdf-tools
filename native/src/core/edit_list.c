@@ -4,7 +4,7 @@
 #include <string.h>
 
 const char *pt_entry_names[] = {
-    "redact", "text", "note", "sign", "image", "highlight", "ink",
+    "redact", "text", "note", "sign", "image", "highlight", "ink", "shape",
     "form", "deleted", "comment", "rotate", "crop", "remove_page", "insert", "reorder",
 };
 
@@ -88,7 +88,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
                 detail[n] = 0;
             } else if (it->kind == PT_HIGHLIGHT) detail = pt_strdup(it->quote ? it->quote : "");
             else detail = pt_strdup(it->text ? it->text : "");
-            const char *name = it->kind == PT_HIGHLIGHT ? pt_mark_names[it->style] : "";
+            const char *name = it->kind == PT_HIGHLIGHT ? pt_mark_names[it->style] : it->kind == PT_SHAPE ? pt_shape_names[it->shape] : "";
             add(&flat, p, (pt_entry_kind)it->kind, name, detail, (pt_ref){(pt_entry_kind)it->kind, p, index, {0, 0}});
             free(detail);
             index++;
@@ -160,7 +160,7 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
     for (int r = 0; r < n; r++) {
         pt_ref ref = refs[r];
         switch (ref.kind) {
-        case PT_E_REDACT: case PT_E_TEXT: case PT_E_NOTE: case PT_E_SIGN: case PT_E_IMAGE: case PT_E_HIGHLIGHT: case PT_E_INK:
+        case PT_E_REDACT: case PT_E_TEXT: case PT_E_NOTE: case PT_E_SIGN: case PT_E_IMAGE: case PT_E_HIGHLIGHT: case PT_E_INK: case PT_E_SHAPE:
             for (int i = 0, k = 0; i < s->items.n; i++)
                 if (s->items.v[i].page == ref.page && k++ == ref.index) drop[i] = 1;
             break;

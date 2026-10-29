@@ -27,7 +27,7 @@
 #define PATH_WIDTH 360.0f
 #define PREVIEW_SCALE 4.0f
 
-typedef enum { T_VIEW, T_REDACT, T_HIGHLIGHT, T_NOTE, T_TEXT, T_SIGN, T_IMAGE, T_DRAW, T_CROP, T_COUNT } tool_id;
+typedef enum { T_VIEW, T_REDACT, T_HIGHLIGHT, T_NOTE, T_TEXT, T_SIGN, T_IMAGE, T_DRAW, T_SHAPE, T_CROP, T_COUNT } tool_id;
 typedef struct { const char *key, *label, *icon; int shortcut; const char *tip; } tool_def;
 extern const tool_def TOOLS[T_COUNT];
 
@@ -69,7 +69,7 @@ PT_VEC(annot_types, annot_type);
 
 typedef enum { SEL_NONE, SEL_ITEM, SEL_ANNOT, SEL_CROP } sel_kind;
 /* G_FIELD: a press on an object that does not move (annotation, mark); G_CLICK: a click tool waits for release */
-typedef enum { G_NONE, G_BAND, G_FLOW, G_STROKE, G_MOVE, G_RESIZE, G_FIELD, G_CLICK } gesture_kind;
+typedef enum { G_NONE, G_BAND, G_FLOW, G_STROKE, G_SHAPE, G_MOVE, G_RESIZE, G_FIELD, G_CLICK } gesture_kind;
 
 /* the comment popover of a note or mark */
 typedef enum { POP_NONE, POP_NEW_NOTE, POP_NOTE, POP_MARK, POP_ANNOT } pop_kind;
@@ -123,6 +123,7 @@ struct tab {
     tool_id tool;
     unsigned char manual_rgb[3], pen_rgb[3];
     float pen_width;
+    pt_shape shape;        /* what the Shape tool draws */
     int ink_page, ink_index;
     double ink_time;
     int snap_text, auto_fill;
@@ -297,6 +298,7 @@ void on_band(tab *t, fz_rect scene);
 void on_flow(tab *t, fz_point a, fz_point b, int done);
 void on_click(tab *t, fz_point scene);
 void on_stroke(tab *t);
+void on_shape(tab *t);   /* the Shape tool's drag, t->stroke = {start, end} */
 void on_context(tab *t, fz_point scene, Vector2 at);
 void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at);
 void item_clicked(tab *t, sel_kind kind, int page, int index);

@@ -111,10 +111,13 @@ void pt_text_size(fz_context *ctx, fz_font *font, const char *text, float size, 
 extern const char *pt_default_fonts[5];
 
 /* ---- edits.py: the edit state and the save pipeline ---- */
-typedef enum { PT_REDACT, PT_TEXT, PT_NOTE, PT_SIGN, PT_IMAGE, PT_HIGHLIGHT, PT_INK } pt_kind;
+typedef enum { PT_REDACT, PT_TEXT, PT_NOTE, PT_SIGN, PT_IMAGE, PT_HIGHLIGHT, PT_INK, PT_SHAPE } pt_kind;
 typedef enum { PT_MARK_HIGHLIGHT, PT_MARK_UNDERLINE, PT_MARK_STRIKEOUT, PT_MARK_SQUIGGLY, PT_MARK_TEXTCOLOUR } pt_mark;
+/* saved as Square, Circle and Line annotations (an arrow is a Line with an open arrowhead at its end) */
+typedef enum { PT_SHAPE_RECT, PT_SHAPE_ELLIPSE, PT_SHAPE_LINE, PT_SHAPE_ARROW } pt_shape;
 extern const char *pt_kind_names[];
 extern const char *pt_mark_names[];
+extern const char *pt_shape_names[];
 int pt_mark_from_name(const char *name);
 PT_VEC(pt_strokes, pt_points);
 typedef struct {
@@ -129,8 +132,9 @@ typedef struct {
     pt_mark style;     /* mark */
     char *quote;       /* mark: the marked text */
     pt_rects rects;    /* mark: one rect per line */
-    pt_strokes strokes;/* ink */
-    float pen_width;
+    pt_strokes strokes;/* ink; line and arrow shapes: one stroke, start and end */
+    float pen_width;   /* ink, shape */
+    pt_shape shape;    /* shape: rect and ellipse fill `rect` */
     pt_bytes data;     /* sign: PNG, image: file bytes */
 } pt_item;
 typedef struct { int page, xref; } pt_key;
@@ -229,7 +233,7 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
 /* ---- edit_list.py: the Edits list and discarding entries ---- */
 #define PT_DOCUMENT (-1)
 typedef enum {
-    PT_E_REDACT, PT_E_TEXT, PT_E_NOTE, PT_E_SIGN, PT_E_IMAGE, PT_E_HIGHLIGHT, PT_E_INK,
+    PT_E_REDACT, PT_E_TEXT, PT_E_NOTE, PT_E_SIGN, PT_E_IMAGE, PT_E_HIGHLIGHT, PT_E_INK, PT_E_SHAPE,
     PT_E_FORM, PT_E_DELETED, PT_E_COMMENT, PT_E_ROTATE, PT_E_CROP, PT_E_REMOVE_PAGE, PT_E_INSERT, PT_E_REORDER
 } pt_entry_kind;
 extern const char *pt_entry_names[];
