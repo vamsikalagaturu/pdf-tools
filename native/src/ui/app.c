@@ -487,11 +487,12 @@ static void frame(void)
     DrawRectangleRec(header, pal.window);
     Rectangle menu_b = {6, 6, 32, 32};
     if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, "Menu")) menu_open_below(app_build_menu(t), menu_b);
-    Rectangle logo = {42, 6, 32, 32};
+    /* every header button: 32x32 on a 34 px step, glyphs (and the logo) 18 px, as in the toolbars */
+    Rectangle logo = {40, 6, 32, 32};
     if (ui_hover(logo)) set_cursor(CUR_HAND);
     if (ui_button(ui_id_str("logo", 0), logo, NULL, NULL, B_FLAT, "Home")) app_go_home();
-    draw_logo((Rectangle){logo.x + 5, logo.y + 5, 22, 22});
-    Rectangle tools = {82, 0, ui.w - 88, HEADER_H};
+    draw_logo((Rectangle){logo.x + 7, logo.y + 7, 18, 18});
+    Rectangle tools = {74, 0, ui.w - 80, HEADER_H};
     if (t) tab_toolbar(t, tools);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_toolbar(app.ws, tools);
     tab_strip((Rectangle){0, HEADER_H, ui.w, TABS_H});

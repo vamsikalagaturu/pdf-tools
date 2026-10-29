@@ -445,8 +445,7 @@ void workspace_toolbar(workspace *w, Rectangle area)
         x += 34;
         if (ui_button(ui_id(w, 2), (Rectangle){x, y, 32, h}, NULL, "remove", B_FLAT, "Remove selected")) remove_selected(w);
         x += 34;
-        ui_separator_v(x + 4, y + 5, y + h - 5);
-        x += 10;
+        x = ui_toolbar_separator(x, y, h);
         ui_spin(ui_id(w, 3), (Rectangle){x, y, 112, h}, &w->every, 1, 9999, 1, "Every ", "");
         x += 114;
         if (ui_button(ui_id(w, 4), (Rectangle){x, y, 32, h}, NULL, "split", B_FLAT, "Cut every N pages")) cut_every(w, w->every);
@@ -465,8 +464,7 @@ void workspace_toolbar(workspace *w, Rectangle area)
     bw = button_width("Remove selected", "remove", 0);
     if (ui_button(ui_id(w, 2), (Rectangle){x, y, bw, h}, "Remove selected", "remove", B_FLAT, NULL)) remove_selected(w);
     x += bw + 2;
-    ui_separator_v(x + 4, y + 5, y + h - 5);
-    x += 10;
+    x = ui_toolbar_separator(x, y, h);
     ui_spin(ui_id(w, 3), (Rectangle){x, y, 160, h}, &w->every, 1, 9999, 1, "Every ", " page(s)");
     x += 164;
     bw = button_width("Cut", "split", 0);
@@ -475,8 +473,7 @@ void workspace_toolbar(workspace *w, Rectangle area)
     bw = button_width("Clear cuts", NULL, 0);
     if (ui_button(ui_id(w, 5), (Rectangle){x, y, bw, h}, "Clear cuts", NULL, B_FLAT, NULL)) cut_every(w, 0);
     x += bw + 2;
-    ui_separator_v(x + 4, y + 5, y + h - 5);
-    x += 10;
+    x = ui_toolbar_separator(x, y, h);
     bw = button_width("Clear all", "close", 0);
     if (ui_button(ui_id(w, 6), (Rectangle){x, y, bw, h}, "Clear all", "close", B_FLAT, NULL)) clear(w);
 }

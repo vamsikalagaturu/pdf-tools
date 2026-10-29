@@ -653,6 +653,12 @@ int ui_swatch_button(unsigned id, Rectangle r, const unsigned char rgb[3], int c
 }
 
 void ui_separator_v(float x, float y0, float y1) { DrawLineEx((Vector2){x, y0}, (Vector2){x, y1}, 1, pal.border); }
+
+float ui_toolbar_separator(float x, float y, float h)
+{
+    ui_separator_v(x + 3, y + 5, y + h - 5);
+    return x + UI_SEP_W;
+}
 void ui_separator_h(float x0, float x1, float y) { DrawLineEx((Vector2){x0, y}, (Vector2){x1, y}, 1, pal.border); }
 
 void ui_spinner(Vector2 c, float radius)

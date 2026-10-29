@@ -115,6 +115,10 @@ int ui_spin(unsigned id, Rectangle r, int *value, int lo, int hi, int step, cons
 int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float step, const char *suffix);
 float ui_scrollbar(unsigned id, Rectangle track, float content, float view, float *offset);
 void ui_separator_v(float x, float y0, float y1);
+/* toolbars: 32 px buttons on a 34 px step; a separator takes UI_SEP_W after a button's 2 px gap and returns
+ * where the next button starts */
+#define UI_SEP_W 8.0f
+float ui_toolbar_separator(float x, float y, float h);
 void ui_separator_h(float x0, float x1, float y);
 int ui_combo(unsigned id, Rectangle r, const char **items, int n, int *index);
 void ui_spinner(Vector2 c, float radius);

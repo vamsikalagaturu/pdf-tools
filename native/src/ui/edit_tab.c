@@ -273,6 +273,8 @@ static float tool_button_width(tab *t, int i)
     return t->toolbar_compact ? 32 : button_width(TOOLS[i].label, TOOLS[i].icon, 0) + 2;
 }
 
+#define separator ui_toolbar_separator
+
 /* width the tool options may take: the narrow layout's options row, else unbounded */
 static float opts_room = 1e9f;
 
@@ -401,8 +403,7 @@ static void narrow_toolbar(tab *t, Rectangle area)
     x += 34;
     if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
     x += 34;
-    ui_separator_v(x + 4, y + 5, y + h - 5);
-    x += 9;
+    x = separator(x, y, h);
     Rectangle tb = {x, y, 48, h};
     if (ui_button(bid(t, 10), tb, NULL, TOOLS[t->tool].icon, B_CHECKED | B_MENU | dis, TOOLS[t->tool].tip)) {
         ui_menu *m = menu_new();
@@ -452,7 +453,7 @@ void tab_toolbar(tab *t, Rectangle area)
     int dis = doc ? 0 : B_DISABLED;
     /* right side, laid out first so the tools know how much room they have */
     float save_w = button_width("Save", "save", 0) + 22;
-    float right = save_w + 4 + 32 * 2 + 12 + 32 * 3 + 52 + 12;
+    float right = 34 * 3 + 52 + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
     float x = area.x;
     if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", pt_settings_int(&app.settings, "show_sidebar") ? B_CHECKED : B_FLAT,
                   "Show or hide the sidebar (F9)"))
@@ -462,49 +463,45 @@ void tab_toolbar(tab *t, Rectangle area)
     x += 34;
     if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
     x += 34;
-    ui_separator_v(x + 4, y + 5, y + h - 5);
-    x += 9;
+    x = separator(x, y, h);
     /* tool buttons drop their labels when there is no room for them */
     float tools_w = 0;
     t->toolbar_compact = 0;
-    for (int i = 0; i < T_COUNT; i++) tools_w += tool_button_width(t, i);
+    for (int i = 0; i < T_COUNT; i++) tools_w += tool_button_width(t, i) + 2;
     float opts_w = tool_options(t, 0, 0, h, 0);
     if (x + tools_w + opts_w + 20 + right > area.x + area.width) t->toolbar_compact = 1;
     for (int i = 0; i < T_COUNT; i++) {
         float w = tool_button_width(t, i);
         int flags = (t->tool == (tool_id)i ? B_CHECKED : B_FLAT) | (t->toolbar_compact ? B_ICON_ONLY : 0) | dis;
         if (ui_button(bid(t, 10 + i), (Rectangle){x, y, w, h}, TOOLS[i].label, TOOLS[i].icon, flags, TOOLS[i].tip)) tool_set(t, (tool_id)i);
-        x += w + 1;
+        x += w + 2;
     }
     if (tool_has_options(t)) {
-        ui_separator_v(x + 5, y + 5, y + h - 5);
-        x += 11;
+        x = separator(x, y, h);
         tool_options(t, x, y, h, 1);
     }
     x = area.x + area.width - right;
     if (ui_button(bid(t, 20), (Rectangle){x, y, 32, h}, NULL, "zoom-out", B_FLAT | dis, "Zoom out (Ctrl+-)")) run(t, A_ZOOM_OUT);
-    x += 32;
+    x += 34;
     char zoom[16];
     snprintf(zoom, sizeof zoom, "%d%%", doc ? (int)lroundf(t->zoom * 100) : 0);
-    if (doc) draw_text_in(zoom, (Rectangle){x, y, 52, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
+    if (doc) draw_text_in(zoom, (Rectangle){x, y, 50, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     x += 52;
     if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis, "Zoom in (Ctrl++)")) run(t, A_ZOOM_IN);
-    x += 32;
+    x += 34;
     if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit", B_FLAT | dis, "Fit width (Ctrl+0)")) run(t, A_FIT);
-    x += 32;
-    ui_separator_v(x + 6, y + 5, y + h - 5);
-    x += 12;
+    x += 34;
+    x = separator(x, y, h);
     if (ui_button(bid(t, 23), (Rectangle){x, y, 32, h}, NULL, "continuous", (continuous() ? B_CHECKED : B_FLAT) | dis,
                   "Scroll through all pages (off: one page at a time)"))
         run(t, A_CONTINUOUS);
-    x += 32;
+    x += 34;
     if (ui_button(bid(t, 24), (Rectangle){x, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis, "Find (Ctrl+F)")) {
         if (t->find_open) hide_find(t);
         else run(t, A_FIND);
     }
-    x += 32;
-    ui_separator_v(x + 6, y + 5, y + h - 5);
-    x += 12;
+    x += 34;
+    x = separator(x, y, h);
     Rectangle save = {x, y, save_w - 20, h}, arrow = {x + save_w - 20, y, 20, h};
     if (ui_button(bid(t, 25), save, "Save", "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED), "Save (overwrite original) (Ctrl+S)")) run(t, A_SAVE);
     if (ui_button(bid(t, 26), arrow, NULL, NULL, B_FLAT | B_MENU | dis, NULL)) {
