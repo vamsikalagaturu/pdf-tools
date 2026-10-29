@@ -97,9 +97,11 @@ API 26-29: the system permission prompt; tap Allow.
 
 ## Touch
 
-Tap = click. Hold (0.15 s) or drag = press and drag. Two fingers = scroll (horizontal and vertical); a press
-already sent ends when the second finger lands, which can count as a click. No pinch zoom, no right-click by
-touch (a mouse works: right and middle buttons, wheel). Back acts as Escape and never closes the app; use Quit.
+Tap = click. One finger drags to scroll, with fling momentum after release; a touch stops a fling. A long
+press (0.45 s) then drag = press and drag (text selection, moving items and thumbnails). Where the UI marks a
+drag area (`ui_touch_drag_area`: the page under any tool but View, the signature pad) one finger draws at once,
+and two fingers scroll. No pinch zoom, no right-click by touch (a mouse works: right and middle buttons,
+wheel). Back acts as Escape and never closes the app; use Quit.
 
 ## Not available on Android
 
