@@ -191,6 +191,22 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
     authenticate(ctx, doc, password, path);
     fz_try(ctx) {
         for (int i = 0; inserted && i < inserted->n; i++) {
+            float w, h;
+            if (sscanf(inserted->v[i].path, PT_BLANK_PAGE "%fx%f", &w, &h) == 2) {
+                pdf_obj *res = pdf_new_dict(ctx, doc, 1), *page = NULL;
+                fz_buffer *contents = fz_new_buffer(ctx, 1);
+                fz_try(ctx) {
+                    page = pdf_add_page(ctx, doc, fz_make_rect(0, 0, w, h), 0, res, contents);
+                    pdf_insert_page(ctx, doc, -1, page);
+                }
+                fz_always(ctx) {
+                    pdf_drop_obj(ctx, page);
+                    pdf_drop_obj(ctx, res);
+                    fz_drop_buffer(ctx, contents);
+                }
+                fz_catch(ctx) fz_rethrow(ctx);
+                continue;
+            }
             pdf_document *src = pdf_open_document(ctx, inserted->v[i].path);
             fz_try(ctx) {
                 int n = pdf_count_pages(ctx, src);

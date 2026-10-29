@@ -659,6 +659,11 @@ void view_frame(tab *t, Rectangle area)
         t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
     }
     layout_scene(t);
+    if (t->restore_pending && t->off_y[t->pno] > -1e8f) {
+        t->scroll_y = (t->off_y[t->pno] + t->restore_top + PAGE_GAP) * t->zoom;
+        t->want_scroll_page = -1;
+        t->restore_pending = 0;
+    }
     if (t->want_scroll_page >= 0) {
         scroll_to_page(t, t->want_scroll_page);
         t->want_scroll_page = -1;

@@ -24,7 +24,8 @@ const char *pt_inserted_name(const pt_inserts *inserted, int own, int page)
 {
     int start = own;
     for (int i = 0; i < inserted->n; i++) {
-        if (page < start + inserted->v[i].pages) return pt_basename(inserted->v[i].path);
+        if (page < start + inserted->v[i].pages)
+            return strncmp(inserted->v[i].path, PT_BLANK_PAGE, strlen(PT_BLANK_PAGE)) ? pt_basename(inserted->v[i].path) : "";
         start += inserted->v[i].pages;
     }
     return "";

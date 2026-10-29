@@ -120,6 +120,7 @@ void tab_invalidate_pages(tab *t)
 
 void tab_reset(tab *t)
 {
+    tab_save_position(t);
     finish_text(t);
     close_popover(t, 0);
     fields_reset(t);
@@ -163,6 +164,77 @@ void tab_free(tab *t)
     pt_vec_free(t->sync_marks);
     free(t->ticked);
     free(t);
+}
+
+/* ---- reading positions: $XDG_DATA_HOME/pdf-tools/positions.tsv, "path\tpage\tzoom\ttop" per line, newest
+ * first; zoom 0 = fit width; top = the view's top edge below the page's top, in page points ---- */
+
+#define POSITIONS_MAX 200
+
+static char *positions_file(void)
+{
+    char *base = pt_data_dir(), *dir = pt_format("%s/pdf-tools", base);
+    pt_mkdirs(dir);
+    char *path = pt_format("%s/positions.tsv", dir);
+    free(base), free(dir);
+    return path;
+}
+
+static void read_positions(pt_strs *lines)
+{
+    char *path = positions_file();
+    FILE *f = fopen(path, "r");
+    free(path);
+    if (!f) return;
+    char line[4200];
+    while (fgets(line, sizeof line, f) && lines->n < POSITIONS_MAX) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strchr(line, '\t')) pt_push(*lines, pt_strdup(line));
+    }
+    fclose(f);
+}
+
+static int position_of(const char *file, int *page, float *zoom, float *top)
+{
+    pt_strs lines = {0};
+    read_positions(&lines);
+    int found = 0;
+    size_t n = strlen(file);
+    for (int i = 0; i < lines.n && !found; i++)
+        if (!strncmp(lines.v[i], file, n) && lines.v[i][n] == '\t')
+            found = sscanf(lines.v[i] + n + 1, "%d\t%f\t%f", page, zoom, top) == 3;
+    pt_strs_free(&lines);
+    return found;
+}
+
+static void current_position(tab *t, int *page, float *zoom, float *top)
+{
+    *page = t->pno;
+    *zoom = t->fitted ? 0 : t->zoom;
+    *top = t->off_y && t->off_y[t->pno] > -1e8f ? t->scroll_y / t->zoom - PAGE_GAP - t->off_y[t->pno] : 0;
+}
+
+void tab_save_position(tab *t)
+{
+    if (!t->doc || !t->path || !t->loaded) return;
+    int page;
+    float zoom, top;
+    current_position(t, &page, &zoom, &top);
+    pt_strs lines = {0}, out = {0};
+    read_positions(&lines);
+    pt_push(out, pt_format("%s\t%d\t%.3f\t%.1f", t->path, page, zoom, top));
+    size_t n = strlen(t->path);
+    for (int i = 0; i < lines.n && out.n < POSITIONS_MAX; i++)
+        if (strncmp(lines.v[i], t->path, n) || lines.v[i][n] != '\t') pt_push(out, pt_strdup(lines.v[i]));
+    char *path = positions_file(), *tmp = pt_format("%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+        for (int i = 0; i < out.n; i++) fprintf(f, "%s\n", out.v[i]);
+        if (fclose(f) == 0) rename(tmp, path);
+    }
+    free(path), free(tmp);
+    pt_strs_free(&lines), pt_strs_free(&out);
+    t->saved_page = page, t->saved_zoom = zoom, t->saved_top = top, t->position_saved = ui.now;
 }
 
 static void file_stamp(const char *path, double *mtime, long *size)
@@ -212,6 +284,15 @@ int tab_load(tab *t, const char *path, const char *password)
     tool_set(t, T_VIEW);
     t->fit_pending = 1;
     t->scroll_x = t->scroll_y = 0;
+    /* back where this file was left */
+    int page;
+    float zoom, top;
+    if (position_of(t->path, &page, &zoom, &top) && page >= 0 && page < t->own) {
+        t->pno = page;
+        if (zoom > 0) t->fit_pending = 0, t->zoom = fminf(fmaxf(zoom, 0.3f), 6);
+        t->restore_pending = 1, t->restore_top = top;
+    }
+    current_position(t, &t->saved_page, &t->saved_zoom, &t->saved_top);
     if (t->find_open) run_search(t);
     app_publish_state();
     return 0;
@@ -1186,6 +1267,23 @@ void remove_pages(tab *t, const pt_ints *pages)
 
 typedef struct { tab *t; int after; } insert_job;
 
+/* `count` pages of `path` (a PDF, or PT_BLANK_PAGE) right after display page `after`, one undo step */
+static void insert_after(tab *t, int after, const char *path, int count)
+{
+    int start = t->npages, pos = order_index(t, after);
+    pos = pos >= 0 ? pos + 1 : t->st.order.n;
+    pt_state snap;
+    change_pages_begin(t, &snap);
+    pt_push(t->st.inserted, (pt_inserted){pt_strdup(path), count});
+    for (int k = 0; k < count; k++) {
+        pt_push(t->st.order, 0);
+        memmove(t->st.order.v + pos + k + 1, t->st.order.v + pos + k, sizeof(int) * (size_t)(t->st.order.n - 1 - pos - k));
+        t->st.order.v[pos + k] = start + k;
+    }
+    change_pages_end(t, &snap, 1);
+    tab_goto(t, start);
+}
+
 static void insert_chosen(void *ctx, pt_strs *paths)
 {
     insert_job *job = ctx;
@@ -1209,22 +1307,19 @@ static void insert_chosen(void *ctx, pt_strs *paths)
             char *msg = pt_format("%s is password protected; remove its password first.", pt_basename(path));
             message_box(MSG_INFO, APP_NAME, msg, NULL, NULL);
             free(msg);
-        } else if (ok && count) {
-            int start = t->npages, pos = order_index(t, job->after);
-            pos = pos >= 0 ? pos + 1 : t->st.order.n;
-            pt_state snap;
-            change_pages_begin(t, &snap);
-            pt_push(t->st.inserted, (pt_inserted){pt_strdup(path), count});
-            for (int k = 0; k < count; k++) {
-                pt_push(t->st.order, 0);
-                memmove(t->st.order.v + pos + k + 1, t->st.order.v + pos + k, sizeof(int) * (size_t)(t->st.order.n - 1 - pos - k));
-                t->st.order.v[pos + k] = start + k;
-            }
-            change_pages_end(t, &snap, 1);
-            tab_goto(t, start);
-        }
+        } else if (ok && count) insert_after(t, job->after, path, count);
     }
     free(job);
+}
+
+void insert_blank_page(tab *t, int after)
+{
+    if (!t->doc) return;
+    /* the size of the page it follows, as shown */
+    fz_rect b = page_bounds(t, after >= 0 ? after : t->pno);
+    char *spec = pt_format(PT_BLANK_PAGE "%.1fx%.1f", b.x1, b.y1);
+    insert_after(t, after, spec, 1);
+    free(spec);
 }
 
 void insert_pages(tab *t, int after)
@@ -1572,6 +1667,13 @@ static void reload_answer(void *ctx, int yes)
 /* Reload after the file changed on disk and has stopped changing (TeX writes the PDF in steps). */
 void tab_poll(tab *t)
 {
+    /* the reading position is saved a few seconds after it changes, in case the app is killed (Android) */
+    if (t->doc && t->loaded && !t->restore_pending && ui.now - t->position_saved > 5) {
+        int page;
+        float zoom, top;
+        current_position(t, &page, &zoom, &top);
+        if (page != t->saved_page || zoom != t->saved_zoom || fabsf(top - t->saved_top) > 1) tab_save_position(t);
+    }
     if (!t->doc || t->reload_asked || ui.now < t->next_poll) return;
     t->next_poll = ui.now + 0.3;
     double m;

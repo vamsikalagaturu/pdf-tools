@@ -114,6 +114,12 @@ struct tab {
     float last_view_h;
     void *last_focus;
     double reveal_until;   /* keep the focused field above the bottom of the view until then */
+    /* reading position (positions.tsv): one to restore once laid out, and the last one saved */
+    int restore_pending;
+    float restore_top;
+    int saved_page;
+    float saved_zoom, saved_top;
+    double position_saved;
     tool_id tool;
     unsigned char manual_rgb[3], pen_rgb[3];
     float pen_width;
@@ -264,6 +270,7 @@ void change_pages_end(tab *t, pt_state *snap, int reload);
 void rotate_pages(tab *t, const pt_ints *pages, int degrees);
 void remove_pages(tab *t, const pt_ints *pages);
 void insert_pages(tab *t, int after);
+void insert_blank_page(tab *t, int after);
 void set_crops(tab *t, const pt_ints *pages, const fz_rect *rects); /* rects NULL: remove */
 void crop_to_content(tab *t, const pt_ints *pages);
 void reorder_pages(tab *t, const pt_ints *order);
@@ -272,6 +279,7 @@ pt_synctex *tab_synctex(tab *t);
 void inverse_search(tab *t, fz_point scene);
 void tab_copy_path(tab *t);
 void tab_share(tab *t);   /* Android: the edited PDF to the system share sheet */
+void tab_save_position(tab *t);
 char *mark_colour_hex(int style);
 void mark_colour(int style, unsigned char rgb[3]);
 int mark_style(void);

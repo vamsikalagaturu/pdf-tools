@@ -85,7 +85,7 @@ enum {
     A_SAVE, A_SAVE_AS, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
-    A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_REMOVE, A_TICK, A_UNTICK,
+    A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
     A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_GOTO, A_TOOL0,
     A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5,
 };
@@ -134,6 +134,7 @@ static void run(void *ctx, intptr_t a)
     case A_FIT_CONTENT: crop_to_content(t, &pages); break;
     case A_UNCROP: set_crops(t, &pages, NULL); break;
     case A_INSERT: insert_pages(t, t->pno); break;
+    case A_INSERT_BLANK: insert_blank_page(t, t->pno); break;
     case A_REMOVE: remove_pages(t, &pages); break;
     case A_TICK: tick_all(t, 1); break;
     case A_UNTICK: tick_all(t, 0); break;
@@ -226,6 +227,7 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(pages, "Remove crop", "close", NULL, run, t, A_UNCROP, doc, 0);
         menu_sep(pages);
         menu_item(pages, "Insert pages from PDF...", "add", NULL, run, t, A_INSERT, doc, 0);
+        menu_item(pages, "Insert blank page", "add", NULL, run, t, A_INSERT_BLANK, doc, 0);
         menu_item(pages, "Remove page(s)", "remove", NULL, run, t, A_REMOVE, doc, 0);
         menu_sep(pages);
         menu_item(pages, "Split into files...", "split", NULL, run, t, A_SPLIT, doc, 0);

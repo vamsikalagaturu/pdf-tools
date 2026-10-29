@@ -138,7 +138,9 @@ typedef struct { pt_key key; int is_bool, on; char *text; float size; } pt_form_
 typedef struct { pt_key key; char *text; } pt_annot_text;
 typedef struct { int page, degrees; } pt_rotation;
 typedef struct { int page; fz_rect rect; } pt_crop;
+/* a PDF appended after the file's own pages; a path "blank:WxH" (PT_BLANK_PAGE) is one empty W x H pt page */
 typedef struct { char *path; int pages; } pt_inserted;
+#define PT_BLANK_PAGE "blank:"
 PT_VEC(pt_items, pt_item);
 PT_VEC(pt_keys, pt_key);
 PT_VEC(pt_forms, pt_form_value);

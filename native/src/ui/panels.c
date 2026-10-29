@@ -392,7 +392,8 @@ static void edit_label(const pt_entry *e, char *out, size_t n)
     if (e->kind == PT_E_HIGHLIGHT) {
         int s = pt_mark_from_name(e->name);
         snprintf(out, n, "%s", MARK_LABELS[s < 0 ? 0 : s]);
-    } else if (*e->name && (e->kind == PT_E_FORM || e->kind == PT_E_DELETED)) snprintf(out, n, "%s %s", EDIT_KINDS[e->kind].label, e->name);
+    } else if (e->kind == PT_E_INSERT && !*e->detail) snprintf(out, n, "Blank page inserted");
+    else if (*e->name && (e->kind == PT_E_FORM || e->kind == PT_E_DELETED)) snprintf(out, n, "%s %s", EDIT_KINDS[e->kind].label, e->name);
     else snprintf(out, n, "%s", EDIT_KINDS[e->kind].label);
 }
 

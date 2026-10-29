@@ -610,6 +610,7 @@ static void a_page_crop_content(void *c, intptr_t a) { (void)c, (void)a; crop_to
 static void a_crop_tool(void *c, intptr_t a) { (void)c, (void)a; tool_set(mc.t, T_CROP); }
 static void a_page_uncrop(void *c, intptr_t a) { (void)c, (void)a; set_crops(mc.t, &mc.pages, NULL); }
 static void a_insert_after(void *c, intptr_t a) { (void)c, (void)a; insert_pages(mc.t, mc.pages.v[mc.pages.n - 1]); }
+static void a_blank_after(void *c, intptr_t a) { (void)c, (void)a; insert_blank_page(mc.t, mc.pages.v[mc.pages.n - 1]); }
 static void a_remove_pages(void *c, intptr_t a) { (void)c, (void)a; remove_pages(mc.t, &mc.pages); }
 
 void add_page_actions(tab *t, ui_menu *m, const pt_ints *pages)
@@ -636,6 +637,7 @@ void add_page_actions(tab *t, ui_menu *m, const pt_ints *pages)
     }
     menu_sep(m);
     menu_item(m, "Insert pages from PDF after this...", "add", NULL, a_insert_after, NULL, 0, 1, 0);
+    menu_item(m, "Insert blank page after this", "add", NULL, a_blank_after, NULL, 0, 1, 0);
     menu_sep(m);
     snprintf(buf, sizeof buf, "Remove %s", label);
     menu_item(m, buf, "remove", NULL, a_remove_pages, NULL, 0, 1, 0);
