@@ -178,6 +178,8 @@ char *json_quote(const char *s)
 typedef struct { int pid; double focused; pt_strs paths; } window_entry;
 PT_VEC(window_entries, window_entry);
 
+static void remove_socket(int pid);
+
 static void read_windows(window_entries *out)
 {
     char *dir = ipc_dir();
@@ -193,7 +195,7 @@ static void read_windows(window_entries *out)
         int pid = atoi(e->d_name);
         char *file = pt_join(dir, e->d_name);
         if (pid <= 0 || pid == getpid() || kill(pid, 0)) {
-            if (pid > 0 && pid != getpid() && errno == ESRCH) unlink(file);
+            if (pid > 0 && pid != getpid() && errno == ESRCH) unlink(file), remove_socket(pid);
             free(file);
             continue;
         }
@@ -216,6 +218,7 @@ static void read_windows(window_entries *out)
     free(dir);
 }
 
+#ifdef __linux__
 /* A Linux abstract socket per window: no file, so no 108-byte path limit (long $XDG_RUNTIME_DIR) and nothing
  * left behind by a crash. */
 static socklen_t socket_address(int pid, struct sockaddr_un *addr)
@@ -225,6 +228,28 @@ static socklen_t socket_address(int pid, struct sockaddr_un *addr)
     int n = snprintf(addr->sun_path + 1, sizeof addr->sun_path - 1, "%s-%d-%d", APP_ID, (int)getuid(), pid);
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + (size_t)n);
 }
+
+static void remove_socket(int pid) { (void)pid; }
+#else
+/* elsewhere (macOS) a socket file next to the window's state, ipc_dir()/<pid>.sock; ipc_dir() is short there
+ * (/tmp/pdf-tools-<uid>: no $XDG_RUNTIME_DIR), well within sun_path's 104 bytes */
+static socklen_t socket_address(int pid, struct sockaddr_un *addr)
+{
+    memset(addr, 0, sizeof *addr);
+    addr->sun_family = AF_UNIX;
+    char *dir = ipc_dir();
+    snprintf(addr->sun_path, sizeof addr->sun_path, "%s/%d.sock", dir, pid);
+    free(dir);
+    return (socklen_t)sizeof *addr;
+}
+
+static void remove_socket(int pid)
+{
+    struct sockaddr_un addr;
+    socket_address(pid, &addr);
+    unlink(addr.sun_path);
+}
+#endif
 
 static int send_to(int pid, const char *message)
 {
@@ -306,6 +331,7 @@ void ipc_serve(void)
     server = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un addr;
     socklen_t len = socket_address((int)getpid(), &addr);
+    remove_socket((int)getpid());
     if (server < 0 || bind(server, (struct sockaddr *)&addr, len) || listen(server, 8)) {
         if (server >= 0) close(server);
         server = -1;
@@ -366,7 +392,7 @@ void ipc_publish(const pt_strs *paths, int focused)
 
 void ipc_stop(void)
 {
-    if (server >= 0) close(server);
+    if (server >= 0) close(server), remove_socket((int)getpid());
     server = -1;
     if (state_path) unlink(state_path);
 }

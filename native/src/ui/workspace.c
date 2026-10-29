@@ -410,12 +410,12 @@ static void draw_thumbs(workspace *w)
         fz_try(CTX) {
             fz_page *page = fz_load_page(CTX, (fz_document *)w->src.v[c->src].doc, c->page);
             fz_rect b = fz_bound_page(CTX, page);
-            float zoom = fminf(THUMB_W / (b.x1 - b.x0), THUMB_H / (b.y1 - b.y0)) * ui.scale;
+            float zoom = fminf(THUMB_W / (b.x1 - b.x0), THUMB_H / (b.y1 - b.y0)) * UI_PX;
             fz_pixmap *pix = pt_render_page(CTX, page, zoom, 0);
             Image img = {pix->samples, pix->w, pix->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8};
             c->thumb = LoadTextureFromImage(img);
             SetTextureFilter(c->thumb, TEXTURE_FILTER_BILINEAR);
-            c->tw = pix->w / ui.scale, c->th = pix->h / ui.scale;
+            c->tw = pix->w / UI_PX, c->th = pix->h / UI_PX;
             fz_drop_pixmap(CTX, pix);
             fz_drop_page(CTX, page);
         }

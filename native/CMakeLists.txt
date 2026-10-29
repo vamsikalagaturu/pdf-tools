@@ -4,6 +4,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(PT_BUILD_GUI "Build the raylib window" ON)
+# -Wno-clobbered (below) is GCC's; clang (macOS) only needs to not warn about it
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wno-unknown-warning-option)
+endif()
 set(PT_REPO ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(PT_PY_ASSETS ${PT_REPO}/src/pdf_tools/assets)
 
@@ -37,6 +41,19 @@ add_library(ptcore STATIC
   src/core/desktop.c ${PT_GEN}/logo_svg.c ${PT_GEN}/desktop.c)
 target_include_directories(ptcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${MUPDF_INCLUDE_DIR})
 target_link_libraries(ptcore PUBLIC ${MUPDF_LIBRARY} m)
+# a static MuPDF build (macOS, Android) keeps its third-party libraries in a second archive
+set(MUPDF_THIRD_LIBRARY "" CACHE FILEPATH "libmupdf-third.a, for a static MuPDF")
+if(MUPDF_THIRD_LIBRARY)
+  target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY})
+  # its HarfBuzz is C++
+  if(APPLE)
+    target_link_libraries(ptcore PUBLIC c++)
+  endif()
+endif()
+if(APPLE)
+  # installed-font matching (fonts.c)
+  target_link_libraries(ptcore PUBLIC "-framework CoreText" "-framework CoreFoundation")
+endif()
 if(MSVC)
   target_compile_options(ptcore PRIVATE /W4)
 else()
@@ -102,11 +119,15 @@ if(PT_BUILD_GUI)
     add_executable(pdf-tools-gui
       src/ui/app.c src/ui/theme.c src/ui/widgets.c src/ui/icons.c src/ui/page_view.c src/ui/document.c
       src/ui/edit_tab.c src/ui/edit_tools.c src/ui/panels.c src/ui/dialogs.c src/ui/start_page.c src/ui/workspace.c
-      src/ui/form_fields.c src/ui/ipc.c src/ui/printing.c src/ui/file_dialog.c
+      src/ui/form_fields.c src/ui/ipc.c src/ui/printing.c src/ui/file_dialog.c src/ui/macos.c
       ${PT_GEN}/ui_font.c ${PT_GEN}/ui_font_bold.c ${PT_GEN}/man.c ${PT_GEN}/icons.c ${PT_ICON_SOURCES})
     set_target_properties(pdf-tools-gui PROPERTIES OUTPUT_NAME pdf-tools)
     target_include_directories(pdf-tools-gui PRIVATE src/ui thirdparty/raygui/src)
     target_link_libraries(pdf-tools-gui PRIVATE ptcli raylib)
+    if(APPLE)
+      target_link_libraries(pdf-tools-gui PRIVATE "-framework Cocoa" "-framework IOKit" "-framework OpenGL"
+        "-framework CoreVideo" "-framework CoreAudio" "-framework AudioToolbox")
+    endif()
     target_compile_options(pdf-tools-gui PRIVATE -Wall -Wextra -Wno-clobbered -Wno-unused-parameter)
   else()
     message(STATUS "raylib not found; CLI builds, GUI skipped. Install raylib and reconfigure.")

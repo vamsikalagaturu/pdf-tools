@@ -1,6 +1,6 @@
 /* Fonts for text boxes: picking the font to draw with, measuring text, bold/italic variants.
  * A font name resolves to a standard base-14 font, else a font embedded in the PDF, else the closest installed
- * font (fontconfig, or Android's font matcher), else Helvetica; each step only counts if it has glyphs for the text. */
+ * font (fontconfig, Android's font matcher or Core Text), else Helvetica; each step only counts if it has glyphs for the text. */
 #include "pt_core.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -10,6 +10,9 @@
 #elif defined(__ANDROID__)
 #include <android/font.h>
 #include <android/font_matcher.h>
+#include <strings.h>
+#elif defined(__APPLE__)
+#include <CoreText/CoreText.h>
 #include <strings.h>
 #endif
 
@@ -184,21 +187,21 @@ char *pt_styled_font(const char *name, int bold, int italic, const pt_strs *cand
 
 int pt_have_fontconfig(void)
 {
-#if defined(PT_USE_FONTCONFIG) || defined(__ANDROID__)
+#if defined(PT_USE_FONTCONFIG) || defined(__ANDROID__) || defined(__APPLE__)
     return 1;
 #else
     return 0;
 #endif
 }
 
-#if !defined(PT_USE_FONTCONFIG) && defined(__ANDROID__)
+#if !defined(PT_USE_FONTCONFIG) && (defined(__ANDROID__) || defined(__APPLE__))
 static int font_file_ok(const char *path)
 {
     size_t n = strlen(path);
     return n > 4 && (!strcasecmp(path + n - 4, ".ttf") || !strcasecmp(path + n - 4, ".otf"));
 }
 
-/* the generic Android family a PDF font name falls back to */
+/* the generic family (CSS names) a PDF font name falls back to */
 static const char *generic_family(const char *family)
 {
     static const char *serif[] = {"times", "serif", "georgia", "garamond", "cambria", "palatino", "book", NULL};
@@ -209,7 +212,9 @@ static const char *generic_family(const char *family)
         if (contains_ci(family, serif[i]) && !contains_ci(family, "sans")) return "serif";
     return "sans-serif";
 }
+#endif
 
+#if !defined(PT_USE_FONTCONFIG) && defined(__ANDROID__)
 /* the NDK font matcher (Android 10+; the APK needs 11) */
 static char *android_matched_font(const char *family, int bold, int italic)
 {
@@ -230,6 +235,46 @@ static char *android_matched_font(const char *family, int bold, int italic)
     }
     AFontMatcher_destroy(m);
     return out;
+}
+#endif
+
+#if !defined(PT_USE_FONTCONFIG) && defined(__APPLE__)
+/* the file of an installed face of `family` with the wanted traits, through Core Text; NULL when the family is
+ * not installed or its file is a collection (.ttc), which the PDF engine opens at face 0 only */
+static char *mac_font_file(const char *family, int bold, int italic)
+{
+    CFStringRef name = CFStringCreateWithCString(NULL, family, kCFStringEncodingUTF8);
+    if (!name) return NULL;
+    uint32_t sym = (bold ? kCTFontBoldTrait : 0) | (italic ? kCTFontItalicTrait : 0);
+    CFNumberRef symbolic = CFNumberCreate(NULL, kCFNumberSInt32Type, &sym);
+    CFMutableDictionaryRef traits = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(traits, kCTFontSymbolicTrait, symbolic);
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(attrs, kCTFontFamilyNameAttribute, name);
+    CFDictionarySetValue(attrs, kCTFontTraitsAttribute, traits);
+    CTFontDescriptorRef want = CTFontDescriptorCreateWithAttributes(attrs);
+    const void *keys[] = {kCTFontFamilyNameAttribute};
+    CFSetRef mandatory = CFSetCreate(NULL, keys, 1, &kCFTypeSetCallBacks);
+    CTFontDescriptorRef got = CTFontDescriptorCreateMatchingFontDescriptor(want, mandatory);
+    char *out = NULL;
+    if (got) {
+        CFURLRef url = CTFontDescriptorCopyAttribute(got, kCTFontURLAttribute);
+        char path[4096];
+        if (url && CFURLGetFileSystemRepresentation(url, true, (UInt8 *)path, sizeof path) && font_file_ok(path)) out = pt_strdup(path);
+        if (url) CFRelease(url);
+        CFRelease(got);
+    }
+    CFRelease(mandatory), CFRelease(want), CFRelease(attrs), CFRelease(traits), CFRelease(symbolic), CFRelease(name);
+    return out;
+}
+
+/* the PDF's family, else a stand-in shipped with macOS as a single-face file */
+static char *mac_matched_font(const char *family, int bold, int italic)
+{
+    char *file = mac_font_file(family, bold, italic);
+    if (file) return file;
+    const char *generic = generic_family(family);
+    return mac_font_file(!strcmp(generic, "serif") ? "Times New Roman" : !strcmp(generic, "monospace") ? "Courier New" : "Arial", bold, italic);
 }
 #endif
 
@@ -261,6 +306,13 @@ char *pt_system_font_file(const char *name)
     int bold, italic;
     pt_font_style(name, &bold, &italic);
     char *file = android_matched_font(family, bold, italic);
+    free(family);
+    return file;
+#elif defined(__APPLE__)
+    char *family = pt_font_family(name);
+    int bold, italic;
+    pt_font_style(name, &bold, &italic);
+    char *file = mac_matched_font(family, bold, italic);
     free(family);
     return file;
 #else

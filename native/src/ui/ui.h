@@ -52,6 +52,7 @@ void cursor_commit(void);
 /* ---- immediate-mode state ---- */
 typedef struct {
     float scale, w, h;              /* logical window size */
+    float density;                  /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
     Vector2 mouse;
     int pressed, released, down, rpressed, rreleased, dclick, mpressed;
     float wheel, wheel_x;
@@ -80,6 +81,13 @@ typedef struct {
 extern ui_state ui;
 
 float ui_detect_scale(void);
+#ifdef __APPLE__
+void mac_install_open_handler(void);   /* macos.c: documents opened from Finder */
+void mac_take_opened(pt_strs *out);
+#endif
+/* framebuffer pixels per logical unit: the size to rasterise text and pages at */
+float ui_px(void);
+#define UI_PX ui_px()
 void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
 void ui_touch_drag_area(Rectangle r);   /* a one-finger drag here draws instead of panning */
 void ui_add_pinch(float factor, float screen_x, float screen_y);   /* touch: applied at the next frame */

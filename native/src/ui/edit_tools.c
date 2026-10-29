@@ -1214,7 +1214,7 @@ void text_box_frame(tab *t)
     Rectangle box = scene_rect_to_screen(t, to_scene(t, b->page, src));
     ui.focus_rect = box;
     /* the text drawn by the PDF engine, as it will be saved */
-    char *key = pt_format("%s|%s|%g|%d%d%d|%g|%g", text, b->obj.font, size, b->obj.rgb[0], b->obj.rgb[1], b->obj.rgb[2], b->obj.box_width, ui.scale * t->zoom);
+    char *key = pt_format("%s|%s|%g|%d%d%d|%g|%g", text, b->obj.font, size, b->obj.rgb[0], b->obj.rgb[1], b->obj.rgb[2], b->obj.box_width, UI_PX * t->zoom);
     if (!b->preview_key || strcmp(key, b->preview_key)) {
         free(b->preview_key);
         b->preview_key = key;
@@ -1237,7 +1237,7 @@ void text_box_frame(tab *t)
                 pt_draw_text(CTX, tmp, page, &copy, t->doc);
                 fz_drop_page(CTX, (fz_page *)page);
                 page = pdf_load_page(CTX, tmp, 0);
-                float s = t->zoom * ui.scale;
+                float s = t->zoom * UI_PX;
                 fz_irect bb = fz_round_rect(fz_transform_rect(fz_make_rect(0, 0, w, h), fz_scale(s, s)));
                 pix = fz_new_pixmap_with_bbox(CTX, fz_device_rgb(CTX), bb, NULL, 1);
                 fz_clear_pixmap(CTX, pix);

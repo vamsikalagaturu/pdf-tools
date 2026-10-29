@@ -245,7 +245,7 @@ static void file_stamp(const char *path, double *mtime, long *size)
         *mtime = -1, *size = -1;
         return;
     }
-    *mtime = (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9;
+    *mtime = PT_MTIME(st);
     *size = (long)st.st_size;
 }
 
@@ -711,7 +711,7 @@ Texture2D *thumb_texture(tab *t, int page)
 {
     if (t->thumb_ok[page]) return &t->thumbs[page];
     fz_rect b = page_bounds(t, page);
-    float zoom = fminf(THUMB_W / b.x1, THUMB_H / b.y1) * ui.scale;
+    float zoom = fminf(THUMB_W / b.x1, THUMB_H / b.y1) * UI_PX;
     fz_pixmap *pix = NULL;
     fz_try(CTX) {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
@@ -858,7 +858,11 @@ const link_info *link_at(tab *t, fz_point scene)
 void follow_link(tab *t, const link_info *l)
 {
     if (l->uri) {
+#ifdef __APPLE__
+        char *argv[] = {"open", l->uri, NULL};
+#else
         char *argv[] = {"xdg-open", l->uri, NULL};
+#endif
         if (run_detached(argv)) status("Could not open the link", 4);
         return;
     }
@@ -1048,6 +1052,8 @@ void tab_save(tab *t)
     if (!tab_edit_count(t)) return;
 #ifdef __ANDROID__
     char *msg = pt_format("Overwrite %s with the edited version?", pt_basename(t->path));
+#elif defined(__APPLE__)
+    char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the Trash.", pt_basename(t->path));
 #else
     char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the trash (restore with trash-restore).",
                           pt_basename(t->path));

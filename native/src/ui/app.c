@@ -11,6 +11,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 /* GLFW is compiled into raylib; the close request is intercepted to ask about unsaved edits. GLFW wants the
  * GLFWwindow, which is the current GL context (raylib's GetWindowHandle() is the native window). */
@@ -459,6 +462,12 @@ static void global_shortcuts(void)
 
 static void handle_drops(void)
 {
+#ifdef __APPLE__
+    pt_strs finder = {0};
+    mac_take_opened(&finder);
+    if (finder.n) app_open_paths(&finder);
+    pt_strs_free(&finder);
+#endif
     if (!IsFileDropped()) return;
     FilePathList list = LoadDroppedFiles();
     int workspace = app.current >= 0 && app.tabs.v[app.current].kind == TAB_WORKSPACE;
@@ -540,11 +549,16 @@ static void frame(void)
 static const char *exe_path(const char *argv0)
 {
     static char buf[4096];
+#ifdef __APPLE__
+    uint32_t size = sizeof buf;
+    if (!_NSGetExecutablePath(buf, &size)) return buf;
+#else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n > 0) {
         buf[n] = 0;
         return buf;
     }
+#endif
     return argv0;
 }
 
@@ -622,12 +636,20 @@ int main(int argc, char **argv)
     theme_apply(pt_settings_str(&app.settings, "theme"));
 
     SetTraceLogLevel(LOG_WARNING);
+#ifdef __APPLE__
+    /* a Retina framebuffer: layout stays in points, text and pages render at ui.density */
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
+#else
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+#endif
     InitWindow(1280, 1100, APP_NAME);
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);
     ui_input_init();
+#ifdef __APPLE__
+    mac_install_open_handler();
+#endif
     ui.scale = ui_detect_scale();
     int mon = GetCurrentMonitor();
     float fit_w = GetMonitorWidth(mon) * 0.9f, fit_h = GetMonitorHeight(mon) * 0.9f;

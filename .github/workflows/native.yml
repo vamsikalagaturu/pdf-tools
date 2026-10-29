@@ -40,3 +40,13 @@ jobs:
         run: ctest --test-dir build/native --output-on-failure
       - name: CLI contract (AGENTS.md) against the C binary
         run: PDF_TOOLS_BIN="$PWD/build/native/pdf-tools-c" python -m pytest -q tests/test_cli.py
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build PDF Tools.app and PDF-Tools.dmg (native/macos/build.sh, as on a Mac)
+        run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" native/macos/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Tools-macOS
+          path: ${{ runner.temp }}/pdf-tools-macos/out/PDF-Tools.dmg

@@ -22,8 +22,10 @@ ui_state ui;
 
 /* ---- fonts ---- */
 
-/* Each font is rasterised at the exact pixel size it is drawn at (logical size times ui.scale), so glyphs map
- * 1:1 onto screen pixels instead of being filtered down from a larger atlas. */
+float ui_px(void) { return (ui.scale > 0 ? ui.scale : 1) * (ui.density > 0 ? ui.density : 1); }
+
+/* Each font is rasterised at the exact pixel size it is drawn at (logical size times UI_PX), so glyphs map
+ * 1:1 onto framebuffer pixels instead of being filtered down from a larger atlas. */
 typedef struct { int px; font_kind kind; Font font; } sized_font;
 #define FONT_CACHE 48
 static sized_font font_cache[FONT_CACHE];
@@ -49,7 +51,7 @@ void ui_fonts_load(void)
 
 static Font font_at(font_kind f, float size)
 {
-    int px = (int)lroundf(size * (ui.scale > 0 ? ui.scale : 1));
+    int px = (int)lroundf(size * UI_PX);
     if (px < 4) px = 4;
     for (int i = 0; i < nfonts; i++)
         if (font_cache[i].px == px && font_cache[i].kind == f) return font_cache[i].font;
@@ -67,21 +69,21 @@ static Font font_at(font_kind f, float size)
     return font;
 }
 
-/* Logical coordinates that land on whole screen pixels. */
-static float snap(float v) { return roundf(v * ui.scale) / ui.scale; }
+/* Logical coordinates that land on whole framebuffer pixels. */
+static float snap(float v) { return roundf(v * UI_PX) / UI_PX; }
 
 float text_width(const char *s, float size, font_kind f)
 {
     if (!s || !*s) return 0;
     Font font = font_at(f, size);
-    return MeasureTextEx(font, s, (float)font.baseSize / ui.scale, 0).x;
+    return MeasureTextEx(font, s, (float)font.baseSize / UI_PX, 0).x;
 }
 
 void draw_text(const char *s, float x, float y, float size, font_kind f, Color c)
 {
     if (!s || !*s) return;
     Font font = font_at(f, size);
-    DrawTextEx(font, s, (Vector2){snap(x), snap(y)}, (float)font.baseSize / ui.scale, 0, c);
+    DrawTextEx(font, s, (Vector2){snap(x), snap(y)}, (float)font.baseSize / UI_PX, 0, c);
 }
 
 /* raylib fits Noto Sans' ascender..descender (1.362 em) into `size`; capitals then span 0.261..0.785 of it, so
@@ -279,6 +281,10 @@ float ui_detect_scale(void)
 {
     const char *env = getenv("PDF_TOOLS_SCALE");
     if (env && atof(env) > 0.3) return (float)atof(env);
+#ifdef __APPLE__
+    /* macOS lays windows out in points; a Retina screen shows up as ui.density instead */
+    return 1;
+#endif
     Vector2 content = GetWindowScaleDPI();
     if (content.x > 1.01f) return content.x;
     int mon = GetCurrentMonitor();
@@ -327,6 +333,7 @@ void ui_begin_frame(void)
         ui.scale = ui_detect_scale();
         checked = GetTime();
     }
+    ui.density = GetScreenWidth() > 0 ? fmaxf(1, (float)GetRenderWidth() / GetScreenWidth()) : 1;
     ui.w = (GetScreenWidth() - inset_l - inset_r) / ui.scale;
     ui.h = (GetScreenHeight() - inset_t - inset_b) / ui.scale;
     SetMouseOffset((int)-inset_l, (int)-inset_t);

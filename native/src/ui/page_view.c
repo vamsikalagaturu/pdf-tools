@@ -170,7 +170,7 @@ static cached_tex *text_texture(tab *t, const pt_item *it)
         pt_draw_text(CTX, tmp, page, &copy, t->doc);
         fz_drop_page(CTX, (fz_page *)page);
         page = pdf_load_page(CTX, tmp, 0);
-        fz_matrix m = fz_scale(PREVIEW_SCALE * ui.scale / 2 + PREVIEW_SCALE / 2, PREVIEW_SCALE * ui.scale / 2 + PREVIEW_SCALE / 2);
+        fz_matrix m = fz_scale(PREVIEW_SCALE * UI_PX / 2 + PREVIEW_SCALE / 2, PREVIEW_SCALE * UI_PX / 2 + PREVIEW_SCALE / 2);
         fz_irect box = fz_round_rect(fz_transform_rect(fz_make_rect(0, 0, w, h), m));
         pix = fz_new_pixmap_with_bbox(CTX, fz_device_rgb(CTX), box, NULL, 1);
         fz_clear_pixmap(CTX, pix);
@@ -673,7 +673,7 @@ static void draw_page(tab *t, int p)
     Rectangle r = scene_rect_to_screen(t, sr);
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
     DrawRectangleRec(r, WHITE);
-    Texture2D *tex = page_texture(t, p, t->zoom * ui.scale);
+    Texture2D *tex = page_texture(t, p, t->zoom * UI_PX);
     if (tex) DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, r, (Vector2){0, 0}, 0, WHITE);
 }
 

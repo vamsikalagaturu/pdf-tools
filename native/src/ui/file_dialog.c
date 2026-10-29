@@ -1,5 +1,6 @@
-/* Platform helpers: the desktop's file chooser (zenity or kdialog, run without blocking the window, else a
- * built-in browser), moving files to the freedesktop trash, starting detached programs and splitting commands. */
+/* Platform helpers: the desktop's file chooser (zenity or kdialog; on macOS the system one through osascript;
+ * run without blocking the window, else a built-in browser), moving files to the trash (freedesktop, or
+ * ~/.Trash on macOS), starting detached programs and splitting commands. */
 #include "ui.h"
 #include <dirent.h>
 #include <errno.h>
@@ -12,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef __APPLE__
 static int on_path(const char *prog)
 {
     const char *path = getenv("PATH");
@@ -26,6 +28,7 @@ static int on_path(const char *prog)
     free(copy);
     return found;
 }
+#endif
 
 /* ---- the chooser as a child process ---- */
 
@@ -318,6 +321,61 @@ static void builtin_dialog(int mode, const char *title, const char *start, const
     dialog_push(d);
 }
 
+#ifdef __APPLE__
+/* an AppleScript string literal */
+static char *as_quote(const char *s)
+{
+    char *out = malloc(strlen(s) * 2 + 3), *o = out;
+    *o++ = '"';
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') *o++ = '\\';
+        *o++ = *s;
+    }
+    *o++ = '"';
+    *o = 0;
+    return out;
+}
+
+/* The macOS chooser through osascript: one POSIX path per line on stdout, exit status 1 when cancelled. */
+static char *mac_chooser_script(int mode, const char *title, const char *start, const char *patterns)
+{
+    struct stat st;
+    int is_dir = start && !stat(start, &st) && S_ISDIR(st.st_mode);
+    char *dir = is_dir ? pt_strdup(start) : start ? pt_dirname(start) : pt_strdup(getenv("HOME") ? getenv("HOME") : "/");
+    char *qtitle = as_quote(title), *qdir = as_quote(dir);
+    char *where = !stat(dir, &st) && S_ISDIR(st.st_mode) ? pt_format(" default location (POSIX file %s)", qdir) : pt_strdup("");
+    /* "*.pdf *.png" -> of type {"pdf", "png"}; a "*" pattern allows everything */
+    char types[512] = "";
+    if (patterns && mode != FD_DIR && !strstr(patterns, "\"")) {
+        char *copy = pt_strdup(patterns);
+        int any = 0, all = 0;
+        for (char *p = strtok(copy, " "); p; p = strtok(NULL, " ")) {
+            if (!strcmp(p, "*")) all = 1;
+            else if (!strncmp(p, "*.", 2) && strlen(types) + strlen(p) + 8 < sizeof types) {
+                strcat(types, any++ ? ", \"" : " of type {\"");
+                strcat(types, p + 2);
+                strcat(types, "\"");
+            }
+        }
+        if (any) strcat(types, "}");
+        if (all) *types = 0;
+        free(copy);
+    }
+    char *script;
+    if (mode == FD_SAVE) {
+        char *qname = as_quote(start && !is_dir ? pt_basename(start) : "Untitled.pdf");
+        script = pt_format("POSIX path of (choose file name with prompt %s default name %s%s)", qtitle, qname, where);
+        free(qname);
+    } else if (mode == FD_DIR) script = pt_format("POSIX path of (choose folder with prompt %s%s)", qtitle, where);
+    else if (mode == FD_OPEN_MANY)
+        script = pt_format("set out to \"\"\nrepeat with f in (choose file with prompt %s%s%s with multiple selections allowed)\n"
+                           "set out to out & POSIX path of f & linefeed\nend repeat\nout", qtitle, types, where);
+    else script = pt_format("POSIX path of (choose file with prompt %s%s%s)", qtitle, types, where);
+    free(dir), free(qtitle), free(qdir), free(where);
+    return script;
+}
+#endif
+
 void file_dialog(int mode, const char *title, const char *start, const char *filter_name, const char *patterns,
                  ui_files_done done, void *ctx)
 {
@@ -327,6 +385,14 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
     char *owned[8];
     int nowned = 0;
 #define OWN(s) (owned[nowned++] = (s))
+#ifdef __APPLE__
+    if (!getenv("PDF_TOOLS_BUILTIN_CHOOSER")) {
+        argv[n++] = "osascript";
+        argv[n++] = "-e";
+        argv[n++] = OWN(mac_chooser_script(mode, title, start, patterns));
+        (void)filter_name;
+    }
+#else
     if (!getenv("PDF_TOOLS_BUILTIN_CHOOSER") && on_path("zenity")) {
         argv[n++] = "zenity";
         argv[n++] = "--file-selection";
@@ -350,6 +416,7 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
         if (patterns && mode != FD_DIR) argv[n++] = OWN(pt_format("%s|%s", patterns, filter_name ? filter_name : "Files"));
         if (mode == FD_OPEN_MANY) argv[n++] = "--multiple", argv[n++] = "--separate-output";
     }
+#endif
     argv[n] = NULL;
     int ok = n && !spawn_chooser(argv, mode, done, ctx);
     for (int i = 0; i < nowned; i++) free(owned[i]);
@@ -359,6 +426,7 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
 
 /* ---- the freedesktop trash ---- */
 
+#ifndef __APPLE__
 static char *url_encode(const char *s)
 {
     char *out = malloc(strlen(s) * 3 + 1), *o = out;
@@ -412,7 +480,33 @@ static int trash_into(const char *trash, const char *path, const char *info_path
     free(info);
     return rc;
 }
+#endif
 
+#ifdef __APPLE__
+/* macOS: ~/.Trash, where Finder's "Put Back" does not know the origin but the file can be dragged back;
+ * a taken name gets " 2", " 3", ... before the extension, as Finder does. */
+int move_to_trash(const char *path)
+{
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+    char *trash = pt_format("%s/.Trash", home), *abs = pt_realpath(path);
+    const char *base = pt_basename(abs), *dot = strrchr(base, '.');
+    char *stem = pt_stem(base);
+    int rc = -1;
+    for (int k = 1; k < 10000 && rc; k++) {
+        char *target = k == 1 ? pt_format("%s/%s", trash, base) : pt_format("%s/%s %d%s", trash, stem, k, dot && dot != base ? dot : "");
+        struct stat st;
+        if (stat(target, &st)) {
+            rc = rename(abs, target) ? -1 : 0;
+            free(target);
+            break;
+        }
+        free(target);
+    }
+    free(stem), free(abs), free(trash);
+    return rc;
+}
+#else
 int move_to_trash(const char *path)
 {
     char *abs = pt_realpath(path);
@@ -447,6 +541,7 @@ int move_to_trash(const char *path)
     free(abs);
     return rc;
 }
+#endif
 
 /* ---- programs ---- */
 

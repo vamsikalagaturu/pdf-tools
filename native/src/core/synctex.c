@@ -31,7 +31,7 @@ static double mtime(const char *path)
 {
     struct stat st;
     if (!path || stat(path, &st)) return -1;
-    return (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9;
+    return PT_MTIME(st);
 }
 
 static int number(const char **s, long *out)

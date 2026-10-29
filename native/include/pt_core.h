@@ -26,6 +26,12 @@ void pt_strs_free(pt_strs *s);
 typedef struct { unsigned char *data; size_t len; } pt_bytes;
 int pt_read_file(const char *path, pt_bytes *out);
 int pt_write_file(const char *path, const void *data, size_t len);
+/* a struct stat's modification time in seconds (macOS names the field st_mtimespec) */
+#ifdef __APPLE__
+#define PT_MTIME(st) ((double)(st).st_mtimespec.tv_sec + (st).st_mtimespec.tv_nsec / 1e9)
+#else
+#define PT_MTIME(st) ((double)(st).st_mtim.tv_sec + (st).st_mtim.tv_nsec / 1e9)
+#endif
 int pt_mkdirs(const char *path);
 int pt_exists(const char *path);
 int pt_same_file(const char *a, const char *b);

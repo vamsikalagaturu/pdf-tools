@@ -36,7 +36,7 @@ void pt_list_signatures(pt_strs *out)
         struct stat st;
         if (stat(path, &st)) { free(path); continue; }
         files = pt_grow(files, &cap, n + 1, sizeof *files);
-        files[n++] = (dated){path, (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9};
+        files[n++] = (dated){path, PT_MTIME(st)};
     }
     closedir(d);
     qsort(files, (size_t)n, sizeof *files, by_mtime);

@@ -179,7 +179,7 @@ static int preview_frame(dialog *d, Rectangle b)
             float scale = fminf((view.width - 20) / (bounds.x1 - bounds.x0), (view.height - 20) / (bounds.y1 - bounds.y0));
             if (!j->tex_ok || j->tex_page != j->shown || fabsf(j->tex_scale - scale) > 0.01f) {
                 if (j->tex_ok) UnloadTexture(j->tex);
-                fz_pixmap *pix = pt_render_page(CTX, p, scale * ui.scale, 0);
+                fz_pixmap *pix = pt_render_page(CTX, p, scale * UI_PX, 0);
                 Image img = {pix->samples, pix->w, pix->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8};
                 j->tex = LoadTextureFromImage(img);
                 SetTextureFilter(j->tex, TEXTURE_FILTER_BILINEAR);
