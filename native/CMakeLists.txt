@@ -74,6 +74,11 @@ target_compile_options(ptcli PRIVATE -Wall -Wextra -Wno-clobbered)
 add_executable(pdf-tools-c src/cli_main.c)
 target_link_libraries(pdf-tools-c PRIVATE ptcli)
 
+enable_testing()
+add_executable(test_core tests/test_core.c)
+target_link_libraries(test_core PRIVATE ptcore)
+add_test(NAME core COMMAND test_core)
+
 if(PT_BUILD_GUI)
   find_package(raylib 5 QUIET CONFIG)
   if(raylib_FOUND)
