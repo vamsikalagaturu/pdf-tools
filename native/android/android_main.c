@@ -183,9 +183,14 @@ static struct {
     int lifted;       /* released; move the pointer away once the release is taken */
     double t;
     float x, y, cx, cy;
-    float vx, vy;     /* scroll velocity, px/s, smoothed over the last moves */
-    double moved_t;   /* event time of the last scroll move, s */
 } touch;
+/* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
+typedef struct {
+    double t;
+    float x, y;
+} sample;
+static sample samples[32];
+static int nsamples;
 /* momentum after a scroll is let go: the velocity decays exponentially, as Android's own lists fling */
 static struct {
     float vx, vy;
@@ -224,6 +229,34 @@ static void centroid(const AInputEvent *e, int skip, float *x, float *y)
     if (k) *x /= k, *y /= k;
 }
 
+static void add_samples(const AInputEvent *e)
+{
+    int n = (int)AMotionEvent_getPointerCount(e), hist = (int)AMotionEvent_getHistorySize(e);
+    for (int h = 0; h <= hist; h++) {
+        float x = 0, y = 0;
+        for (int i = 0; i < n; i++) {
+            x += h < hist ? AMotionEvent_getHistoricalX(e, (size_t)i, (size_t)h) : AMotionEvent_getX(e, (size_t)i);
+            y += h < hist ? AMotionEvent_getHistoricalY(e, (size_t)i, (size_t)h) : AMotionEvent_getY(e, (size_t)i);
+        }
+        double t = (h < hist ? AMotionEvent_getHistoricalEventTime(e, (size_t)h) : AMotionEvent_getEventTime(e)) / 1e9;
+        if (nsamples == 32) memmove(samples, samples + 1, sizeof samples[0] * 31), nsamples--;
+        samples[nsamples++] = (sample){t, x / n, y / n};
+    }
+}
+
+/* velocity over the last 100 ms of samples, px/s; none if the finger rested before lifting */
+static int release_velocity(double up_t, float *vx, float *vy)
+{
+    if (nsamples < 2 || up_t - samples[nsamples - 1].t > 0.05) return 0;
+    int first = nsamples - 1;
+    while (first > 0 && samples[nsamples - 1].t - samples[first - 1].t <= 0.1) first--;
+    double dt = samples[nsamples - 1].t - samples[first].t;
+    if (dt < 0.005) return 0;
+    *vx = (float)((samples[nsamples - 1].x - samples[first].x) / dt);
+    *vy = (float)((samples[nsamples - 1].y - samples[first].y) / dt);
+    return 1;
+}
+
 static void on_touch(const AInputEvent *e, int action)
 {
     float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
@@ -232,7 +265,8 @@ static void on_touch(const AInputEvent *e, int action)
         touch.pending = 1, touch.pressed = touch.scrolling = touch.lifted = 0;
         touch.t = GetTime(), touch.x = x, touch.y = y;
         touch.draws = ui_touch_drags_at(x, y);
-        touch.vx = touch.vy = 0;
+        nsamples = 0;
+        add_samples(e);
         /* a finger on a moving page stops it, and that touch is not a tap */
         if (fling.vx || fling.vy) touch.pending = 0, touch.scrolling = 1, touch.rebase = 1;
         fling.vx = fling.vy = 0;
@@ -241,25 +275,23 @@ static void on_touch(const AInputEvent *e, int action)
         touch.pending = 0;
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE), touch.pressed = 0;
         touch.scrolling = touch.rebase = 1;
+        nsamples = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_UP:
         touch.rebase = 1;
+        nsamples = 0;
         break;
     case AMOTION_EVENT_ACTION_MOVE:
+        /* the centroid jumps when a finger is added or lifted: the velocity starts over there */
+        if (touch.rebase) nsamples = 0;
+        add_samples(e);
         if (touch.scrolling) {
             float cx, cy;
             centroid(e, -1, &cx, &cy);
-            double now = AMotionEvent_getEventTime(e) / 1e9;
             if (!touch.rebase) {
                 wheel_acc.x += (cx - touch.cx) / (60 * dp());
                 wheel_acc.y += (cy - touch.cy) / (60 * dp());
-                double dt = now - touch.moved_t;
-                if (dt > 0.001) {
-                    touch.vx = 0.6f * (float)((cx - touch.cx) / dt) + 0.4f * touch.vx;
-                    touch.vy = 0.6f * (float)((cy - touch.cy) / dt) + 0.4f * touch.vy;
-                }
             }
-            touch.moved_t = now;
             touch.cx = cx, touch.cy = cy, touch.rebase = 0;
         } else if (touch.pending && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
             /* elsewhere one finger pans; a long press first (see pt_android_frame) drags instead */
@@ -270,18 +302,25 @@ static void on_touch(const AInputEvent *e, int action)
                 wheel_acc.x += (x - touch.x) / (60 * dp());
                 wheel_acc.y += (y - touch.y) / (60 * dp());
                 touch.cx = x, touch.cy = y, touch.rebase = 0;
-                touch.moved_t = AMotionEvent_getEventTime(e) / 1e9;
             }
         }
         break;
     case AMOTION_EVENT_ACTION_UP:
     case AMOTION_EVENT_ACTION_CANCEL:
+        if (action == AMOTION_EVENT_ACTION_UP) add_samples(e);
+        /* a flick so quick that its whole movement arrives with the release */
+        if (touch.pending && !touch.draws && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
+            wheel_acc.x += (x - touch.x) / (60 * dp());
+            wheel_acc.y += (y - touch.y) / (60 * dp());
+            touch.pending = 0;
+            touch.scrolling = 1;
+        }
         if (touch.pending && action == AMOTION_EVENT_ACTION_UP) flush_press();
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE);
-        /* a finger that stopped before lifting leaves no momentum */
-        if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP && AMotionEvent_getEventTime(e) / 1e9 - touch.moved_t < 0.08 &&
-            hypotf(touch.vx, touch.vy) > 150 * dp())
-            fling.vx = touch.vx, fling.vy = touch.vy, fling.t = GetTime();
+        float vx, vy;
+        if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP && release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) &&
+            hypotf(vx, vy) > 100 * dp())
+            fling.vx = vx, fling.vy = vy, fling.t = GetTime();
         touch.pending = touch.pressed = touch.scrolling = 0;
         touch.lifted = 1;
         break;
@@ -430,9 +469,9 @@ void pt_android_frame(void)
         fling.t = now;
         wheel_acc.x += (float)(fling.vx * dt) / (60 * dp());
         wheel_acc.y += (float)(fling.vy * dt) / (60 * dp());
-        float k = expf(-2.5f * (float)dt);
+        float k = expf(-1.6f * (float)dt);
         fling.vx *= k, fling.vy *= k;
-        if (hypotf(fling.vx, fling.vy) < 20 * dp()) fling.vx = fling.vy = 0;
+        if (hypotf(fling.vx, fling.vy) < 40 * dp()) fling.vx = fling.vy = 0;
     }
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
