@@ -17,11 +17,13 @@ the repo. Re-runs are incremental.
 
 1. Downloads `mupdf-1.28.5-source.tar.gz` (checked against a pinned SHA-256), builds `libmupdf.a` and
    `libmupdf-third.a` with the NDK clang (API 26). A dummy `pkg-config` keeps host libraries out.
-2. Configures `native/android/CMakeLists.txt` with the NDK toolchain. It pulls in `native/CMakeLists.txt`
-   (for `ptcore`, `ptcli` and `pt_embed`; GUI, PCRE2 and fontconfig off), builds raylib 6.2 from
+2. Downloads `pcre2-10.45.tar.bz2` (pinned SHA-256) and builds a static `libpcre2-8.a` (no JIT) for regex
+   search and redaction.
+3. Configures `native/android/CMakeLists.txt` with the NDK toolchain. It pulls in `native/CMakeLists.txt`
+   (for `ptcore`, `ptcli` and `pt_embed`; GUI and fontconfig off, PCRE2 from step 2), builds raylib 6.2 from
    `native/thirdparty/raylib` for `PLATFORM_ANDROID` with `raylib_core.c` in place of `rcore.c`, and links every
    `native/src/ui/*.c` (globbed, unmodified) plus the Android files below into `libpdf-tools.so`.
-3. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest and icon with `aapt2`
+4. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest and icon with `aapt2`
    (minSdk 26, targetSdk 34, `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16`
    and signs with `apksigner` using a debug keystore created in the cache folder.
 
@@ -98,14 +100,25 @@ API 26-29: the system permission prompt; tap Allow.
 ## Touch
 
 Tap = click. One finger drags to scroll, with fling momentum after release; a touch stops a fling. A long
-press (0.45 s) then drag = press and drag (text selection, moving items and thumbnails). Where the UI marks a
-drag area (`ui_touch_drag_area`: the page under any tool but View, the signature pad) one finger draws at once,
-and two fingers scroll. No pinch zoom, no right-click by touch (a mouse works: right and middle buttons,
-wheel). Back acts as Escape and never closes the app; use Quit.
+press (0.45 s) then drag = press and drag (text selection, moving items and thumbnails); a long press lifted in
+place = right click (context menus). Where the UI marks a drag area (`ui_touch_drag_area`: the page under any
+tool but View, the signature pad) one finger draws at once. Two fingers scroll and pinch-zoom the page around
+the point between them (`ui_add_pinch`). A mouse works too (right and middle buttons, wheel). Back acts as
+Escape and never closes the app; use Quit.
+
+## Platform services
+
+- Soft keyboard: `PdfToolsActivity.TextSink`, an invisible view with its own `InputConnection`, receives the
+  keyboard's text; composing text is typed into the field as it changes and replaced on commit (backspaces then
+  the new text), so CJK, swipe and autocorrect input arrive. `native_text()` queues it for the window thread;
+  widgets.c takes backspace (8) and delete (127) among the characters so the order holds.
+- Clipboard: `SetClipboardText`/`GetClipboardText` are renamed for every window source to
+  `pt_android_set_clipboard`/`pt_android_get_clipboard` (`ClipboardManager`).
+- Printing: the edited PDF goes to the system print dialog (`PrintManager`), which picks printer, copies and pages.
+- Fonts for text boxes: the NDK font matcher (`AFontMatcher`, Android 10+, looked up with `dlsym`) with the PDF's
+  family and a generic fallback (serif, monospace, sans-serif); on 8 and 9 a name match in `/system/fonts`.
+- System bars: `systemInsets()` (polled 4x a second) keeps the UI clear of the gesture/navigation bar.
 
 ## Not available on Android
 
-Printing (no `lp`), SyncTeX (no `synctex` binary), editor commands, new windows and `--forward`, clipboard
-(raylib's Android platform has none), regular-expression redaction (built without PCRE2), font matching via
-fontconfig. Text input from the soft keyboard is limited to characters that map to key events (no IME
-composition, so CJK and similar input do not arrive).
+Editor commands (inverse SyncTeX search opens nothing), new windows and `--forward`.

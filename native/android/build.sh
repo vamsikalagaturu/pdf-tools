@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds MuPDF, raylib and libpdf-tools.so for arm64-v8a and packages a debug-signed APK, without Gradle.
+# Builds MuPDF, PCRE2, raylib and libpdf-tools.so for arm64-v8a and packages a debug-signed APK, without Gradle.
 # Output: $PT_ANDROID_OUT/out/pdf-tools.apk (default ~/.cache/pdf-tools-native/android). Re-runs are incremental.
 set -euo pipefail
 
@@ -20,6 +20,12 @@ MUPDF_SHA256=98a5c10cda20c3992cdf76ff6b2a1149c32bd79cc796d3f703230b1185b7e934
 MUPDF_TAR=$ROOT/dl/mupdf-$MUPDF_VERSION-source.tar.gz
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
 MUPDF_OUT=$ROOT/mupdf-build
+
+PCRE2_VERSION=10.45
+PCRE2_SHA256=21547f3516120c75597e5b30a992e27a592a31950b5140e7b8bfde3f192033c4
+PCRE2_TAR=$ROOT/dl/pcre2-$PCRE2_VERSION.tar.bz2
+PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
+PCRE2_OUT=$ROOT/pcre2-install
 
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 for tool in "$TC/clang" "$BT/aapt2" "$BT/d8" "$BT/zipalign" "$BT/apksigner" "$ANDROID_JAR"; do
@@ -52,12 +58,32 @@ PATH="$ROOT/nopkgconfig:$PATH" make -C "$MUPDF_SRC" -j"$JOBS" libs \
     || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"
 
+step "PCRE2 $PCRE2_VERSION"
+if [ ! -f "$PCRE2_TAR" ]; then
+    curl -fL -o "$PCRE2_TAR.part" "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VERSION/pcre2-$PCRE2_VERSION.tar.bz2"
+    mv "$PCRE2_TAR.part" "$PCRE2_TAR"
+fi
+echo "$PCRE2_SHA256  $PCRE2_TAR" | sha256sum -c --quiet
+[ -d "$PCRE2_SRC" ] || tar xjf "$PCRE2_TAR" -C "$ROOT/src"
+if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
+    cmake -S "$PCRE2_SRC" -B "$ROOT/pcre2-build" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+        -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-$MIN_API -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$PCRE2_OUT" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
+        -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2GREP=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_SUPPORT_JIT=OFF \
+        >"$ROOT/pcre2-build.log" 2>&1 || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
+    cmake --build "$ROOT/pcre2-build" --target install -j"$JOBS" >>"$ROOT/pcre2-build.log" 2>&1 \
+        || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
+fi
+ls -l "$PCRE2_OUT/lib/libpcre2-8.a"
+
 step "libpdf-tools.so (raylib, core, window)"
 cmake -S "$HERE" -B "$ROOT/build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-$MIN_API -DCMAKE_BUILD_TYPE=Release \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
-    -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" >/dev/null
+    -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
+    -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" >/dev/null
 cmake --build "$ROOT/build" --target pdf-tools -j"$JOBS"
 
 step "dex"

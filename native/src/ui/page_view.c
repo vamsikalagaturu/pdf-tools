@@ -434,6 +434,16 @@ static void handle_input(tab *t, Rectangle area)
         }
         close_popover(t, 1);
     }
+    if (over && ui.pinch != 1) {
+        /* keep the point between the fingers in place, as Ctrl+wheel keeps the one under the pointer */
+        fz_point anchor = screen_to_scene(t, ui.pinch_at);
+        float old = t->zoom;
+        set_zoom(t, t->zoom * ui.pinch);
+        t->want_scroll_page = -1;
+        t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
+        if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
+        close_popover(t, 1);
+    }
     if (!ui.focus && !dialogs_open()) {
         if (ui_key(KEY_UP)) t->scroll_y -= 40;
         if (ui_key(KEY_DOWN)) t->scroll_y += 40;

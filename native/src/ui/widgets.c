@@ -300,6 +300,16 @@ void ui_set_insets(float left, float top, float right, float bottom)
     ui.dirty = 1;
 }
 
+static float pinch_acc = 1;
+static Vector2 pinch_screen;
+
+void ui_add_pinch(float factor, float screen_x, float screen_y)
+{
+    pinch_acc *= factor;
+    pinch_screen = (Vector2){screen_x, screen_y};
+    ui.dirty = 1;
+}
+
 void ui_begin_frame(void)
 {
     static double checked;
@@ -316,6 +326,9 @@ void ui_begin_frame(void)
     Vector2 wheel = GetMouseWheelMoveV();
     ui.wheel = wheel.y;
     ui.wheel_x = wheel.x;
+    ui.pinch = pinch_acc;
+    ui.pinch_at = (Vector2){(pinch_screen.x - inset_l) / ui.scale, (pinch_screen.y - inset_t) / ui.scale};
+    pinch_acc = 1;
     if (nframe_keys) {
         ui.ctrl = (frame_mods & GLFW_MOD_CONTROL) != 0;
         ui.shift = (frame_mods & GLFW_MOD_SHIFT) != 0;
@@ -883,6 +896,16 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         int ch;
         while ((ch = GetCharPressed()) > 0) {
             if (t->readonly || ui.ctrl) continue;
+            /* Android's soft keyboard replaces what it is composing with backspaces and deletes among its
+             * characters (android_main.c), so they arrive here in order rather than as key presses */
+            if (ch == '\b' || ch == 127) {
+                int a = t->caret < t->anchor ? t->caret : t->anchor, b = t->caret < t->anchor ? t->anchor : t->caret;
+                if (a != b) text_delete(t, a, b);
+                else if (ch == '\b' && t->caret > 0) text_delete(t, utf8_prev(t->buf, t->caret), t->caret);
+                else if (ch == 127 && t->caret < t->len) text_delete(t, t->caret, utf8_next(t->buf, t->len, t->caret));
+                result |= TE_CHANGED;
+                continue;
+            }
             if (ch < 32 && ch != '\t') continue;
             char buf[8];
             int n = fz_runetochar(buf, ch);

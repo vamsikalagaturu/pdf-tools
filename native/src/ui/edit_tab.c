@@ -488,7 +488,8 @@ static void find_bar(tab *t, Rectangle r)
         t->find_first = 0;
     }
     /* narrow: the count and the redact buttons move to a second row */
-    float field_w = t->narrow ? fmaxf(80, r.width - 150) : 300;
+    int regex = pt_have_regex();
+    float field_w = t->narrow ? fmaxf(80, r.width - 150 - (regex ? 36 : 0)) : 300;
     int res = ui_textfield(bid(t, 100), &t->find, (Rectangle){x, y, field_w, h}, 1);
     if (res & TE_CHANGED) t->find_due = ui.now + 0.25;
     if (res & TE_SUBMIT) step_match(t, 1);
@@ -505,6 +506,13 @@ static void find_bar(tab *t, Rectangle r)
         run_search(t);
     }
     x += 36;
+    if (regex) {
+        if (ui_button(bid(t, 107), (Rectangle){x, y, 34, h}, ".*", NULL, t->find_regex ? B_CHECKED : B_FLAT, "Regular expression (Python syntax)")) {
+            t->find_regex = !t->find_regex;
+            run_search(t);
+        }
+        x += 36;
+    }
     if (ui_button(bid(t, 102), (Rectangle){x, y, 30, h}, NULL, "prev", B_FLAT, "Previous match (Shift+Enter)")) step_match(t, -1);
     x += 32;
     if (ui_button(bid(t, 103), (Rectangle){x, y, 30, h}, NULL, "next", B_FLAT, "Next match (Enter)")) step_match(t, 1);
@@ -523,6 +531,7 @@ static void find_bar(tab *t, Rectangle r)
     int m = t->matches.n;
     char count[48] = "";
     if (m) snprintf(count, sizeof count, "%d of %d", t->match_idx + 1, m);
+    else if (t->find_bad && !t->find_due) snprintf(count, sizeof count, "Invalid pattern");
     else if (*text_get(&t->find) && !t->find_due) snprintf(count, sizeof count, "No matches");
     draw_text_in(count, (Rectangle){x, y, 110, h}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     char all[48];

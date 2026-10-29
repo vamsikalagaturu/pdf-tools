@@ -1394,6 +1394,7 @@ void run_search(tab *t)
     t->find_due = 0;
     t->matches.n = 0;
     t->match_idx = -1;
+    t->find_bad = 0;
     const char *query = text_get(&t->find);
     int blank = 1;
     for (const char *s = query; *s; s++) blank &= *s == ' ';
@@ -1404,10 +1405,18 @@ void run_search(tab *t)
             fz_page *page = fz_load_page(CTX, (fz_document *)t->doc, p);
             fz_stext_page *st = pt_stext(CTX, page);
             pt_rects rects = {0};
-            pt_search(CTX, st, query, &rects);
+            int regex = t->find_regex && pt_have_regex();
+            fz_try(CTX) {
+                if (regex) pt_regex_rects(CTX, st, query, t->find_case, &rects);
+                else pt_search(CTX, st, query, &rects);
+            }
+            fz_catch(CTX) {
+                fz_ignore_error(CTX);
+                t->find_bad = 1;
+            }
             int first = t->matches.n;
             for (int k = 0; k < rects.n; k++) {
-                if (t->find_case) {
+                if (t->find_case && !regex) {
                     fz_rect r = rects.v[k];
                     char *box = pt_textbox(CTX, st, fz_make_rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1));
                     int keep = strstr(box, query) != NULL;

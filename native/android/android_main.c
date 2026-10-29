@@ -1,6 +1,7 @@
 /* Android side of the window: the process entry raylib's android_main() calls, the environment the shared
  * sources expect (HOME, XDG_*), touch/mouse/key input fed to widgets.c's GLFW callbacks, the soft keyboard,
- * and PDFs handed over by other apps (ACTION_VIEW intents). Everything runs on the android_main thread. */
+ * and PDFs handed over by other apps (ACTION_VIEW intents). Everything runs on the android_main thread except
+ * native_text(), which the soft keyboard calls on the UI thread. */
 #include "android_glue.h"
 #include "ui.h"
 #include <android/input.h>
@@ -12,6 +13,7 @@
 #include <fcntl.h>
 #include <jni.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +101,21 @@ char *pt_java(const char *method, int nargs, ...)
     return r;
 }
 
+/* ---- clipboard (raylib's Android platform has none) ---- */
+
+void pt_android_set_clipboard(const char *text)
+{
+    free(pt_java("setClipboard", 1, text ? text : ""));
+}
+
+const char *pt_android_get_clipboard(void)
+{
+    static char *last;
+    free(last);
+    last = pt_java("clipboard", 0);
+    return last ? last : "";
+}
+
 /* ---- environment ---- */
 
 static void setup_environment(void)
@@ -172,7 +189,14 @@ static void check_intent(void)
 /* ---- input ---- */
 
 static int32_t (*raylib_input)(struct android_app *, AInputEvent *);
-static int chars[64], nchars;
+static int chars[256], nchars;
+/* text from the soft keyboard (PdfToolsActivity.TextSink, on the UI thread): code points, IME_BACKSPACE,
+ * IME_DELETE, IME_ENTER */
+#define IME_BACKSPACE -1
+#define IME_ENTER -2
+#define IME_DELETE -3
+static pthread_mutex_t ime_lock = PTHREAD_MUTEX_INITIALIZER;
+static int ime_q[1024], n_ime;
 static Vector2 wheel_acc, wheel_frame;
 static struct {
     int pending;      /* finger down, press not yet sent: a second finger makes it a scroll instead */
@@ -181,8 +205,10 @@ static struct {
     int scrolling;
     int rebase;       /* finger count changed: restart the scroll from the current centroid */
     int lifted;       /* released; move the pointer away once the release is taken */
+    int held;         /* long press reached, nothing sent yet: moving drags, lifting right-clicks */
     double t;
     float x, y, cx, cy;
+    float spread;     /* distance between the first two fingers, for pinch zoom; 0 with one finger */
 } touch;
 /* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
 typedef struct {
@@ -229,6 +255,12 @@ static void centroid(const AInputEvent *e, int skip, float *x, float *y)
     if (k) *x /= k, *y /= k;
 }
 
+static float finger_spread(const AInputEvent *e)
+{
+    if (AMotionEvent_getPointerCount(e) < 2) return 0;
+    return hypotf(AMotionEvent_getX(e, 1) - AMotionEvent_getX(e, 0), AMotionEvent_getY(e, 1) - AMotionEvent_getY(e, 0));
+}
+
 static void add_samples(const AInputEvent *e)
 {
     int n = (int)AMotionEvent_getPointerCount(e), hist = (int)AMotionEvent_getHistorySize(e);
@@ -262,7 +294,7 @@ static void on_touch(const AInputEvent *e, int action)
     float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
     switch (action) {
     case AMOTION_EVENT_ACTION_DOWN:
-        touch.pending = 1, touch.pressed = touch.scrolling = touch.lifted = 0;
+        touch.pending = 1, touch.pressed = touch.scrolling = touch.lifted = touch.held = 0;
         touch.t = GetTime(), touch.x = x, touch.y = y;
         touch.draws = ui_touch_drags_at(x, y);
         nsamples = 0;
@@ -272,7 +304,7 @@ static void on_touch(const AInputEvent *e, int action)
         fling.vx = fling.vy = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
-        touch.pending = 0;
+        touch.pending = touch.held = 0;
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE), touch.pressed = 0;
         touch.scrolling = touch.rebase = 1;
         nsamples = 0;
@@ -286,13 +318,18 @@ static void on_touch(const AInputEvent *e, int action)
         if (touch.rebase) nsamples = 0;
         add_samples(e);
         if (touch.scrolling) {
-            float cx, cy;
+            float cx, cy, spread = finger_spread(e);
             centroid(e, -1, &cx, &cy);
             if (!touch.rebase) {
                 wheel_acc.x += (cx - touch.cx) / (60 * dp());
                 wheel_acc.y += (cy - touch.cy) / (60 * dp());
+                if (spread > 0 && touch.spread > 0) ui_add_pinch(spread / touch.spread, cx, cy);
             }
-            touch.cx = cx, touch.cy = cy, touch.rebase = 0;
+            touch.cx = cx, touch.cy = cy, touch.spread = spread, touch.rebase = 0;
+        } else if (touch.held && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
+            touch.held = 0;
+            touch.pressed = 1;
+            send_mouse(MOUSE_BUTTON_LEFT, GLFW_PRESS);
         } else if (touch.pending && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
             /* elsewhere one finger pans; a long press first (see pt_android_frame) drags instead */
             if (touch.draws) flush_press();
@@ -317,6 +354,10 @@ static void on_touch(const AInputEvent *e, int action)
         }
         if (touch.pending && action == AMOTION_EVENT_ACTION_UP) flush_press();
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE);
+        /* long press and lift in place: the context menu a right click opens */
+        if (touch.held && action == AMOTION_EVENT_ACTION_UP)
+            send_mouse(MOUSE_BUTTON_RIGHT, GLFW_PRESS), send_mouse(MOUSE_BUTTON_RIGHT, GLFW_RELEASE);
+        touch.held = 0;
         float vx, vy;
         if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP && release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) &&
             hypotf(vx, vy) > 100 * dp())
@@ -410,6 +451,39 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
     return handled;
 }
 
+static void JNICALL native_text(JNIEnv *e, jclass cls, jintArray codes)
+{
+    (void)cls;
+    jsize n = (*e)->GetArrayLength(e, codes);
+    jint *v = (*e)->GetIntArrayElements(e, codes, NULL);
+    if (!v) return;
+    pthread_mutex_lock(&ime_lock);
+    for (jsize i = 0; i < n && n_ime < (int)(sizeof ime_q / sizeof *ime_q); i++) ime_q[n_ime++] = v[i];
+    pthread_mutex_unlock(&ime_lock);
+    (*e)->ReleaseIntArrayElements(e, codes, v, JNI_ABORT);
+    ALooper_wake(GetAndroidApp()->looper);
+}
+
+/* Keyboard text becomes typed characters (backspace and delete among them, in order: widgets.c); an Enter ends
+ * a frame's batch so it lands after the text before it. */
+static void take_ime(void)
+{
+    pthread_mutex_lock(&ime_lock);
+    int k = 0;
+    for (; k < n_ime && nchars < (int)(sizeof chars / sizeof *chars); k++) {
+        int c = ime_q[k];
+        if (c == IME_ENTER) {
+            send_key(KEY_ENTER, 0);
+            k++;
+            break;
+        }
+        chars[nchars++] = c == IME_BACKSPACE ? '\b' : c == IME_DELETE ? 127 : c;
+    }
+    memmove(ime_q, ime_q + k, sizeof ime_q[0] * (size_t)(n_ime - k));
+    n_ime -= k;
+    pthread_mutex_unlock(&ime_lock);
+}
+
 int pt_android_char_pressed(void)
 {
     if (!nchars) return 0;
@@ -426,7 +500,7 @@ static double resizing_until;
 
 double pt_android_wait_limit(void)
 {
-    if (nchars || wheel_acc.x || wheel_acc.y || fling.vx || fling.vy || GetTime() < resizing_until) return 0;
+    if (nchars || n_ime || wheel_acc.x || wheel_acc.y || fling.vx || fling.vy || GetTime() < resizing_until) return 0;
     return touch.pending ? 0.05 : 1e9;
 }
 
@@ -454,6 +528,12 @@ void pt_android_init_window(int width, int height, const char *title)
     raylib_cmd = a->onAppCmd;
     a->onAppCmd = on_cmd;
     pt_raylib_follow_window();
+    /* NativeActivity loads this library itself, so the class does not find its native method by name */
+    JNIEnv *e = jni();
+    jclass c = (*e)->GetObjectClass(e, a->activity->clazz);
+    static const JNINativeMethod methods[] = {{"nativeText", "([I)V", (void *)native_text}};
+    if ((*e)->RegisterNatives(e, c, methods, 1)) jfailed(e);
+    (*e)->DeleteLocalRef(e, c);
 }
 
 void pt_android_frame(void)
@@ -475,16 +555,19 @@ void pt_android_frame(void)
     }
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
-    if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) flush_press();
+    if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) {
+        if (touch.draws) flush_press();
+        else touch.pending = 0, touch.held = 1;
+    }
     /* the pointer stays while the page flings: the wheel goes to what is under it */
     if (touch.lifted && !ui_events_pending() && !fling.vx && !fling.vy) {
         touch.lifted = 0;
         SetMousePosition(-10000, -10000);
     }
+    take_ime();
     int want = ui.focus != NULL;
     if (want != keyboard) {
-        if (want) ANativeActivity_showSoftInput(a->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
-        else ANativeActivity_hideSoftInput(a->activity, 0);
+        free(pt_java(want ? "showKeyboard" : "hideKeyboard", 0));
         keyboard = want;
     }
     if (intent_checked < 0 || GetTime() - intent_checked > 0.25) {

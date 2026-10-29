@@ -55,6 +55,8 @@ typedef struct {
     Vector2 mouse;
     int pressed, released, down, rpressed, rreleased, dclick, mpressed;
     float wheel, wheel_x;
+    float pinch;                    /* zoom factor of a two-finger pinch this frame, 1 = none */
+    Vector2 pinch_at;               /* logical point the pinch is centred on */
     int ctrl, shift, alt;
     double now;
     unsigned layer;                 /* layer being drawn */
@@ -77,6 +79,7 @@ extern ui_state ui;
 float ui_detect_scale(void);
 void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
 void ui_touch_drag_area(Rectangle r);   /* a one-finger drag here draws instead of panning */
+void ui_add_pinch(float factor, float screen_x, float screen_y);   /* touch: applied at the next frame */
 int ui_touch_drags_at(float screen_x, float screen_y);
 void ui_input_init(void);
 int ui_events_pending(void);

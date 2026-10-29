@@ -10,10 +10,11 @@ add_compile_options(-Wno-unknown-warning-option)
 
 # ptcore and ptcli come from the desktop build; the GUI target there needs desktop raylib, so it is off.
 set(PT_BUILD_GUI OFF CACHE BOOL "" FORCE)
-set(PT_USE_PCRE2 OFF CACHE BOOL "" FORCE)
+# PCRE2 comes from build.sh (PCRE2_INCLUDE_DIR/PCRE2_LIBRARY); fonts are matched with the NDK font API instead
+set(PT_USE_PCRE2 ON CACHE BOOL "" FORCE)
 set(PT_USE_FONTCONFIG OFF CACHE BOOL "" FORCE)
 add_subdirectory(${PT_NATIVE} native EXCLUDE_FROM_ALL)
-target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY})
+target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY} dl)
 
 # raylib 6.2 for PLATFORM_ANDROID as its own CMake builds it, except that raylib_core.c (which includes rcore.c)
 # replaces rcore.c, so the window can follow rotation.
@@ -57,6 +58,8 @@ add_library(pdf-tools SHARED
 target_include_directories(pdf-tools PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PT_NATIVE}/src/ui ${PT_NATIVE}/thirdparty/raygui/src
   ${ANDROID_NDK}/sources/android/native_app_glue)
 target_compile_options(pdf-tools PRIVATE -Wall -Wextra -Wno-unused-parameter)
+# the system clipboard through PdfToolsActivity (android_main.c), in every window source
+target_compile_definitions(pdf-tools PRIVATE SetClipboardText=pt_android_set_clipboard GetClipboardText=pt_android_get_clipboard)
 # Android replacements for a few calls, swapped in per file so the shared sources stay untouched (android_glue.h).
 set_source_files_properties(${PT_NATIVE}/src/ui/app.c PROPERTIES COMPILE_DEFINITIONS
   "main=pt_app_main;InitWindow=pt_android_init_window;file_dialogs_poll=pt_android_frame;run_detached=pt_android_run_detached")

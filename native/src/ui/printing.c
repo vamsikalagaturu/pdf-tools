@@ -1,4 +1,5 @@
-/* Printing through CUPS (`lp`, with the printers `lpstat` lists) and a print preview of the edited document. */
+/* Printing through CUPS (`lp`, with the printers `lpstat` lists; on Android the system print dialog) and a print
+ * preview of the edited document. */
 #include "tab.h"
 #include <math.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@ typedef struct {
     float tex_scale;
 } print_job;
 
+#ifndef __ANDROID__
 static void list_printers(print_job *j)
 {
     FILE *p = popen("lpstat -e 2>/dev/null", "r");
@@ -47,6 +49,7 @@ static void list_printers(print_job *j)
         pclose(p);
     }
 }
+#endif
 
 static void job_free(print_job *j)
 {
@@ -94,6 +97,26 @@ static int send_to_printer(print_job *j)
 
 static void print_dialog_open(print_job *j);
 
+#ifdef __ANDROID__
+char *pt_java(const char *method, int nargs, ...);
+
+/* Android's print dialog (PrintManager) picks the printer, copies and pages; it deletes the file when done. */
+static void android_print(print_job *j)
+{
+    const char *dir = getenv("TMPDIR");
+    char *path = pt_format("%s/print-XXXXXX.pdf", dir ? dir : ".");
+    int fd = mkstemps(path, 4), ok = fd >= 0 && write(fd, j->data->data, j->data->len) == (ssize_t)j->data->len;
+    if (fd >= 0) close(fd);
+    char *r = ok ? pt_java("printPdf", 2, path, pt_basename(j->t->path)) : NULL;
+    if (!r) {
+        if (fd >= 0) unlink(path);
+        message_box(MSG_ERROR, "Print", "Could not start printing.", NULL, NULL);
+    }
+    free(r);
+    free(path);
+}
+#endif
+
 static int print_frame(dialog *d, Rectangle b)
 {
     print_job *j = d->data;
@@ -133,6 +156,11 @@ static void print_free(dialog *d) { job_free(d->data); }
 
 static void print_dialog_open(print_job *j)
 {
+#ifdef __ANDROID__
+    android_print(j);
+    job_free(j);
+    return;
+#endif
     dialog *d = calloc(1, sizeof *d);
     *d = (dialog){"Print", 520, 300, print_frame, print_free, j, 1};
     dialog_push(d);
@@ -202,7 +230,9 @@ void print_document(tab *t, int preview)
     j->pages = t->st.order.n;
     j->current = order_index(t, t->pno) < 0 ? 0 : order_index(t, t->pno);
     j->from = 1, j->to = j->pages;
+#ifndef __ANDROID__
     list_printers(j);
+#endif
     if (!preview) {
         print_dialog_open(j);
         return;

@@ -158,6 +158,7 @@ struct tab {
 
     /* find bar */
     int find_open, find_case, find_first;
+    int find_regex, find_bad;   /* the query is a regular expression; it did not compile */
     ui_text find;
     hits matches;
     int match_idx;

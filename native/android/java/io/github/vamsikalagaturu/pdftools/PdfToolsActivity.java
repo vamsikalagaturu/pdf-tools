@@ -3,6 +3,7 @@ package io.github.vamsikalagaturu.pdftools;
 import android.Manifest;
 import android.app.NativeActivity;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -10,19 +11,38 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
+import android.print.PageRange;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintDocumentInfo;
+import android.print.PrintManager;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.text.InputType;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 /* The native window plus what only Java can reach: the system document picker (Storage Access Framework),
- * content:// I/O and the storage permission. Called from the native thread (android_main.c and
- * file_dialog_android.c); every method takes and returns strings, null meaning "no" or "nothing". */
+ * content:// I/O, the storage permission, the soft keyboard's text, the clipboard, printing and the system bar
+ * insets. Called from the native thread (android_main.c, file_dialog_android.c, printing.c); every public method
+ * takes and returns strings, null meaning "no" or "nothing". */
 public class PdfToolsActivity extends NativeActivity {
     private static final int REQ_PICK = 1, REQ_STORAGE = 2;
     private final Object lock = new Object();
@@ -108,6 +128,195 @@ public class PdfToolsActivity extends NativeActivity {
         File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!d.isDirectory()) d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
         return d.isDirectory() ? d.getAbsolutePath() : null;
+    }
+
+    /* Run on the UI thread and wait: the clipboard wants a Looper thread on older releases. */
+    private String onUi(Callable<String> job) {
+        FutureTask<String> task = new FutureTask<>(job);
+        runOnUiThread(task);
+        try {
+            return task.get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /* ---- soft keyboard ---- */
+
+    /* code points, and these, for android_main.c's native_text() */
+    private static final int IME_BACKSPACE = -1, IME_ENTER = -2, IME_DELETE = -3;
+    private static native void nativeText(int[] codes);
+
+    private TextSink sink;
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        sink = new TextSink();
+        addContentView(sink, new ViewGroup.LayoutParams(1, 1));
+    }
+
+    public String showKeyboard() {
+        runOnUiThread(() -> {
+            sink.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            imm.restartInput(sink);
+            imm.showSoftInput(sink, 0);
+        });
+        return null;
+    }
+
+    public String hideKeyboard() {
+        runOnUiThread(() -> {
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(sink.getWindowToken(), 0);
+        });
+        return null;
+    }
+
+    /* An invisible editor the keyboard talks to: NativeActivity's own view takes key events only, so composed
+     * text (CJK, swipe, autocorrect) would never arrive. What the keyboard is composing is typed into the native
+     * text field as it goes and replaced (backspaces, then the new text) when it changes or is committed. */
+    private final class TextSink extends View {
+        TextSink() {
+            super(PdfToolsActivity.this);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+        }
+
+        @Override
+        public boolean onCheckIsTextEditor() { return true; }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo info) {
+            info.inputType = InputType.TYPE_CLASS_TEXT;
+            info.imeOptions = EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
+            return new SinkConnection(this);
+        }
+    }
+
+    private static final class SinkConnection extends BaseInputConnection {
+        private String composing = "";
+
+        SinkConnection(View view) { super(view, false); }
+
+        private static void send(int backspaces, CharSequence text) {
+            String s = text == null ? "" : text.toString();
+            int[] codes = new int[backspaces + s.codePointCount(0, s.length())];
+            int k = 0;
+            for (int i = 0; i < backspaces; i++) codes[k++] = IME_BACKSPACE;
+            for (int i = 0; i < s.length(); i += Character.charCount(s.codePointAt(i))) {
+                int c = s.codePointAt(i);
+                codes[k++] = c == '\n' ? IME_ENTER : c;
+            }
+            if (codes.length > 0) nativeText(codes);
+        }
+
+        private void replaceComposing(CharSequence text) {
+            send(composing.codePointCount(0, composing.length()), text);
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int cursor) {
+            replaceComposing(text);
+            composing = text == null ? "" : text.toString();
+            return true;
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int cursor) {
+            replaceComposing(text);
+            composing = "";
+            return true;
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            composing = "";
+            return true;
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int before, int after) {
+            int[] codes = new int[before + after];
+            for (int i = 0; i < before; i++) codes[i] = IME_BACKSPACE;
+            for (int i = 0; i < after; i++) codes[before + i] = IME_DELETE;
+            if (codes.length > 0) nativeText(codes);
+            return true;
+        }
+
+        @Override
+        public boolean performEditorAction(int action) {
+            nativeText(new int[] {IME_ENTER});
+            return true;
+        }
+    }
+
+    /* ---- clipboard ---- */
+
+    public String setClipboard(String text) {
+        return onUi(() -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("PDF Tools", text));
+            return "1";
+        });
+    }
+
+    public String clipboard() {
+        return onUi(() -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return null;
+            CharSequence s = clip.getItemAt(0).coerceToText(this);
+            return s == null ? null : s.toString();
+        });
+    }
+
+    /* ---- printing ---- */
+
+    /* Hand a PDF to the system print dialog, which renders it and picks printer, copies and pages. The file is
+     * deleted when the job ends. */
+    public String printPdf(String path, String name) {
+        return onUi(() -> {
+            PrintManager pm = (PrintManager) getSystemService(PRINT_SERVICE);
+            pm.print(name, new PrintDocumentAdapter() {
+                @Override
+                public void onLayout(PrintAttributes old, PrintAttributes attrs, CancellationSignal cancel,
+                                     LayoutResultCallback cb, Bundle extras) {
+                    if (cancel.isCanceled()) {
+                        cb.onLayoutCancelled();
+                        return;
+                    }
+                    cb.onLayoutFinished(new PrintDocumentInfo.Builder(name)
+                        .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).build(), true);
+                }
+
+                @Override
+                public void onWrite(PageRange[] pages, ParcelFileDescriptor dest, CancellationSignal cancel,
+                                    WriteResultCallback cb) {
+                    try (InputStream in = new FileInputStream(path);
+                         OutputStream out = new FileOutputStream(dest.getFileDescriptor())) {
+                        byte[] buf = new byte[65536];
+                        for (int n; (n = in.read(buf)) > 0;) {
+                            if (cancel.isCanceled()) {
+                                cb.onWriteCancelled();
+                                return;
+                            }
+                            out.write(buf, 0, n);
+                        }
+                        cb.onWriteFinished(new PageRange[] {PageRange.ALL_PAGES});
+                    } catch (Exception e) {
+                        cb.onWriteFailed(e.toString());
+                    }
+                }
+
+                @Override
+                public void onFinish() {
+                    new File(path).delete();
+                }
+            }, null);
+            return "1";
+        });
     }
 
     /* ---- the picker ---- */
