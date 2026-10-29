@@ -1597,6 +1597,27 @@ void input_box(const char *title, const char *prompt, const char *initial, int p
     dialog_push(d);
 }
 
+int ui_favourite_row(unsigned id, Rectangle r, const unsigned char current[3], unsigned char picked[3], float *used)
+{
+    unsigned char fav[FAVOURITES_MAX][3];
+    int n = favourite_colours(fav, FAVOURITES_MAX), hit = 0;
+    float step = r.height + 2;
+    int fit = (int)((r.width + 2) / step);
+    if (n > fit) n = fit;
+    if (used) *used = n * step;
+    for (int i = 0; i < n; i++) {
+        Rectangle b = {r.x + i * step, r.y, r.height, r.height};
+        char tip[64];
+        snprintf(tip, sizeof tip, "Favourite #%02x%02x%02x (right-click to remove)", fav[i][0], fav[i][1], fav[i][2]);
+        if (ui_swatch_button(id + (unsigned)i, b, fav[i], current && !memcmp(current, fav[i], 3), tip)) {
+            memcpy(picked, fav[i], 3);
+            hit = 1;
+        }
+        if (ui_hover(b) && ui.rpressed) toggle_favourite_colour(fav[i]);
+    }
+    return hit;
+}
+
 typedef struct {
     Color c;
     ui_text hex;
@@ -1628,7 +1649,7 @@ static int colour_frame(dialog *d, Rectangle body)
 {
     colour_data *c = d->data;
     raygui_theme();
-    Rectangle picker = {body.x, body.y, body.width - 90, body.height - 80};
+    Rectangle picker = {body.x, body.y, body.width - 90, body.height - 160};
     Color before = c->c;
     if (ui.mouse_layer != ui.layer) GuiLock();
     GuiColorPicker(picker, NULL, &c->c);
@@ -1642,7 +1663,26 @@ static int colour_frame(dialog *d, Rectangle body)
     Rectangle sw = {body.x + body.width - 64, body.y, 64, 64};
     DrawRectangleRec(sw, c->c);
     DrawRectangleLinesEx(sw, 1, pal.border);
-    float y = body.y + body.height - 70;
+    unsigned char now[3] = {c->c.r, c->c.g, c->c.b};
+    /* favourites: pick one, or keep the current colour as one */
+    float y = picker.y + picker.height + 12;
+    draw_text("Favourites", body.x, y, FS_NORMAL, F_BOLD, pal.window_text);
+    int fav = is_favourite_colour(now);
+    const char *label = fav ? "Remove from favourites" : "Add to favourites";
+    float lw = button_width(label, NULL, 0) + 8;
+    if (ui_button(ui_id(d, 5), (Rectangle){body.x + body.width - lw, y - 6, lw, 28}, label, NULL, 0, NULL))
+        toggle_favourite_colour(now);
+    y += 26;
+    unsigned char picked[3];
+    float used = 0;
+    if (ui_favourite_row(ui_id(d, 100), (Rectangle){body.x, y, body.width, 28}, now, picked, &used)) {
+        c->c = (Color){picked[0], picked[1], picked[2], 255};
+        char h[16];
+        snprintf(h, sizeof h, "#%02x%02x%02x", picked[0], picked[1], picked[2]);
+        text_set(&c->hex, h);
+    }
+    if (!used) draw_text_in("None yet: pick a colour and add it", (Rectangle){body.x, y, body.width, 28}, FS_NORMAL, F_REGULAR, pal.disabled_text, -1);
+    y = body.y + body.height - 70;
     draw_text("Hex:", body.x, y + 6, FS_NORMAL, F_REGULAR, pal.window_text);
     if (ui_textfield(ui_id(d, 4), &c->hex, (Rectangle){body.x + 40, y, 120, 30}, 1) & (TE_CHANGED | TE_SUBMIT)) {
         const char *h = text_get(&c->hex);
@@ -1675,7 +1715,7 @@ void colour_dialog(const char *title, const unsigned char rgb[3], ui_colour_done
     c->ctx = ctx;
     d->title = title;
     d->w = 420;
-    d->h = 360;
+    d->h = 440;
     d->frame = colour_frame;
     d->free = colour_free;
     d->data = c;

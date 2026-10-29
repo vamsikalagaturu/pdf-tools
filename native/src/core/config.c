@@ -25,6 +25,7 @@ const pt_setting_def pt_settings_defs[] = {
     {"last_folder", PT_SET_STR, "", 0, "Folder the Open dialog starts in"},
     {"last_signature", PT_SET_STR, "", 0, "Signature preselected in the Sign dialog"},
     {"recent_files", PT_SET_LIST, NULL, 0, "Recently opened PDFs, newest first"},
+    {"favourite_colours", PT_SET_LIST, NULL, 0, "Favourite colours (#rrggbb), offered wherever a colour is picked"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 

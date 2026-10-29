@@ -84,7 +84,7 @@ void tab_restyle(tab *t) { (void)t; }
 enum {
     A_SAVE, A_SAVE_AS, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
-    A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR,
+    A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_REMOVE, A_TICK, A_UNTICK,
     A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_TOOL0,
     A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5,
@@ -126,6 +126,7 @@ static void run(void *ctx, intptr_t a)
         break;
     case A_REDACT_COLOUR: pick_redaction_colour(t); break;
     case A_MARK_COLOUR: pick_mark_colour(t); break;
+    case A_PEN_COLOUR: pick_pen_colour(t); break;
     case A_ROTATE_LEFT: rotate_pages(t, &pages, -90); break;
     case A_ROTATE_RIGHT: rotate_pages(t, &pages, 90); break;
     case A_FIT_CONTENT: crop_to_content(t, &pages); break;
@@ -272,9 +273,30 @@ static float tool_button_width(tab *t, int i)
     return t->toolbar_compact ? 32 : button_width(TOOLS[i].label, TOOLS[i].icon, 0) + 2;
 }
 
+/* width the tool options may take: the narrow layout's options row, else unbounded */
+static float opts_room = 1e9f;
+
+/* favourite colours after a tool's own swatches, as many as `room` holds (at most 8 in the toolbar) */
+static float favourites(tab *t, float x, float y, float h, int draw, float room, const unsigned char current[3],
+                        unsigned char picked[3], int *hit)
+{
+    Rectangle r = {x, y + (h - 28) / 2, fminf(room, 8 * 30), 28};
+    if (r.width < 28) return 0;
+    if (!draw) {
+        unsigned char fav[FAVOURITES_MAX][3];
+        int n = favourite_colours(fav, FAVOURITES_MAX), fit = (int)((r.width + 2) / 30);
+        return (n < fit ? n : fit) * 30.0f;
+    }
+    float used = 0;
+    *hit = ui_favourite_row(bid(t, 400), r, current, picked, &used);
+    return used;
+}
+
 static float tool_options(tab *t, float x, float y, float h, int draw)
 {
     float x0 = x;
+    unsigned char picked[3];
+    int hit = 0;
     if (t->tool == T_REDACT) {
         if (draw && ui_button(bid(t, 30), (Rectangle){x, y, button_width("Snap", NULL, 0) + 4, h}, "Snap", NULL,
                               t->snap_text ? B_CHECKED : B_FLAT, "Redact the text you drag over (off: a free rectangle)"))
@@ -288,6 +310,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
                                      "Manual redaction colour (turns Auto fill off)"))
             run(t, A_REDACT_COLOUR);
         x += 30;
+        x += favourites(t, x, y, h, draw, opts_room - (x - x0), t->auto_fill ? NULL : t->manual_rgb, picked, &hit);
+        if (hit) set_redaction_colour(t, picked);
     } else if (t->tool == T_HIGHLIGHT) {
         int style = mark_style();
         Rectangle sb = {x, y, 42, h};
@@ -311,6 +335,9 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
                 set_mark_colour(t, p[i].rgb);
             x += 30;
         }
+        preset_hit |= is_favourite_colour(current);
+        x += favourites(t, x, y, h, draw, opts_room - (x - x0) - 30, current, picked, &hit);
+        if (hit) set_mark_colour(t, picked);
         Rectangle cb = {x, y + (h - 28) / 2, 28, 28};
         if (draw) {
             if (preset_hit) {
@@ -325,14 +352,25 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         if (draw && ui_button(bid(t, 51), (Rectangle){x, y, w2, h}, "Remove crop", "close", B_FLAT, NULL)) run(t, A_UNCROP);
         x += w2 + 2;
     } else if (t->tool == T_DRAW) {
+        int known = 0;
         for (int i = 0; i < 6; i++) {
             int on = !memcmp(t->pen_rgb, PEN_COLOURS[i].rgb, 3);
-            if (draw && ui_swatch_button(bid(t, 55 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, PEN_COLOURS[i].rgb, on, PEN_COLOURS[i].name)) {
-                memcpy(t->pen_rgb, PEN_COLOURS[i].rgb, 3);
-                t->ink_page = -1;
-            }
+            known |= on;
+            if (draw && ui_swatch_button(bid(t, 55 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, PEN_COLOURS[i].rgb, on, PEN_COLOURS[i].name))
+                set_pen_colour(t, PEN_COLOURS[i].rgb);
             x += 30;
         }
+        known |= is_favourite_colour(t->pen_rgb);
+        x += favourites(t, x, y, h, draw, opts_room - (x - x0) - 30 - 98, t->pen_rgb, picked, &hit);
+        if (hit) set_pen_colour(t, picked);
+        /* the custom colour: a palette button, or the colour itself when it is none of the swatches */
+        Rectangle cb = {x, y + (h - 28) / 2, 28, 28};
+        if (draw) {
+            if (known) {
+                if (ui_button(bid(t, 63), cb, NULL, "custom-colour", B_FLAT, "Custom colour...")) run(t, A_PEN_COLOUR);
+            } else if (ui_swatch_button(bid(t, 63), cb, t->pen_rgb, 1, "Custom colour...")) run(t, A_PEN_COLOUR);
+        }
+        x += 30;
         static const char *widths[3] = {"Thin", "Medium", "Thick"};
         int idx = t->pen_width <= 1 ? 0 : t->pen_width >= 4 ? 2 : 1;
         if (draw && ui_combo(bid(t, 62), (Rectangle){x, y + (h - 28) / 2, 96, 28}, widths, 3, &idx)) {
@@ -595,7 +633,9 @@ void tab_frame(tab *t, Rectangle area)
         Rectangle row = {area.x, area.y, area.width, OPTS_H};
         DrawRectangleRec(row, pal.window);
         ui_separator_h(row.x, row.x + row.width, row.y + row.height - 1);
+        opts_room = row.width - 12;
         tool_options(t, row.x + 6, row.y + (OPTS_H - 32) / 2, 32, 1);
+        opts_room = 1e9f;
         area.y += OPTS_H;
         area.height -= OPTS_H;
     }

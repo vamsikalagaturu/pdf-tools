@@ -179,6 +179,14 @@ typedef void (*ui_input_done)(void *ctx, const char *text);   /* text NULL when 
 void input_box(const char *title, const char *prompt, const char *initial, int password, ui_input_done done, void *ctx);
 typedef void (*ui_colour_done)(void *ctx, const unsigned char rgb[3]); /* rgb NULL when cancelled */
 void colour_dialog(const char *title, const unsigned char rgb[3], ui_colour_done done, void *ctx);
+/* Favourite colours (settings favourite_colours, document.c). A row of them as swatch buttons in r (one per
+ * r.height + 2 px, as many as fit); a click fills `picked` and returns 1, a right click (long press) removes
+ * one. *used gets the width taken. */
+#define FAVOURITES_MAX 12
+int favourite_colours(unsigned char (*out)[3], int max);
+int is_favourite_colour(const unsigned char rgb[3]);
+void toggle_favourite_colour(const unsigned char rgb[3]);
+int ui_favourite_row(unsigned id, Rectangle r, const unsigned char current[3], unsigned char picked[3], float *used);
 
 /* ---- platform ---- */
 typedef void (*ui_files_done)(void *ctx, pt_strs *paths);    /* empty when cancelled */

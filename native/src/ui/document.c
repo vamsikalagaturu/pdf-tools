@@ -1389,14 +1389,18 @@ int mark_style(void)
 
 static const char *colour_key(int style) { return style == PT_MARK_HIGHLIGHT ? "highlight_colour" : "ink_colour"; }
 
+static int parse_hex(const char *h, unsigned char rgb[3])
+{
+    if (*h == '#') h++;
+    if (strlen(h) != 6 || strspn(h, "0123456789abcdefABCDEF") != 6) return 0;
+    unsigned v = (unsigned)strtoul(h, NULL, 16);
+    rgb[0] = (v >> 16) & 255, rgb[1] = (v >> 8) & 255, rgb[2] = v & 255;
+    return 1;
+}
+
 void mark_colour(int style, unsigned char rgb[3])
 {
-    const char *h = pt_settings_str(&app.settings, colour_key(style));
-    if (*h == '#') h++;
-    if (strlen(h) == 6) {
-        unsigned v = (unsigned)strtoul(h, NULL, 16);
-        rgb[0] = (v >> 16) & 255, rgb[1] = (v >> 8) & 255, rgb[2] = v & 255;
-    } else rgb[0] = 255, rgb[1] = 225, rgb[2] = 0;
+    if (!parse_hex(pt_settings_str(&app.settings, colour_key(style)), rgb)) rgb[0] = 255, rgb[1] = 225, rgb[2] = 0;
 }
 
 void set_mark_colour(tab *t, const unsigned char rgb[3])
@@ -1405,6 +1409,39 @@ void set_mark_colour(tab *t, const unsigned char rgb[3])
     char h[16];
     snprintf(h, sizeof h, "#%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
     pt_settings_set_str(&app.settings, colour_key(mark_style()), h);
+}
+
+/* ---- favourite colours (settings), newest first ---- */
+
+int favourite_colours(unsigned char (*out)[3], int max)
+{
+    const pt_strs *list = pt_settings_list(&app.settings, "favourite_colours");
+    int n = 0;
+    for (int i = 0; list && i < list->n && n < max; i++)
+        if (parse_hex(list->v[i], out[n])) n++;
+    return n;
+}
+
+int is_favourite_colour(const unsigned char rgb[3])
+{
+    unsigned char fav[FAVOURITES_MAX][3];
+    int n = favourite_colours(fav, FAVOURITES_MAX);
+    for (int i = 0; i < n; i++)
+        if (!memcmp(fav[i], rgb, 3)) return 1;
+    return 0;
+}
+
+void toggle_favourite_colour(const unsigned char rgb[3])
+{
+    unsigned char fav[FAVOURITES_MAX][3];
+    int n = favourite_colours(fav, FAVOURITES_MAX), had = is_favourite_colour(rgb);
+    pt_strs list = {0};
+    if (!had) pt_push(list, pt_format("#%02x%02x%02x", rgb[0], rgb[1], rgb[2]));
+    for (int i = 0; i < n && list.n < FAVOURITES_MAX; i++)
+        if (memcmp(fav[i], rgb, 3)) pt_push(list, pt_format("#%02x%02x%02x", fav[i][0], fav[i][1], fav[i][2]));
+    pt_settings_set_list(&app.settings, "favourite_colours", &list);
+    pt_strs_free(&list);
+    status(had ? "Removed from favourites" : "Added to favourites", 2);
 }
 
 void set_mark_style(tab *t, int style)

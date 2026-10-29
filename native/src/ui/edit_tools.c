@@ -876,6 +876,15 @@ void popover_frame(tab *t)
             if (ui_swatch_button(ui_id(p, 10 + i), b, pal5[i].rgb, !memcmp(it->rgb, pal5[i].rgb, 3), pal5[i].name))
                 recolour(t, p->index, pal5[i].rgb);
         }
+        unsigned char picked[3];
+        float used = 0;
+        Rectangle favs = {r.x + 10 + 5 * 30, yy, r.width - 20 - 5 * 30 - 30, 26};
+        if (ui_favourite_row(ui_id(p, 20), favs, it->rgb, picked, &used)) recolour(t, p->index, picked);
+        Rectangle cb = {r.x + r.width - 10 - 26, yy, 26, 26};
+        if (ui_button(ui_id(p, 19), cb, NULL, "custom-colour", B_FLAT, "Custom colour...")) {
+            mc.t = t, mc.index = p->index;
+            colour_dialog("Colour", it->rgb, obj_colour_chosen, t);
+        }
         yy += 30;
     }
     if (p->first) {
@@ -1256,7 +1265,14 @@ void text_box_frame(tab *t)
     x += 32;
     if (ui_swatch_button(ui_id(b, 7), (Rectangle){x, y, 28, 28}, b->obj.rgb, 0, "Text colour"))
         colour_dialog("Text colour", b->obj.rgb, tb_colour_chosen, t);
-    x += 34;
+    x += 32;
+    unsigned char picked[3];
+    float used = 0;
+    if (ui_favourite_row(ui_id(b, 20), (Rectangle){x, y, 4 * 30 - 2, 28}, b->obj.rgb, picked, &used)) {
+        memcpy(b->obj.rgb, picked, 3);
+        text_focus(&b->text);
+    }
+    x += used + 4;
     char *hint = elide_right(b->hint, bar.x + bar.width - x - 6, FS_SMALL, F_REGULAR);
     draw_text_in(hint, (Rectangle){x, y, bar.width, 28}, FS_SMALL, F_REGULAR, pal.disabled_text, -1);
     free(hint);
@@ -1341,16 +1357,32 @@ void copy_text(tab *t)
     status("Copied", 2);
 }
 
-static void manual_colour_chosen(void *ctx, const unsigned char rgb[3])
+void set_redaction_colour(tab *t, const unsigned char rgb[3])
 {
-    tab *t = ctx;
-    if (!rgb) return;
     memcpy(t->manual_rgb, rgb, 3);
     t->auto_fill = 0;
     pt_settings_set_int(&app.settings, "redact_auto_fill", 0);
 }
 
+static void manual_colour_chosen(void *ctx, const unsigned char rgb[3])
+{
+    if (rgb) set_redaction_colour(ctx, rgb);
+}
+
 void pick_redaction_colour(tab *t) { colour_dialog("Redaction colour", t->manual_rgb, manual_colour_chosen, t); }
+
+void set_pen_colour(tab *t, const unsigned char rgb[3])
+{
+    memcpy(t->pen_rgb, rgb, 3);
+    t->ink_page = -1;
+}
+
+static void pen_colour_chosen(void *ctx, const unsigned char rgb[3])
+{
+    if (rgb) set_pen_colour(ctx, rgb);
+}
+
+void pick_pen_colour(tab *t) { colour_dialog("Pen colour", t->pen_rgb, pen_colour_chosen, t); }
 
 static void mark_colour_chosen(void *ctx, const unsigned char rgb[3])
 {
