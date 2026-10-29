@@ -239,6 +239,7 @@ void app_about(void);
 tab *app_current_doc(void);
 void app_handle_message(const char *json);
 void app_quit_request(void);
+int tab_escape_pending(tab *t);   /* Escape would close or clear something in the tab */
 ui_menu *app_build_menu(tab *t);
 void app_publish_state(void);
 

@@ -262,8 +262,15 @@ void tab_shortcuts(tab *t)
     if (ui_shortcut(0, 0, KEY_ESCAPE)) {
         if (t->pop.kind != POP_NONE) close_popover(t, 0);
         else if (t->find_open) hide_find(t);
+        else if (t->narrow && t->side_target) show_sidebar(t, 0, 1);
         else t->sel = SEL_NONE, t->text_sel_page = -1;
     }
+}
+
+int tab_escape_pending(tab *t)
+{
+    return t->pop.kind != POP_NONE || t->find_open || (t->narrow && t->side_target) || t->sel != SEL_NONE ||
+           t->text_sel_page >= 0;
 }
 
 /* ---- toolbar ---- */

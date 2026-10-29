@@ -223,6 +223,7 @@ static struct {
     double t;
 } fling;
 static int mouse_left, mouse_buttons;
+static int back_pressed;   /* Back (button or gesture) since the last frame */
 
 static void send_mouse(int button, int action)
 {
@@ -428,7 +429,7 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
     if (type == AINPUT_EVENT_TYPE_KEY) {
         int code = AKeyEvent_getKeyCode(e), action = AKeyEvent_getAction(e), meta = AKeyEvent_getMetaState(e);
         if (code == AKEYCODE_BACK) {
-            if (action == AKEY_EVENT_ACTION_DOWN) send_key(KEY_ESCAPE, 0);
+            if (action == AKEY_EVENT_ACTION_DOWN) back_pressed = 1;
             return 1;
         }
         int32_t handled = raylib_input(a, e);
@@ -516,6 +517,12 @@ static void on_cmd(struct android_app *a, int32_t cmd)
     }
 }
 
+static void close_answered(void *ctx, int yes)
+{
+    (void)ctx;
+    if (yes) app_quit_request();   /* asks about unsaved edits first */
+}
+
 /* ---- hooks in app.c ---- */
 
 void pt_android_init_window(int width, int height, const char *title)
@@ -565,6 +572,13 @@ void pt_android_frame(void)
         SetMousePosition(-10000, -10000);
     }
     take_ime();
+    /* Back closes what is open (as Escape does); with nothing open it offers to close the app */
+    if (back_pressed) {
+        back_pressed = 0;
+        tab *t = app_current_doc();
+        if (dialogs_open() || menu_is_open() || ui.focus || (t && tab_escape_pending(t))) send_key(KEY_ESCAPE, 0);
+        else question_box("Close PDF Tools", "Close PDF Tools?", "Close", "Cancel", close_answered, NULL);
+    }
     int want = ui.focus != NULL;
     if (want != keyboard) {
         free(pt_java(want ? "showKeyboard" : "hideKeyboard", 0));

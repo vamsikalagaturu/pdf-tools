@@ -34,7 +34,7 @@ would cover the window, and raylib cannot inset its framebuffer.
 
 | File | Why |
 | --- | --- |
-| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (shared Download folder with storage access, else `files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), two-finger drag into wheel scrolling, Back into Escape. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
+| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (shared Download folder with storage access, else `files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), one- and two-finger drags into wheel scrolling, Back into Escape or a close prompt. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
 | `glfw_stubs.c` | The GLFW symbols the shared sources call. Cursor, focus and close calls are no-ops; the mouse/key callback setters store widgets.c's handlers; `glfwWaitEventsTimeout` sleeps on the ALooper so an idle window does not redraw at 60 fps. |
 | `raylib_core.c` | `#include "rcore.c"` plus `pt_raylib_follow_window()`, which needs raylib's static `CORE`/`platform`: raylib sizes its framebuffer once at window creation and has no public resize on Android. Each frame it sets the buffer geometry to follow the window (0x0, also after a surface rebind), and when the EGL surface size differs from `GetScreenWidth/Height` it updates display/screen/render/current-FBO size, clears the render offset and screen scale, and resets rlgl's framebuffer size, viewport and projection (`SetupViewport`). Scissor and touch scaling read those fields. After a config change, resize or new window, `android_main.c` keeps drawing for 1 s so the surface reaches the new size. If raylib is upgraded, check that the field names still match. |
 | `file_dialog_android.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` for Android: the system document picker, copies of `content://` documents and writing them back (see below). |
@@ -102,8 +102,10 @@ Tap = click. One finger drags to scroll, with fling momentum after release; a to
 press (0.45 s) then drag = press and drag (text selection, moving items and thumbnails); a long press lifted in
 place = right click (context menus). Where the UI marks a drag area (`ui_touch_drag_area`: the page under any
 tool but View, the signature pad) one finger draws at once. Two fingers scroll and pinch-zoom the page around
-the point between them (`ui_add_pinch`). A mouse works too (right and middle buttons, wheel). Back acts as
-Escape and never closes the app; use Quit.
+the point between them (`ui_add_pinch`). A mouse works too (right and middle buttons, wheel). Back (button or
+gesture) closes what is open, as Escape does: a dialog, menu, keyboard focus, popover, the find bar, the sidebar
+overlay, a selection (`tab_escape_pending`); with nothing open it asks "Close PDF Tools?", and closing still asks
+about unsaved edits.
 
 ## Platform services
 
