@@ -627,13 +627,34 @@ void toggle_continuous(tab *t)
     if (t->doc) t->want_scroll_page = t->pno;
 }
 
+/* the zoom at which the widest page fills the view, or 0 when that is not known yet */
+static float fit_zoom(tab *t)
+{
+    float width = t->view.width, page_w = 0;
+    for (int i = 0; i < t->st.order.n; i++) page_w = fmaxf(page_w, page_bounds(t, t->st.order.v[i]).x1);
+    return width > 100 && page_w > 0 ? (width - 40) / page_w : 0;
+}
+
+/* Zoom buttons and keys: the zoom glides to `target` around the middle of the view (page_view.c); fit = 1
+ * lands in fit-width mode. */
+void zoom_to(tab *t, float target, int fit)
+{
+    if (!t->doc) return;
+    if (fit && !(target = fit_zoom(t))) return;
+    t->zanim_from = t->zoom;
+    t->zanim_to = fminf(fmaxf(target, 0.3f), 6);
+    t->zanim_fit = fit;
+    t->zanim_t0 = ui.now;
+}
+
+void zoom_by(tab *t, float factor) { zoom_to(t, (t->zanim_t0 > 0 ? t->zanim_to : t->zoom) * factor, 0); }
+
 void tab_fit_width(tab *t)
 {
     if (!t->doc) return;
-    float width = t->view.width, page_w = 0;
-    for (int i = 0; i < t->st.order.n; i++) page_w = fmaxf(page_w, page_bounds(t, t->st.order.v[i]).x1);
-    set_zoom(t, width > 100 && page_w > 0 ? (width - 40) / page_w : 1.5f);
-    t->fitted = width > 100 && page_w > 0;
+    float width = t->view.width, z = fit_zoom(t);
+    set_zoom(t, z ? z : 1.5f);
+    t->fitted = z > 0;
     t->fit_w = width;
 }
 

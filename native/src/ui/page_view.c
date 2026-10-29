@@ -476,6 +476,7 @@ static void handle_input(tab *t, Rectangle area)
         if (ui.ctrl && ui.wheel) {
             fz_point anchor = screen_to_scene(t, ui.mouse);
             float old = t->zoom;
+            t->zanim_t0 = 0;
             set_zoom(t, t->zoom * (ui.wheel > 0 ? 1.25f : 0.8f));
             t->want_scroll_page = -1;
             /* keep the point under the pointer in place */
@@ -492,6 +493,7 @@ static void handle_input(tab *t, Rectangle area)
         /* keep the point between the fingers in place, as Ctrl+wheel keeps the one under the pointer */
         fz_point anchor = screen_to_scene(t, ui.pinch_at);
         float old = t->zoom;
+        t->zanim_t0 = 0;
         set_zoom(t, t->zoom * ui.pinch);
         t->want_scroll_page = -1;
         t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
@@ -502,6 +504,7 @@ static void handle_input(tab *t, Rectangle area)
     if (ui.double_tap && CheckCollisionPointRec(ui.double_tap_at, area) && !dialogs_open() && !menu_is_open()) {
         fz_point anchor = screen_to_scene(t, ui.double_tap_at);
         float old = t->zoom;
+        t->zanim_t0 = 0;
         if (t->fitted) set_zoom(t, t->zoom * 2);
         else tab_fit_width(t);
         t->want_scroll_page = -1;
@@ -707,6 +710,23 @@ void view_frame(tab *t, Rectangle area)
         tab_fit_width(t);
         t->scroll_x = t->scroll_y = 0;
         t->want_scroll_page = -1;
+    }
+    /* an animated zoom step (buttons, keys): ease out over ZOOM_GLIDE_S around the middle of the view */
+    if (t->zanim_t0 > 0) {
+        double k = (ui.now - t->zanim_t0) / ZOOM_GLIDE_S;
+        float e = k >= 1 ? 1 : (float)(1 - pow(1 - k, 3)), z = t->zanim_from + (t->zanim_to - t->zanim_from) * e;
+        fz_point anchor = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2});
+        float old = t->zoom;
+        set_zoom(t, z);
+        t->want_scroll_page = -1;
+        t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
+        if (t->scene_w * t->zoom > area.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
+        else t->scroll_x = 0;
+        if (k >= 1) {
+            t->zanim_t0 = 0;
+            if (t->zanim_fit) t->fitted = 1, t->fit_w = area.width;
+        }
+        ui.dirty = 1;
     }
     /* fit width holds through rotation and resizing until the zoom is changed */
     if (t->fitted && area.width > 100 && fabsf(area.width - t->fit_w) > 0.5f) {

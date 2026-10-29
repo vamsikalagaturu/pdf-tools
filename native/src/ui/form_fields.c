@@ -169,11 +169,11 @@ void fields_frame(tab *t, int page)
             if (hover) set_cursor(CUR_HAND);
             if (f->type == PDF_WIDGET_TYPE_RADIOBUTTON) {
                 Vector2 c = {box.x + side / 2, box.y + side / 2};
-                DrawCircleV(c, side / 2, WHITE);
+                DrawCircleV(c, side / 2, FIELD_BG);
                 DrawCircleLinesV(c, side / 2, DARKGRAY);
                 if (on) DrawCircleV(c, side / 4, (Color){30, 30, 30, 255});
             } else {
-                DrawRectangleRec(box, WHITE);
+                DrawRectangleRec(box, FIELD_BG);
                 DrawRectangleLinesEx(box, 1, DARKGRAY);
                 if (on) {
                     DrawLineEx((Vector2){box.x + side * 0.2f, box.y + side * 0.55f}, (Vector2){box.x + side * 0.42f, box.y + side * 0.78f}, fmaxf(1.5f, side / 8), BLACK);

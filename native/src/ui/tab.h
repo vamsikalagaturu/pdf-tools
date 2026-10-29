@@ -11,6 +11,7 @@
 #define PAGE_GAP 12.0f
 #define PIX_CACHE 12
 #define ZOOM_SETTLE_S 0.2
+#define ZOOM_GLIDE_S 0.18
 #define THUMB_W 150.0f
 #define THUMB_H 196.0f
 #define NOTE_SIZE 18.0f
@@ -111,6 +112,9 @@ struct tab {
     int fitted;       /* the zoom is fit width, for a view fit_w wide */
     float fit_w;
     double zoom_t;    /* when the zoom last changed */
+    float zanim_from, zanim_to;   /* a zoom gliding from one value to another since zanim_t0 (0: none) */
+    int zanim_fit;
+    double zanim_t0;
     float last_view_h;
     void *last_focus;
     double reveal_until;   /* keep the focused field above the bottom of the view until then */
@@ -244,6 +248,8 @@ int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
 void tab_step_page(tab *t, int delta);
 void set_zoom(tab *t, float z);
+void zoom_to(tab *t, float target, int fit);   /* animated; fit = 1: to fit width, target ignored */
+void zoom_by(tab *t, float factor);
 int continuous(void);
 void toggle_continuous(tab *t);
 Texture2D *page_texture(tab *t, int page, float scale);

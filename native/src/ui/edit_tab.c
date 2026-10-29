@@ -154,9 +154,9 @@ static void run(void *ctx, intptr_t a)
         break;
     }
     case A_CONTINUOUS: toggle_continuous(t); break;
-    case A_ZOOM_IN: set_zoom(t, t->zoom * 1.25f); break;
-    case A_ZOOM_OUT: set_zoom(t, t->zoom / 1.25f); break;
-    case A_FIT: tab_fit_width(t); break;
+    case A_ZOOM_IN: zoom_by(t, 1.25f); break;
+    case A_ZOOM_OUT: zoom_by(t, 1 / 1.25f); break;
+    case A_FIT: zoom_to(t, 0, 1); break;
     case A_PREV: tab_step_page(t, -1); break;
     case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
@@ -457,8 +457,8 @@ static void narrow_toolbar(tab *t, Rectangle area)
     if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
     x += 34;
     x = separator(x, y, h);
-    Rectangle tb = {x, y, 48, h};
-    if (ui_button(bid(t, 10), tb, NULL, TOOLS[t->tool].icon, B_CHECKED | B_MENU | dis, TOOLS[t->tool].tip)) {
+    Rectangle tb = {x, y, 32, h};
+    if (ui_button(bid(t, 10), tb, NULL, TOOLS[t->tool].icon, B_CHECKED | dis, TOOLS[t->tool].tip)) {
         ui_menu *m = menu_new();
         for (int i = 0; i < T_COUNT; i++) menu_item(m, TOOLS[i].label, TOOLS[i].icon, NULL, run, t, A_TOOL0 + i, doc, t->tool == (tool_id)i);
         menu_open_below(m, tb);
