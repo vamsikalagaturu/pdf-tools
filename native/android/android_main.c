@@ -183,7 +183,14 @@ static struct {
     int lifted;       /* released; move the pointer away once the release is taken */
     double t;
     float x, y, cx, cy;
+    float vx, vy;     /* scroll velocity, px/s, smoothed over the last moves */
+    double moved_t;   /* event time of the last scroll move, s */
 } touch;
+/* momentum after a scroll is let go: the velocity decays exponentially, as Android's own lists fling */
+static struct {
+    float vx, vy;
+    double t;
+} fling;
 static int mouse_left, mouse_buttons;
 
 static void send_mouse(int button, int action)
@@ -225,6 +232,10 @@ static void on_touch(const AInputEvent *e, int action)
         touch.pending = 1, touch.pressed = touch.scrolling = touch.lifted = 0;
         touch.t = GetTime(), touch.x = x, touch.y = y;
         touch.draws = ui_touch_drags_at(x, y);
+        touch.vx = touch.vy = 0;
+        /* a finger on a moving page stops it, and that touch is not a tap */
+        if (fling.vx || fling.vy) touch.pending = 0, touch.scrolling = 1, touch.rebase = 1;
+        fling.vx = fling.vy = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
         touch.pending = 0;
@@ -238,10 +249,17 @@ static void on_touch(const AInputEvent *e, int action)
         if (touch.scrolling) {
             float cx, cy;
             centroid(e, -1, &cx, &cy);
+            double now = AMotionEvent_getEventTime(e) / 1e9;
             if (!touch.rebase) {
                 wheel_acc.x += (cx - touch.cx) / (60 * dp());
                 wheel_acc.y += (cy - touch.cy) / (60 * dp());
+                double dt = now - touch.moved_t;
+                if (dt > 0.001) {
+                    touch.vx = 0.6f * (float)((cx - touch.cx) / dt) + 0.4f * touch.vx;
+                    touch.vy = 0.6f * (float)((cy - touch.cy) / dt) + 0.4f * touch.vy;
+                }
             }
+            touch.moved_t = now;
             touch.cx = cx, touch.cy = cy, touch.rebase = 0;
         } else if (touch.pending && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
             /* elsewhere one finger pans; a long press first (see pt_android_frame) drags instead */
@@ -249,7 +267,10 @@ static void on_touch(const AInputEvent *e, int action)
             else {
                 touch.pending = 0;
                 touch.scrolling = 1;
+                wheel_acc.x += (x - touch.x) / (60 * dp());
+                wheel_acc.y += (y - touch.y) / (60 * dp());
                 touch.cx = x, touch.cy = y, touch.rebase = 0;
+                touch.moved_t = AMotionEvent_getEventTime(e) / 1e9;
             }
         }
         break;
@@ -257,6 +278,10 @@ static void on_touch(const AInputEvent *e, int action)
     case AMOTION_EVENT_ACTION_CANCEL:
         if (touch.pending && action == AMOTION_EVENT_ACTION_UP) flush_press();
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE);
+        /* a finger that stopped before lifting leaves no momentum */
+        if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP && AMotionEvent_getEventTime(e) / 1e9 - touch.moved_t < 0.08 &&
+            hypotf(touch.vx, touch.vy) > 150 * dp())
+            fling.vx = touch.vx, fling.vy = touch.vy, fling.t = GetTime();
         touch.pending = touch.pressed = touch.scrolling = 0;
         touch.lifted = 1;
         break;
@@ -362,7 +387,7 @@ static double resizing_until;
 
 double pt_android_wait_limit(void)
 {
-    if (nchars || wheel_acc.x || wheel_acc.y || GetTime() < resizing_until) return 0;
+    if (nchars || wheel_acc.x || wheel_acc.y || fling.vx || fling.vy || GetTime() < resizing_until) return 0;
     return touch.pending ? 0.05 : 1e9;
 }
 
@@ -400,10 +425,20 @@ void pt_android_frame(void)
     if (a->destroyRequested) app.quit = 1;
     pt_raylib_follow_window();
     file_dialogs_poll();
+    if (fling.vx || fling.vy) {
+        double now = GetTime(), dt = fmin(now - fling.t, 0.05);
+        fling.t = now;
+        wheel_acc.x += (float)(fling.vx * dt) / (60 * dp());
+        wheel_acc.y += (float)(fling.vy * dt) / (60 * dp());
+        float k = expf(-2.5f * (float)dt);
+        fling.vx *= k, fling.vy *= k;
+        if (hypotf(fling.vx, fling.vy) < 20 * dp()) fling.vx = fling.vy = 0;
+    }
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
     if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) flush_press();
-    if (touch.lifted && !ui_events_pending()) {
+    /* the pointer stays while the page flings: the wheel goes to what is under it */
+    if (touch.lifted && !ui_events_pending() && !fling.vx && !fling.vy) {
         touch.lifted = 0;
         SetMousePosition(-10000, -10000);
     }
