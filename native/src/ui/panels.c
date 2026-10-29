@@ -546,21 +546,110 @@ static void edits_panel(tab *t, Rectangle area)
     pt_vec_free(groups);
 }
 
+/* ---- Outline ---- */
+
+static fz_outline *outline(tab *t)
+{
+    if (!t->outline_ok) {
+        t->outline_ok = 1;
+        fz_try(CTX) t->outline = fz_load_outline(CTX, (fz_document *)t->doc);
+        fz_catch(CTX) {
+            fz_ignore_error(CTX);
+            t->outline = NULL;
+        }
+    }
+    return t->outline;
+}
+
+typedef struct { fz_outline *o; int level, page; } outline_row;
+PT_VEC(outline_rows, outline_row);
+
+static void flatten(tab *t, fz_outline *o, int level, outline_rows *out)
+{
+    for (; o; o = o->next) {
+        int page = -1;
+        fz_try(CTX) page = fz_page_number_from_location(CTX, (fz_document *)t->doc, o->page);
+        fz_catch(CTX) fz_ignore_error(CTX);
+        pt_push(*out, ((outline_row){o, level, page}));
+        flatten(t, o->down, level + 1, out);
+    }
+}
+
+static void outline_panel(tab *t, Rectangle area)
+{
+    outline_rows rows = {0};
+    flatten(t, outline(t), 0, &rows);
+    const float h = 28;
+    float *scroll = &t->side_scroll[3];
+    if (ui_hover(area) && ui.wheel) *scroll -= ui.wheel * 60;
+    *scroll = fminf(fmaxf(*scroll, 0), fmaxf(0, rows.n * h + 8 - area.height));
+    /* the current section: the last entry at or before the current page */
+    int here = order_index(t, t->pno), current = -1;
+    for (int i = 0; i < rows.n; i++) {
+        int k = rows.v[i].page >= 0 ? order_index(t, rows.v[i].page) : -1;
+        if (k >= 0 && k <= here) current = i;
+    }
+    ui_scissor_begin(area);
+    float y = area.y + 4 - *scroll;
+    for (int i = 0; i < rows.n; i++, y += h) {
+        if (y + h < area.y || y > area.y + area.height) continue;
+        outline_row *r = &rows.v[i];
+        int k = r->page >= 0 ? order_index(t, r->page) : -1;
+        Rectangle row = {area.x + 4, y, area.width - 16, h - 2};
+        int hover = ui_hover(row);
+        if (i == current) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.highlight, 45));
+        else if (hover) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.button, 200));
+        char num[16] = "";
+        if (k >= 0) snprintf(num, sizeof num, "%d", k + 1);
+        float nw = text_width(num, FS_NORMAL, F_REGULAR);
+        float indent = 8 + fminf(r->level, 6) * 14;
+        Rectangle label = {row.x + indent, row.y, row.width - indent - nw - 16, row.height};
+        const char *title = r->o->title ? r->o->title : "";
+        char *shown = elide_right(title, label.width, FS_NORMAL, r->level ? F_REGULAR : F_BOLD);
+        draw_text_in(shown, label, FS_NORMAL, r->level ? F_REGULAR : F_BOLD, k >= 0 ? pal.window_text : pal.disabled_text, -1);
+        free(shown);
+        draw_text_in(num, (Rectangle){row.x + row.width - nw - 8, row.y, nw, row.height}, FS_NORMAL, F_REGULAR, pal.disabled_text, 1);
+        ui_tooltip(ui_id(t, 40000 + i), row, title);
+        if (hover && ui.released && k >= 0) {
+            link_info l = {fz_empty_rect, r->page, r->o->x, r->o->y, NULL};
+            follow_link(t, &l);
+        }
+    }
+    ui_scissor_end();
+    pt_vec_free(rows);
+}
+
 void sidebar_frame(tab *t, Rectangle area)
 {
     DrawRectangleRec(area, pal.base);
     if (!t->doc) return;
-    /* tab strip */
-    int counts[3] = {0, count_annotations(t), 0};
+    /* tab strip; Outline only for documents that have one */
+    int has_outline = outline(t) != NULL;
+    if (t->side_tab == 3 && !has_outline) t->side_tab = 0;
+    int counts[4] = {0, count_annotations(t), 0, 0};
     pt_entries *entries = current_entries(t);
     counts[2] = entries->n;
-    static const char *names[3] = {"Pages", "Annotations", "Edits"};
+    static const char *names[4] = {"Pages", "Annotations", "Edits", "Outline"};
+    int order[4] = {0, 3, 1, 2}, n = has_outline ? 4 : 3;
+    if (!has_outline) order[1] = 1, order[2] = 2;
+    /* labels with their counts, or without them (counts in the tooltip) when that does not fit */
+    char labels[4][48];
+    float pad = 18;
+    for (int with = 1; with >= 0; with--) {
+        pad = with ? 18 : 12;
+        float total = 0;
+        for (int j = 0; j < n; j++) {
+            int i = order[j];
+            if (with && counts[i]) snprintf(labels[j], sizeof labels[j], "%s (%d)", names[i], counts[i]);
+            else snprintf(labels[j], sizeof labels[j], "%s", names[i]);
+            total += text_width(labels[j], FS_NORMAL, F_REGULAR) + pad + 1;
+        }
+        if (total <= area.width - 8) break;
+    }
     float x = area.x + 4;
-    for (int i = 0; i < 3; i++) {
-        char label[48];
-        if (counts[i]) snprintf(label, sizeof label, "%s (%d)", names[i], counts[i]);
-        else snprintf(label, sizeof label, "%s", names[i]);
-        float w = text_width(label, FS_NORMAL, F_REGULAR) + 18;
+    for (int j = 0; j < n; j++) {
+        int i = order[j];
+        float w = text_width(labels[j], FS_NORMAL, F_REGULAR) + pad;
         Rectangle r = {x, area.y, w, TAB_H};
         int hover = ui_hover(r);
         if (hover && ui.pressed) t->side_tab = i;
@@ -568,12 +657,18 @@ void sidebar_frame(tab *t, Rectangle area)
             DrawRectangleRec(r, pal.button);
             DrawRectangleRec((Rectangle){r.x, r.y + r.height - 2, r.width, 2}, pal.highlight);
         } else if (hover) DrawRectangleRec(r, with_alpha(pal.button, 160));
-        draw_text_in(label, r, FS_NORMAL, F_REGULAR, pal.window_text, 0);
+        draw_text_in(labels[j], r, FS_NORMAL, F_REGULAR, pal.window_text, 0);
+        if (counts[i] && !strchr(labels[j], '(')) {
+            static char tip[4][48];
+            snprintf(tip[j], sizeof tip[j], "%s (%d)", names[i], counts[i]);
+            ui_tooltip(ui_id(t, 41000 + j), r, tip[j]);
+        }
         x += w + 1;
     }
     ui_separator_h(area.x, area.x + area.width, area.y + TAB_H);
     Rectangle body = {area.x, area.y + TAB_H + 1, area.width, area.height - TAB_H - 1};
     if (t->side_tab == 0) pages_panel(t, body);
     else if (t->side_tab == 1) annotations_panel(t, body);
-    else edits_panel(t, body);
+    else if (t->side_tab == 2) edits_panel(t, body);
+    else outline_panel(t, body);
 }

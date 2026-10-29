@@ -353,7 +353,20 @@ static void on_touch(const AInputEvent *e, int action)
             touch.pending = 0;
             touch.scrolling = 1;
         }
-        if (touch.pending && action == AMOTION_EVENT_ACTION_UP) flush_press();
+        /* a second quick tap on the same spot zooms (page view) instead of clicking again */
+        static double last_tap_t;
+        static float last_tap_x, last_tap_y;
+        if (touch.pending && action == AMOTION_EVENT_ACTION_UP) {
+            double now = GetTime();
+            if (!touch.draws && ui_touch_zooms_at(x, y) && now - last_tap_t < 0.35 && hypotf(x - last_tap_x, y - last_tap_y) < 24 * dp()) {
+                ui_add_double_tap(x, y);
+                touch.pending = 0;
+                last_tap_t = 0;
+            } else {
+                flush_press();
+                last_tap_t = now, last_tap_x = x, last_tap_y = y;
+            }
+        }
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE);
         /* long press and lift in place: the context menu a right click opens */
         if (touch.held && action == AMOTION_EVENT_ACTION_UP)
@@ -607,6 +620,12 @@ int pt_android_run_detached(char *const argv[])
         unlink(argv[2]);
         if (t) app_add_doc(t);
         return t ? 0 : -1;
+    }
+    /* links in documents: the system opens them (browser, mail, ...) */
+    if (!strcmp(argv[0], "xdg-open") && argv[1]) {
+        char *r = pt_java("openUrl", 1, argv[1]);
+        free(r);
+        return r ? 0 : -1;
     }
     return -1;
 }

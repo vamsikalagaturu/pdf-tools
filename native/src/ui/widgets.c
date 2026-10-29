@@ -310,6 +310,16 @@ void ui_add_pinch(float factor, float screen_x, float screen_y)
     ui.dirty = 1;
 }
 
+static int double_tap;
+static Vector2 double_tap_screen;
+
+void ui_add_double_tap(float screen_x, float screen_y)
+{
+    double_tap = 1;
+    double_tap_screen = (Vector2){screen_x, screen_y};
+    ui.dirty = 1;
+}
+
 void ui_begin_frame(void)
 {
     static double checked;
@@ -329,6 +339,9 @@ void ui_begin_frame(void)
     ui.pinch = pinch_acc;
     ui.pinch_at = (Vector2){(pinch_screen.x - inset_l) / ui.scale, (pinch_screen.y - inset_t) / ui.scale};
     pinch_acc = 1;
+    ui.double_tap = double_tap;
+    ui.double_tap_at = (Vector2){(double_tap_screen.x - inset_l) / ui.scale, (double_tap_screen.y - inset_t) / ui.scale};
+    double_tap = 0;
     if (nframe_keys) {
         ui.ctrl = (frame_mods & GLFW_MOD_CONTROL) != 0;
         ui.shift = (frame_mods & GLFW_MOD_SHIFT) != 0;
@@ -391,15 +404,28 @@ void ui_layer_end(void)
 
 /* Touch: a one-finger drag pans unless it starts where the last frame drew a drag area (a drawing tool's page,
  * the signature pad) and nothing lies on top of it there. */
-static layer prev_drags[16], cur_drags[16];
+#define MAX_TOUCH_AREAS 32
+static layer prev_drags[MAX_TOUCH_AREAS], cur_drags[MAX_TOUCH_AREAS];
 static int nprev_drags, ncur_drags;
 
 void ui_touch_drag_area(Rectangle r)
 {
-    if (ncur_drags < 16) cur_drags[ncur_drags++] = (layer){ui.layer, r, 0};
+    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 0};
 }
 
-int ui_touch_drags_at(float screen_x, float screen_y)
+/* the page view: a double tap there zooms (kind 1 in the same list) */
+void ui_touch_zoom_area(Rectangle r)
+{
+    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 1};
+}
+
+static int touch_area_at(float screen_x, float screen_y, int kind);
+
+int ui_touch_drags_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 0); }
+
+int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 1); }
+
+static int touch_area_at(float screen_x, float screen_y, int kind)
 {
     if (ui.scale <= 0) return 0;
     Vector2 p = {(screen_x - inset_l) / ui.scale, (screen_y - inset_t) / ui.scale};
@@ -410,7 +436,7 @@ int ui_touch_drags_at(float screen_x, float screen_y)
             break;
         }
     for (int i = 0; i < nprev_drags; i++)
-        if (prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r)) return 1;
+        if (prev_drags[i].modal == kind && prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r)) return 1;
     return 0;
 }
 

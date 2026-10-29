@@ -57,6 +57,8 @@ typedef struct {
     float wheel, wheel_x;
     float pinch;                    /* zoom factor of a two-finger pinch this frame, 1 = none */
     Vector2 pinch_at;               /* logical point the pinch is centred on */
+    int double_tap;                 /* touch: a double tap this frame, at double_tap_at (logical) */
+    Vector2 double_tap_at;
     int ctrl, shift, alt;
     double now;
     unsigned layer;                 /* layer being drawn */
@@ -81,7 +83,10 @@ float ui_detect_scale(void);
 void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
 void ui_touch_drag_area(Rectangle r);   /* a one-finger drag here draws instead of panning */
 void ui_add_pinch(float factor, float screen_x, float screen_y);   /* touch: applied at the next frame */
+void ui_add_double_tap(float screen_x, float screen_y);
 int ui_touch_drags_at(float screen_x, float screen_y);
+void ui_touch_zoom_area(Rectangle r);   /* a double tap here zooms instead of clicking twice */
+int ui_touch_zooms_at(float screen_x, float screen_y);
 void ui_input_init(void);
 int ui_events_pending(void);
 int key_pressed(int key);

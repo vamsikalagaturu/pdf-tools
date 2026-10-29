@@ -87,9 +87,16 @@ void tab_invalidate_pages(tab *t)
             for (int i = 0; i < t->annots[p].n; i++) free(t->annots[p].v[i].content), free(t->annots[p].v[i].quote);
             pt_vec_free(t->annots[p]);
         }
+        if (t->links_ok && t->links_ok[p]) {
+            for (int i = 0; i < t->links[p].n; i++) free(t->links[p].v[i].uri);
+            pt_vec_free(t->links[p]);
+        }
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
-    free(t->annots), free(t->annots_ok), free(t->off_x), free(t->off_y);
+    free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
+    fz_drop_outline(CTX, t->outline);
+    t->outline = NULL;
+    t->outline_ok = 0;
     int n = t->doc ? pdf_count_pages(CTX, t->doc) : 0;
     char *ticked = calloc((size_t)n + 1, 1);
     for (int p = 0; p < n && p < t->npages && t->ticked; p++) ticked[p] = t->ticked[p];
@@ -104,6 +111,8 @@ void tab_invalidate_pages(tab *t)
     t->fields_ok = calloc((size_t)n + 1, 1);
     t->annots = calloc((size_t)n + 1, sizeof(annot_infos));
     t->annots_ok = calloc((size_t)n + 1, 1);
+    t->links = calloc((size_t)n + 1, sizeof(link_infos));
+    t->links_ok = calloc((size_t)n + 1, 1);
     t->off_x = calloc((size_t)n + 1, sizeof(float));
     t->off_y = calloc((size_t)n + 1, sizeof(float));
     for (int p = 0; p < n; p++) t->off_y[p] = -1e9f;
@@ -699,6 +708,67 @@ annot_infos *page_annots(tab *t, int page)
     }
     fz_catch(CTX) fz_ignore_error(CTX);
     return &t->annots[page];
+}
+
+link_infos *page_links(tab *t, int page)
+{
+    if (t->links_ok[page]) return &t->links[page];
+    t->links_ok[page] = 1;
+    fz_link *links = NULL;
+    fz_var(links);
+    fz_try(CTX) {
+        fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
+        fz_rect b = fz_bound_page(CTX, p);
+        links = fz_load_links(CTX, p);
+        fz_drop_page(CTX, p);
+        for (fz_link *l = links; l; l = l->next) {
+            if (!l->uri) continue;
+            /* display coordinates start at the page's top-left corner (page_bounds) */
+            link_info info = {fz_make_rect(l->rect.x0 - b.x0, l->rect.y0 - b.y0, l->rect.x1 - b.x0, l->rect.y1 - b.y0), -1, 0, 0, NULL};
+            if (fz_is_external_link(CTX, l->uri)) info.uri = pt_strdup(l->uri);
+            else {
+                float x = 0, y = 0;
+                fz_location loc = fz_resolve_link(CTX, (fz_document *)t->doc, l->uri, &x, &y);
+                info.page = fz_page_number_from_location(CTX, (fz_document *)t->doc, loc);
+                if (info.page < 0 || info.page >= t->npages) continue;
+                fz_rect tb = page_bounds(t, info.page);
+                info.x = fminf(fmaxf(x, 0), tb.x1), info.y = fminf(fmaxf(y, 0), tb.y1);
+            }
+            pt_push(t->links[page], info);
+        }
+    }
+    fz_always(CTX) fz_drop_link(CTX, links);
+    fz_catch(CTX) fz_ignore_error(CTX);
+    return &t->links[page];
+}
+
+const link_info *link_at(tab *t, fz_point scene)
+{
+    int page = page_at(t, scene);
+    if (page < 0 || t->off_y[page] < -1e8f) return NULL;
+    link_infos *ls = page_links(t, page);
+    for (int i = 0; i < ls->n; i++)
+        if (fz_is_point_inside_rect(scene, disp_to_scene(t, page, ls->v[i].rect))) return &ls->v[i];
+    return NULL;
+}
+
+void follow_link(tab *t, const link_info *l)
+{
+    if (l->uri) {
+        char *argv[] = {"xdg-open", l->uri, NULL};
+        if (run_detached(argv)) status("Could not open the link", 4);
+        return;
+    }
+    if (order_index(t, l->page) < 0) {
+        status("The link's page was removed", 4);
+        return;
+    }
+    tab_goto(t, l->page);
+    /* the target point, a little below the top of the view */
+    fz_point src = disp_to_src(t, l->page, (fz_point){l->x, l->y});
+    t->want_center = 1;
+    t->want_center_x = src.x;
+    t->want_center_y = src.y + (t->view.height / 2 - 40) / t->zoom;
 }
 
 const char *annot_comment(tab *t, int page, const annot_info *a)

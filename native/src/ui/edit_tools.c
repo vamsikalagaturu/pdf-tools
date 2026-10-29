@@ -425,6 +425,11 @@ void on_click(tab *t, fz_point scene)
         t->text_sel_page = -1;
         t->text_sel.n = 0;
     }
+    const link_info *link = t->tool == T_VIEW ? link_at(t, scene) : NULL;
+    if (link) {
+        follow_link(t, link);
+        return;
+    }
     int page = page_at(t, scene);
     if (page < 0 || !fz_is_point_inside_rect(scene, page_scene_rect(t, page))) return;
     fz_point pos = scene_to_src_point(t, page, scene);

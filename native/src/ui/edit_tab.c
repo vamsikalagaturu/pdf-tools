@@ -86,9 +86,11 @@ enum {
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_REMOVE, A_TICK, A_UNTICK,
-    A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_TOOL0,
+    A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_GOTO, A_TOOL0,
     A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5,
 };
+
+static void ask_goto(tab *t);
 
 static void run(void *ctx, intptr_t a)
 {
@@ -151,6 +153,7 @@ static void run(void *ctx, intptr_t a)
     case A_ZOOM_OUT: set_zoom(t, t->zoom / 1.25f); break;
     case A_FIT: tab_fit_width(t); break;
     case A_PREV: tab_step_page(t, -1); break;
+    case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
     default:
         if (a >= A_TOOL0 && a < A_TOOL0 + T_COUNT) tool_set(t, (tool_id)(a - A_TOOL0));
@@ -239,8 +242,31 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(view);
         menu_item(view, "Previous page", "prev", "Left", run, t, A_PREV, doc, 0);
         menu_item(view, "Next page", "next", "Right", run, t, A_NEXT, doc, 0);
+        menu_item(view, "Go to page...", NULL, "Ctrl+G", run, t, A_GOTO, doc, 0);
         menu_sep(view);
     }
+}
+
+static void goto_answered(void *ctx, const char *text)
+{
+    tab *t = ctx;
+    if (!text || !t->doc) return;
+    char *end;
+    long n = strtol(text, &end, 10);
+    while (*end == ' ') end++;
+    if (*end || n < 1 || n > t->st.order.n) {
+        status("No such page", 3);
+        return;
+    }
+    tab_goto(t, t->st.order.v[n - 1]);
+}
+
+static void ask_goto(tab *t)
+{
+    char prompt[64], current[16];
+    snprintf(prompt, sizeof prompt, "Page number (1-%d):", t->st.order.n);
+    snprintf(current, sizeof current, "%d", order_index(t, t->pno) + 1);
+    input_box("Go to page", prompt, current, 0, goto_answered, t);
 }
 
 void tab_shortcuts(tab *t)
@@ -248,7 +274,7 @@ void tab_shortcuts(tab *t)
     if (dialogs_open() || menu_is_open()) return;
     struct { int ctrl, shift, key; intptr_t action; } keys[] = {
         {1, 0, KEY_F, A_FIND}, {1, 0, KEY_S, A_SAVE}, {1, 1, KEY_S, A_SAVE_AS}, {1, 0, KEY_E, A_EXPORT},
-        {1, 0, KEY_P, A_PRINT}, {1, 1, KEY_L, A_ROTATE_LEFT}, {1, 1, KEY_R, A_ROTATE_RIGHT}, {0, 0, KEY_F9, A_SIDEBAR},
+        {1, 0, KEY_P, A_PRINT}, {1, 0, KEY_G, A_GOTO}, {1, 1, KEY_L, A_ROTATE_LEFT}, {1, 1, KEY_R, A_ROTATE_RIGHT}, {0, 0, KEY_F9, A_SIDEBAR},
         {1, 0, KEY_Z, A_UNDO}, {1, 1, KEY_Z, A_REDO}, {1, 0, KEY_Y, A_REDO}, {1, 0, KEY_C, A_COPY},
         {0, 0, KEY_DELETE, A_DELETE}, {1, 0, KEY_EQUAL, A_ZOOM_IN}, {1, 1, KEY_EQUAL, A_ZOOM_IN}, {1, 0, KEY_KP_ADD, A_ZOOM_IN},
         {1, 0, KEY_MINUS, A_ZOOM_OUT}, {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT}, {1, 0, KEY_ZERO, A_FIT},
@@ -693,7 +719,14 @@ void tab_status(tab *t, Rectangle area)
         }
         rx -= path_w + 12;
     }
+    Rectangle pos_r = {rx - pw - 6, area.y + 1, pw + 12, area.height - 2};
+    if (ui_hover(pos_r)) {
+        DrawRectangleRounded(pos_r, 0.3f, 4, pal.button);
+        set_cursor(CUR_HAND);
+    }
     draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    ui_tooltip(bid(t, 302), pos_r, "Go to page (Ctrl+G)");
+    if (ui_clicked(pos_r)) ask_goto(t);
     char stats[128] = "";
     if (n) snprintf(stats, sizeof stats, "%d edit%s on %d page%s", n, n == 1 ? "" : "s", pages, pages == 1 ? "" : "s");
     if (ticked) {

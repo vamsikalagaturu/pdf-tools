@@ -60,6 +60,10 @@ PT_VEC(field_editors, field_editor);
 /* an existing annotation of a display page */
 typedef struct { int xref; enum pdf_annot_type type; fz_rect rect; char *content; unsigned char rgb[3]; char *quote; } annot_info;
 PT_VEC(annot_infos, annot_info);
+/* a link of a display page: to a page of this document (page >= 0, target point in its display coordinates), or
+ * an external uri */
+typedef struct { fz_rect rect; int page; float x, y; char *uri; } link_info;
+PT_VEC(link_infos, link_info);
 typedef struct { pt_key key; char *type; } annot_type;
 PT_VEC(annot_types, annot_type);
 
@@ -137,6 +141,8 @@ struct tab {
     char *fields_ok;
     annot_infos *annots;
     char *annots_ok;
+    link_infos *links;
+    char *links_ok;
     field_origs field_orig;
     field_editors editors;
     annot_types annot_types;
@@ -173,8 +179,10 @@ struct tab {
 
     /* pages panel */
     char *ticked;             /* per display page */
-    int side_tab;
-    float side_scroll[3];
+    int side_tab;                 /* 0 Pages, 1 Annotations, 2 Edits, 3 Outline */
+    float side_scroll[4];
+    fz_outline *outline;          /* the document's bookmarks, loaded once per document */
+    int outline_ok;
     float side_w, side_shown_w;
     double side_anim_t0;
     float side_anim_from, side_anim_to;
@@ -236,6 +244,9 @@ Texture2D *thumb_texture(tab *t, int page);
 pt_words *page_words(tab *t, int page);
 field_infos *page_fields(tab *t, int page);
 annot_infos *page_annots(tab *t, int page);
+link_infos *page_links(tab *t, int page);
+const link_info *link_at(tab *t, fz_point scene);   /* the link under a scene point, or NULL */
+void follow_link(tab *t, const link_info *l);
 const char *annot_comment(tab *t, int page, const annot_info *a);
 void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3]);
 void tab_save(tab *t);

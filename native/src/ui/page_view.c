@@ -444,6 +444,18 @@ static void handle_input(tab *t, Rectangle area)
         if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
         close_popover(t, 1);
     }
+    /* touch: a double tap zooms in around the spot, and back to fit width */
+    if (ui.double_tap && CheckCollisionPointRec(ui.double_tap_at, area) && !dialogs_open() && !menu_is_open()) {
+        fz_point anchor = screen_to_scene(t, ui.double_tap_at);
+        float old = t->zoom;
+        if (t->fitted) set_zoom(t, t->zoom * 2);
+        else tab_fit_width(t);
+        t->want_scroll_page = -1;
+        t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
+        if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
+        else t->scroll_x = 0;
+        close_popover(t, 1);
+    }
     if (!ui.focus && !dialogs_open()) {
         if (ui_key(KEY_UP)) t->scroll_y -= 40;
         if (ui_key(KEY_DOWN)) t->scroll_y += 40;
@@ -460,7 +472,15 @@ static void handle_input(tab *t, Rectangle area)
             else if (kind < 0 || movable((pt_kind)kind)) set_cursor(CUR_MOVE);
             else set_cursor(CUR_ARROW);
         } else if (h.kind == SEL_ANNOT) set_cursor(CUR_ARROW);
-        else set_cursor(TOOL_CURSORS[t->tool]);
+        else if (t->tool == T_VIEW && link_at(t, screen_to_scene(t, ui.mouse))) {
+            const link_info *l = link_at(t, screen_to_scene(t, ui.mouse));
+            set_cursor(CUR_HAND);
+            static char tip[600];
+            if (l->uri) snprintf(tip, sizeof tip, "%s", l->uri);
+            else snprintf(tip, sizeof tip, "Go to page %d", order_index(t, l->page) + 1);
+            int page = page_at(t, screen_to_scene(t, ui.mouse));
+            ui_tooltip(ui_id(t, 950), scene_rect_to_screen(t, disp_to_scene(t, page, l->rect)), tip);
+        } else set_cursor(TOOL_CURSORS[t->tool]);
     } else if (t->gesture == G_RESIZE) set_cursor(CUR_SIZE_FDIAG);
     else if (t->gesture == G_MOVE) set_cursor(CUR_MOVE);
     else if (t->gesture != G_NONE) set_cursor(TOOL_CURSORS[t->tool]);
@@ -622,6 +642,7 @@ void view_frame(tab *t, Rectangle area)
     t->view = area;
     DrawRectangleRec(area, pal.page_bg);
     if (!t->doc) return;
+    ui_touch_zoom_area(area);
     if (t->fit_pending && area.width > 100) {
         t->fit_pending = 0;
         tab_fit_width(t);
@@ -664,7 +685,7 @@ void view_frame(tab *t, Rectangle area)
     t->last_focus = ui.focus;
     clamp_scroll(t);
     /* in continuous view the page at the centre of the view is the current one */
-    if (continuous() && t->gesture == G_NONE) {
+    if (continuous() && t->gesture == G_NONE && t->want_scroll_page < 0 && !t->want_center) {
         int p = page_at(t, screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2}));
         if (p >= 0 && p != t->pno) t->pno = p;
     }

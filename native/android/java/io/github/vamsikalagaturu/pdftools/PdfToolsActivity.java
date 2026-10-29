@@ -254,6 +254,18 @@ public class PdfToolsActivity extends NativeActivity {
         });
     }
 
+    /* A link from a document, for whatever app handles it. */
+    public String openUrl(String url) {
+        return onUi(() -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                return "1";
+            } catch (Exception e) {
+                return null;
+            }
+        });
+    }
+
     /* ---- sharing ---- */
 
     /* The share sheet for cache/share/<name>, which ShareProvider serves. */
