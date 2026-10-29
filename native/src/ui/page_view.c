@@ -604,6 +604,7 @@ void view_frame(tab *t, Rectangle area)
     t->view = area;
     DrawRectangleRec(area, pal.page_bg);
     if (!t->doc) return;
+    if (t->tool != T_VIEW) ui_touch_drag_area(area);
     if (t->fit_pending && area.width > 100) {
         t->fit_pending = 0;
         tab_fit_width(t);

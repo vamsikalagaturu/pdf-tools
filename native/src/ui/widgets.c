@@ -376,6 +376,31 @@ void ui_layer_end(void)
     ui.layer = depth ? layer_stack[--depth] : 0;
 }
 
+/* Touch: a one-finger drag pans unless it starts where the last frame drew a drag area (a drawing tool's page,
+ * the signature pad) and nothing lies on top of it there. */
+static layer prev_drags[16], cur_drags[16];
+static int nprev_drags, ncur_drags;
+
+void ui_touch_drag_area(Rectangle r)
+{
+    if (ncur_drags < 16) cur_drags[ncur_drags++] = (layer){ui.layer, r, 0};
+}
+
+int ui_touch_drags_at(float screen_x, float screen_y)
+{
+    if (ui.scale <= 0) return 0;
+    Vector2 p = {(screen_x - inset_l) / ui.scale, (screen_y - inset_t) / ui.scale};
+    unsigned top = 0;
+    for (int i = nprev - 1; i >= 0; i--)
+        if (prev_layers[i].modal || CheckCollisionPointRec(p, prev_layers[i].r)) {
+            top = prev_layers[i].id;
+            break;
+        }
+    for (int i = 0; i < nprev_drags; i++)
+        if (prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r)) return 1;
+    return 0;
+}
+
 int ui_hover(Rectangle r)
 {
     return ui.layer == ui.mouse_layer && CheckCollisionPointRec(ui.mouse, r);
@@ -443,6 +468,9 @@ void ui_end_frame(void)
     rlPopMatrix();
     memcpy(prev_layers, cur_layers, sizeof(layer) * (size_t)ncur);
     nprev = ncur;
+    memcpy(prev_drags, cur_drags, sizeof(layer) * (size_t)ncur_drags);
+    nprev_drags = ncur_drags;
+    ncur_drags = 0;
 }
 
 static Rectangle scissors[16];

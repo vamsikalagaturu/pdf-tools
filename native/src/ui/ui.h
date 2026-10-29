@@ -76,6 +76,8 @@ extern ui_state ui;
 
 float ui_detect_scale(void);
 void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
+void ui_touch_drag_area(Rectangle r);   /* a one-finger drag here draws instead of panning */
+int ui_touch_drags_at(float screen_x, float screen_y);
 void ui_input_init(void);
 int ui_events_pending(void);
 int key_pressed(int key);

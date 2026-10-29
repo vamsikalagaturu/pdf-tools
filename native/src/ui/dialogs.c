@@ -200,6 +200,7 @@ static int pad_frame(dialog *d, Rectangle b)
     for (float x = surface.x + 20; x < surface.x + surface.width - 20; x += 8)
         DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1, (Color){200, 200, 200, 255});
     DrawTexturePro(p->tex, (Rectangle){0, 0, PAD_W, PAD_H}, surface, (Vector2){0, 0}, 0, WHITE);
+    ui_touch_drag_area(surface);
     int over = ui_hover(surface);
     if (over) set_cursor(CUR_PEN);
     Vector2 at = {(ui.mouse.x - surface.x) * PAD_W / surface.width, (ui.mouse.y - surface.y) * PAD_H / surface.height};

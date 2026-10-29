@@ -176,6 +176,7 @@ static int chars[64], nchars;
 static Vector2 wheel_acc, wheel_frame;
 static struct {
     int pending;      /* finger down, press not yet sent: a second finger makes it a scroll instead */
+    int draws;        /* landed on a drag area (drawing tool, signature pad): moving presses at once */
     int pressed;      /* press sent, release owed */
     int scrolling;
     int rebase;       /* finger count changed: restart the scroll from the current centroid */
@@ -223,6 +224,7 @@ static void on_touch(const AInputEvent *e, int action)
     case AMOTION_EVENT_ACTION_DOWN:
         touch.pending = 1, touch.pressed = touch.scrolling = touch.lifted = 0;
         touch.t = GetTime(), touch.x = x, touch.y = y;
+        touch.draws = ui_touch_drags_at(x, y);
         break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
         touch.pending = 0;
@@ -241,7 +243,15 @@ static void on_touch(const AInputEvent *e, int action)
                 wheel_acc.y += (cy - touch.cy) / (60 * dp());
             }
             touch.cx = cx, touch.cy = cy, touch.rebase = 0;
-        } else if (touch.pending && hypotf(x - touch.x, y - touch.y) > 8 * dp()) flush_press();
+        } else if (touch.pending && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
+            /* elsewhere one finger pans; a long press first (see pt_android_frame) drags instead */
+            if (touch.draws) flush_press();
+            else {
+                touch.pending = 0;
+                touch.scrolling = 1;
+                touch.cx = x, touch.cy = y, touch.rebase = 0;
+            }
+        }
         break;
     case AMOTION_EVENT_ACTION_UP:
     case AMOTION_EVENT_ACTION_CANCEL:
@@ -392,7 +402,7 @@ void pt_android_frame(void)
     file_dialogs_poll();
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
-    if (touch.pending && GetTime() - touch.t > 0.15) flush_press();
+    if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) flush_press();
     if (touch.lifted && !ui_events_pending()) {
         touch.lifted = 0;
         SetMousePosition(-10000, -10000);
