@@ -1,5 +1,8 @@
 /build/
+/thirdparty/
 .cmake/
 .DS_Store
 *.pdf
 *.png
+/compile_commands.json
+/.cache/

@@ -1,5 +1,7 @@
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pymupdf
@@ -8,9 +10,14 @@ import pytest
 from pdf_tools.cli import FAILED, LEAKED, NO_MATCH, OK, main
 
 FIXTURE = Path(__file__).parent / "data" / "main.synctex.gz"
+# set to the native build's pdf-tools-c to run these tests against it instead of the Python CLI
+BIN = os.environ.get("PDF_TOOLS_BIN")
 
 
 def run(capsys, *argv):
+    if BIN:
+        result = subprocess.run([BIN, *map(str, argv)], capture_output=True, text=True)
+        return result.returncode, json.loads(result.stdout)
     code = main([str(a) for a in argv])
     return code, json.loads(capsys.readouterr().out)
 
