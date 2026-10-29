@@ -188,6 +188,7 @@ struct tab {
     hits sync_marks;
     double sync_until;
     int toolbar_compact;
+    int narrow, was_narrow;
     float toolbar_need;
 };
 

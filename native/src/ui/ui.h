@@ -9,6 +9,8 @@
 #define APP_NAME "PDF Tools"
 #define APP_ID "pdf-tools"
 #define REPO_URL "https://github.com/vamsikalagaturu/pdf-tools"
+/* logical width below which toolbars collapse and the sidebar overlays the page (phones) */
+#define NARROW_W 760.0f
 
 /* ---- theme ---- */
 typedef struct {

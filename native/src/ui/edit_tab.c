@@ -7,6 +7,7 @@
 
 #define FIND_H 38.0f
 #define SPLITTER 5.0f
+#define OPTS_H 40.0f
 
 static unsigned bid(tab *t, int k) { return ui_id(t, 60000 + k); }
 
@@ -131,6 +132,11 @@ static void run(void *ctx, intptr_t a)
     case A_TICK: tick_all(t, 1); break;
     case A_UNTICK: tick_all(t, 0); break;
     case A_SIDEBAR: {
+        /* on a narrow window the sidebar is a passing overlay, not a preference */
+        if (t->narrow) {
+            show_sidebar(t, !t->side_target, 1);
+            break;
+        }
         int shown = !pt_settings_int(&app.settings, "show_sidebar");
         pt_settings_set_int(&app.settings, "show_sidebar", shown);
         show_sidebar(t, shown, 1);
@@ -332,8 +338,68 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
     return x - x0;
 }
 
+static int tool_has_options(tab *t)
+{
+    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW;
+}
+
+/* phone-sized windows: one picker for the tools, the rest in an overflow menu; tool options get their own row */
+static void narrow_toolbar(tab *t, Rectangle area)
+{
+    float h = 32, y = area.y + (area.height - h) / 2;
+    int doc = t->doc != NULL;
+    int dis = doc ? 0 : B_DISABLED;
+    float x = area.x;
+    if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", t->side_target ? B_CHECKED : B_FLAT, "Show or hide the sidebar (F9)"))
+        run(t, A_SIDEBAR);
+    x += 34;
+    if (ui_button(bid(t, 2), (Rectangle){x, y, 32, h}, NULL, "undo", B_FLAT | (doc && t->nhist ? 0 : B_DISABLED), "Undo (Ctrl+Z)")) run(t, A_UNDO);
+    x += 34;
+    if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
+    x += 34;
+    ui_separator_v(x + 4, y + 5, y + h - 5);
+    x += 9;
+    Rectangle tb = {x, y, 48, h};
+    if (ui_button(bid(t, 10), tb, NULL, TOOLS[t->tool].icon, B_CHECKED | B_MENU | dis, TOOLS[t->tool].tip)) {
+        ui_menu *m = menu_new();
+        for (int i = 0; i < T_COUNT; i++) menu_item(m, TOOLS[i].label, TOOLS[i].icon, NULL, run, t, A_TOOL0 + i, doc, t->tool == (tool_id)i);
+        menu_open_below(m, tb);
+    }
+    float rx = area.x + area.width - 32;
+    Rectangle more = {rx, y, 32, h};
+    if (ui_button(bid(t, 26), more, NULL, "more", B_FLAT | dis, "More")) {
+        ui_menu *m = menu_new();
+        int n = tab_edit_count(t);
+        menu_item(m, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
+        menu_item(m, "Zoom out", "zoom-out", "Ctrl+-", run, t, A_ZOOM_OUT, doc, 0);
+        menu_item(m, "Fit width", "fit", "Ctrl+0", run, t, A_FIT, doc, 0);
+        menu_item(m, "Continuous scroll", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
+        menu_sep(m);
+        menu_item(m, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
+        menu_item(m, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
+        menu_item(m, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
+        menu_item(m, "Remove password...", "unlock", NULL, run, t, A_UNPROTECT, doc && t->password, 0);
+        menu_sep(m);
+        menu_item(m, "Print...", "print", "Ctrl+P", run, t, A_PRINT, doc, 0);
+        menu_open_below(m, more);
+    }
+    rx -= 34;
+    if (ui_button(bid(t, 25), (Rectangle){rx, y, 32, h}, NULL, "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED), "Save (overwrite original) (Ctrl+S)"))
+        run(t, A_SAVE);
+    rx -= 34;
+    if (ui_button(bid(t, 24), (Rectangle){rx, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis, "Find (Ctrl+F)")) {
+        if (t->find_open) hide_find(t);
+        else run(t, A_FIND);
+    }
+}
+
 void tab_toolbar(tab *t, Rectangle area)
 {
+    t->narrow = ui.w < NARROW_W;
+    if (t->narrow) {
+        narrow_toolbar(t, area);
+        return;
+    }
     float h = 32, y = area.y + (area.height - h) / 2;
     int doc = t->doc != NULL;
     int dis = doc ? 0 : B_DISABLED;
@@ -363,7 +429,7 @@ void tab_toolbar(tab *t, Rectangle area)
         if (ui_button(bid(t, 10 + i), (Rectangle){x, y, w, h}, TOOLS[i].label, TOOLS[i].icon, flags, TOOLS[i].tip)) tool_set(t, (tool_id)i);
         x += w + 1;
     }
-    if (t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW) {
+    if (tool_has_options(t)) {
         ui_separator_v(x + 5, y + 5, y + h - 5);
         x += 11;
         tool_options(t, x, y, h, 1);
@@ -416,12 +482,14 @@ static void find_bar(tab *t, Rectangle r)
 {
     DrawRectangleRec(r, pal.window);
     ui_separator_h(r.x, r.x + r.width, r.y + r.height - 1);
-    float x = r.x + 6, y = r.y + 4, h = r.height - 8;
+    float x = r.x + 6, y = r.y + 4, h = FIND_H - 8;
     if (t->find_first) {
         text_focus(&t->find);
         t->find_first = 0;
     }
-    int res = ui_textfield(bid(t, 100), &t->find, (Rectangle){x, y, 300, h}, 1);
+    /* narrow: the count and the redact buttons move to a second row */
+    float field_w = t->narrow ? fmaxf(80, r.width - 150) : 300;
+    int res = ui_textfield(bid(t, 100), &t->find, (Rectangle){x, y, field_w, h}, 1);
     if (res & TE_CHANGED) t->find_due = ui.now + 0.25;
     if (res & TE_SUBMIT) step_match(t, 1);
     if (res & TE_SHIFT_SUBMIT) step_match(t, -1);
@@ -431,7 +499,7 @@ static void find_bar(tab *t, Rectangle r)
     }
     if (t->find_due && ui.now >= t->find_due) run_search(t);
     if (t->find_due) ui.dirty = 1;
-    x += 304;
+    x += field_w + 4;
     if (ui_button(bid(t, 101), (Rectangle){x, y, 34, h}, "Aa", NULL, t->find_case ? B_CHECKED : B_FLAT, "Match case")) {
         t->find_case = !t->find_case;
         run_search(t);
@@ -441,17 +509,22 @@ static void find_bar(tab *t, Rectangle r)
     x += 32;
     if (ui_button(bid(t, 103), (Rectangle){x, y, 30, h}, NULL, "next", B_FLAT, "Next match (Enter)")) step_match(t, 1);
     x += 36;
-    int m = t->matches.n;
-    char count[48] = "";
-    if (m) snprintf(count, sizeof count, "%d of %d", t->match_idx + 1, m);
-    else if (*text_get(&t->find) && !t->find_due) snprintf(count, sizeof count, "No matches");
-    draw_text_in(count, (Rectangle){x, y, 110, h}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     float rx = r.x + r.width - 6;
     rx -= 30;
     if (ui_button(bid(t, 104), (Rectangle){rx, y, 30, h}, NULL, "close", B_FLAT, "Close (Esc)")) {
         hide_find(t);
         return;
     }
+    if (t->narrow) {
+        x = r.x + 6;
+        y += FIND_H;
+        rx = r.x + r.width;
+    }
+    int m = t->matches.n;
+    char count[48] = "";
+    if (m) snprintf(count, sizeof count, "%d of %d", t->match_idx + 1, m);
+    else if (*text_get(&t->find) && !t->find_due) snprintf(count, sizeof count, "No matches");
+    draw_text_in(count, (Rectangle){x, y, 110, h}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     char all[48];
     snprintf(all, sizeof all, m ? "Redact all (%d)" : "Redact all", m);
     float aw = button_width(all, NULL, 0) + 8;
@@ -467,10 +540,15 @@ static void find_bar(tab *t, Rectangle r)
 void tab_frame(tab *t, Rectangle area)
 {
     tab_poll(t);
+    Rectangle full = area;
     int shown = pt_settings_int(&app.settings, "show_sidebar");
-    if (shown != t->side_target) show_sidebar(t, shown, 0);
+    if (t->narrow != t->was_narrow) {
+        t->was_narrow = t->narrow;
+        if (t->narrow) show_sidebar(t, 0, 0);
+    }
+    if (!t->narrow && shown != t->side_target) show_sidebar(t, shown, 0);
     float side = sidebar_width(t);
-    if (side > 1) {
+    if (!t->narrow && side > 1) {
         Rectangle panel = {area.x + side - t->side_w, area.y, t->side_w, area.height};
         ui_scissor_begin((Rectangle){area.x, area.y, side, area.height});
         sidebar_frame(t, panel);
@@ -490,11 +568,34 @@ void tab_frame(tab *t, Rectangle area)
         area.width -= side + SPLITTER;
     }
     if (t->find_open) {
-        find_bar(t, (Rectangle){area.x, area.y, area.width, FIND_H});
-        area.y += FIND_H;
-        area.height -= FIND_H;
+        float fh = t->narrow ? FIND_H * 2 : FIND_H;
+        find_bar(t, (Rectangle){area.x, area.y, area.width, fh});
+        area.y += fh;
+        area.height -= fh;
+    }
+    if (t->narrow && t->doc && tool_has_options(t)) {
+        Rectangle row = {area.x, area.y, area.width, OPTS_H};
+        DrawRectangleRec(row, pal.window);
+        ui_separator_h(row.x, row.x + row.width, row.y + row.height - 1);
+        tool_options(t, row.x + 6, row.y + (OPTS_H - 32) / 2, 32, 1);
+        area.y += OPTS_H;
+        area.height -= OPTS_H;
     }
     view_frame(t, area);
+    if (t->narrow && side > 1) {
+        /* drawn over the page; a tap beside it or picking a page closes it */
+        ui_layer_begin(bid(t, 201), full, 0);
+        DrawRectangleRec(full, with_alpha(BLACK, (int)(90 * fminf(1, side / t->side_w))));
+        if (ui.released && ui_hover(full) && ui.mouse.x > full.x + side) show_sidebar(t, 0, 1);
+        int pno = t->pno;
+        Rectangle panel = {full.x + side - t->side_w, full.y, t->side_w, full.height};
+        ui_scissor_begin((Rectangle){full.x, full.y, side, full.height});
+        sidebar_frame(t, panel);
+        ui_scissor_end();
+        ui_separator_v(full.x + side, full.y, full.y + full.height);
+        if (t->pno != pno) show_sidebar(t, 0, 1);
+        ui_layer_end();
+    }
 }
 
 void tab_status(tab *t, Rectangle area)
@@ -513,20 +614,23 @@ void tab_status(tab *t, Rectangle area)
     Rectangle copy = {rx - 24, area.y + (area.height - 22) / 2, 22, 22};
     if (ui_button(bid(t, 300), copy, NULL, "copy", B_FLAT, "Copy path")) tab_copy_path(t);
     rx -= 28;
-    char *path = elide_middle(t->path, PATH_WIDTH, FS_NORMAL, F_REGULAR);
-    Rectangle pr = {rx - PATH_WIDTH, area.y, PATH_WIDTH, area.height};
-    draw_text_in(path, pr, FS_NORMAL, F_REGULAR, pal.window_text, 1);
-    free(path);
-    ui_tooltip(bid(t, 301), pr, t->path);
-    if (ui_hover(pr) && ui.rpressed) {
-        ui_menu *m = menu_new();
-        menu_item(m, "Copy path", "copy", NULL, run, t, A_COPY_PATH, 1, 0);
-        menu_open(m, ui.mouse);
-    }
-    rx -= PATH_WIDTH + 12;
     char pos[48];
     snprintf(pos, sizeof pos, "Page %d of %d", order_index(t, t->pno) + 1, t->st.order.n);
     float pw = text_width(pos, FS_NORMAL, F_REGULAR);
+    float path_w = fminf(PATH_WIDTH, (rx - area.x - pw - 20) * 0.6f);
+    if (path_w >= 60) {
+        char *path = elide_middle(t->path, path_w, FS_NORMAL, F_REGULAR);
+        Rectangle pr = {rx - path_w, area.y, path_w, area.height};
+        draw_text_in(path, pr, FS_NORMAL, F_REGULAR, pal.window_text, 1);
+        free(path);
+        ui_tooltip(bid(t, 301), pr, t->path);
+        if (ui_hover(pr) && ui.rpressed) {
+            ui_menu *m = menu_new();
+            menu_item(m, "Copy path", "copy", NULL, run, t, A_COPY_PATH, 1, 0);
+            menu_open(m, ui.mouse);
+        }
+        rx -= path_w + 12;
+    }
     draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     char stats[128] = "";
     if (n) snprintf(stats, sizeof stats, "%d edit%s on %d page%s", n, n == 1 ? "" : "s", pages, pages == 1 ? "" : "s");
@@ -535,5 +639,10 @@ void tab_status(tab *t, Rectangle area)
         snprintf(tk, sizeof tk, "%s%d ticked", *stats ? "   |   " : "", ticked);
         strcat(stats, tk);
     }
-    draw_text_in(stats, (Rectangle){area.x + 8, area.y, rx - pw - area.x - 20, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    float sw = rx - pw - area.x - 20;
+    if (*stats && sw > 40) {
+        char *e = elide_right(stats, sw, FS_NORMAL, F_REGULAR);
+        draw_text_in(e, (Rectangle){area.x + 8, area.y, sw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+        free(e);
+    }
 }

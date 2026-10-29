@@ -508,7 +508,7 @@ static void frame(void)
     if (t) tab_status(t, bar);
     if (*app.status && ui.now < app.status_until) {
         float w = text_width(app.status, FS_NORMAL, F_REGULAR) + 16;
-        Rectangle s = {bar.x, bar.y + 1, fminf(w, t ? ui.w - PATH_WIDTH - 220 : ui.w), bar.height - 1};
+        Rectangle s = {bar.x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) : ui.w), bar.height - 1};
         DrawRectangleRec(s, pal.window);
         char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
         draw_text_in(e, (Rectangle){s.x + 8, s.y, s.width, s.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);

@@ -431,9 +431,34 @@ static void dashed_line_v(float x, float y0, float y1, Color c)
     for (float y = y0; y < y1; y += 7) DrawLineEx((Vector2){x, y}, (Vector2){x, fminf(y + 4, y1)}, 2, c);
 }
 
+static void menu_clear(void *ctx, intptr_t all)
+{
+    if (all) clear(ctx);
+    else cut_every(ctx, 0);
+}
+
 void workspace_toolbar(workspace *w, Rectangle area)
 {
     float h = 32, y = area.y + (area.height - h) / 2, x = area.x;
+    if (ui.w < NARROW_W) {
+        if (ui_button(ui_id(w, 1), (Rectangle){x, y, 32, h}, NULL, "add", B_FLAT, "Add files...")) pick_files(w);
+        x += 34;
+        if (ui_button(ui_id(w, 2), (Rectangle){x, y, 32, h}, NULL, "remove", B_FLAT, "Remove selected")) remove_selected(w);
+        x += 34;
+        ui_separator_v(x + 4, y + 5, y + h - 5);
+        x += 10;
+        ui_spin(ui_id(w, 3), (Rectangle){x, y, 112, h}, &w->every, 1, 9999, 1, "Every ", "");
+        x += 114;
+        if (ui_button(ui_id(w, 4), (Rectangle){x, y, 32, h}, NULL, "split", B_FLAT, "Cut every N pages")) cut_every(w, w->every);
+        Rectangle more = {area.x + area.width - 32, y, 32, h};
+        if (ui_button(ui_id(w, 7), more, NULL, "more", B_FLAT, "More")) {
+            ui_menu *m = menu_new();
+            menu_item(m, "Clear cuts", NULL, NULL, menu_clear, w, 0, 1, 0);
+            menu_item(m, "Clear all", "close", NULL, menu_clear, w, 1, 1, 0);
+            menu_open_below(m, more);
+        }
+        return;
+    }
     float bw = button_width("Add files...", "add", 0);
     if (ui_button(ui_id(w, 1), (Rectangle){x, y, bw, h}, "Add files...", "add", B_FLAT, NULL)) pick_files(w);
     x += bw + 2;
@@ -495,9 +520,12 @@ void workspace_frame(workspace *w, Rectangle area)
     draw_thumbs(w);
     Rectangle in = {area.x + 24, area.y + 20, area.width - 48, area.height - 40};
     draw_text("Combine & split", in.x, in.y, FS_NORMAL * 1.4f, F_BOLD, pal.window_text);
-    draw_text("Pages of every file you add, in order. Drag to reorder, Delete to drop pages, click the strip left of a page "
-              "to start a new file there. No cuts: one combined file.",
-              in.x, in.y + 32, FS_NORMAL, F_REGULAR, pal.disabled_text);
+    const char *about = "Pages of every file you add, in order. Drag to reorder, Delete to drop pages, click the strip left of a page "
+                        "to start a new file there. No cuts: one combined file.";
+    char *line = elide_right(about, in.width, FS_NORMAL, F_REGULAR);
+    draw_text(line, in.x, in.y + 32, FS_NORMAL, F_REGULAR, pal.disabled_text);
+    free(line);
+    ui_tooltip(ui_id(w, 8), (Rectangle){in.x, in.y + 28, in.width, 24}, about);
     float top = in.y + 62, footer = 44;
     pt_ints starts = {0};
     parts(w, &starts);
