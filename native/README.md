@@ -2,7 +2,7 @@
 
 The C version of PDF Tools: a core library, the agent-facing command line and the window, built on MuPDF and
 raylib/raygui. It replaces the PyMuPDF/PySide6 application (`src/pdf_tools`, being phased out). The same window
-sources build for Linux desktops and, through `android/`, for Android 11+ phones and tablets.
+sources build for Linux desktops, macOS 11+ (`macos/`) and, through `android/`, Android 11+ phones and tablets.
 
 | Part | Sources | Target |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ sources build for Linux desktops and, through `android/`, for Android 11+ phones
 | Command line (the `AGENTS.md` contract, plus extras) | `src/cli.c` | `ptcli`, `pdf-tools-c` |
 | Window: tabs, tools, sidebar, dialogs, printing, IPC, Combine & split | `src/ui/` | `pdf-tools-gui` (binary `pdf-tools`) |
 | Android APK | `android/` | `android/build.sh` (see `android/README.md`) |
+| macOS app and .dmg | `macos/`, `src/ui/macos.c` | `macos/build.sh` (on a Mac; CI uploads the .dmg as an artifact) |
 | Core tests | `tests/test_core.c` | `test_core` (ctest) |
 
 ## Build
@@ -37,6 +38,17 @@ cmake --build ~/.cache/pdf-tools-native/build -j
 ```
 
 Keep the build folder outside the repo. `-DPT_BUILD_GUI=OFF` builds the core and the command line only.
+
+### macOS
+
+On a Mac with the Xcode command line tools and CMake, `native/macos/build.sh` builds MuPDF, PCRE2 and raylib from
+source, links them statically and makes `PDF Tools.app` and `PDF-Tools.dmg` (macOS 11+, the Mac's own
+architecture) in `~/Library/Caches/pdf-tools-native/macos/out`. Every push also builds it on GitHub Actions; the
+`.dmg` is the run's `PDF-Tools-macOS` artifact. The app is ad-hoc signed, not notarized: open it the first time
+with right-click > Open. Platform pieces: Retina rendering (`ui.density`), the system file chooser through
+`osascript`, `~/.Trash`, `open` for links, Core Text for installed fonts, window IPC over socket files in
+`/tmp/pdf-tools-<uid>`, and documents opened from Finder (`src/ui/macos.c`). The command line is
+`"/Applications/PDF Tools.app/Contents/MacOS/pdf-tools" info file.pdf`.
 
 ## Test
 
