@@ -1,6 +1,8 @@
 /* Core library tests: page ranges, the save pipeline (blank pages, shapes), the optimized copy, regex search,
  * the Edits list and settings. Test documents are made here with MuPDF; files go to a temporary folder. */
 #define _XOPEN_SOURCE 700
+/* macOS hides mkdtemp() under a strict _XOPEN_SOURCE */
+#define _DARWIN_C_SOURCE
 #include "pt_core.h"
 #include <ftw.h>
 #include <math.h>
