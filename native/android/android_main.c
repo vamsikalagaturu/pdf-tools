@@ -406,6 +406,11 @@ void pt_android_frame(void)
     if (intent_checked < 0 || GetTime() - intent_checked > 0.25) {
         intent_checked = GetTime();
         check_intent();
+        /* the gesture/navigation bar is drawn over the window: keep the UI out from under it */
+        char *in = pt_java("systemInsets", 0);
+        float l, t, r, b;
+        if (in && sscanf(in, "%f %f %f %f", &l, &t, &r, &b) == 4) ui_set_insets(l, t, r, b);
+        free(in);
     }
 }
 

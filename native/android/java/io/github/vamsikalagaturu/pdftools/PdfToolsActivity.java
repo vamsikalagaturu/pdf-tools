@@ -39,6 +39,19 @@ public class PdfToolsActivity extends NativeActivity {
         setIntent(intent);
     }
 
+    /* The visible system bars and display cutout over the window, in pixels: "left top right bottom". */
+    public String systemInsets() {
+        android.view.WindowInsets w = getWindow().getDecorView().getRootWindowInsets();
+        if (w == null) return null;
+        if (Build.VERSION.SDK_INT >= 30) {
+            android.graphics.Insets i = w.getInsets(android.view.WindowInsets.Type.systemBars()
+                | android.view.WindowInsets.Type.displayCutout());
+            return i.left + " " + i.top + " " + i.right + " " + i.bottom;
+        }
+        return w.getSystemWindowInsetLeft() + " " + w.getSystemWindowInsetTop() + " "
+            + w.getSystemWindowInsetRight() + " " + w.getSystemWindowInsetBottom();
+    }
+
     /* Ask for storage once, at the first start that reaches the window; later only when a file dialog opens. */
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {

@@ -75,6 +75,7 @@ typedef struct {
 extern ui_state ui;
 
 float ui_detect_scale(void);
+void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
 void ui_input_init(void);
 int ui_events_pending(void);
 int key_pressed(int key);

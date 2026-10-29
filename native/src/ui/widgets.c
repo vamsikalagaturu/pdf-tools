@@ -290,6 +290,16 @@ float ui_detect_scale(void)
     return scale < 1 ? 1 : scale > 3 ? 3 : scale;
 }
 
+/* screen pixels covered by system bars (Android); the UI is laid out inside them */
+static float inset_l, inset_t, inset_r, inset_b;
+
+void ui_set_insets(float left, float top, float right, float bottom)
+{
+    if (left == inset_l && top == inset_t && right == inset_r && bottom == inset_b) return;
+    inset_l = left, inset_t = top, inset_r = right, inset_b = bottom;
+    ui.dirty = 1;
+}
+
 void ui_begin_frame(void)
 {
     static double checked;
@@ -297,8 +307,9 @@ void ui_begin_frame(void)
         ui.scale = ui_detect_scale();
         checked = GetTime();
     }
-    ui.w = GetScreenWidth() / ui.scale;
-    ui.h = GetScreenHeight() / ui.scale;
+    ui.w = (GetScreenWidth() - inset_l - inset_r) / ui.scale;
+    ui.h = (GetScreenHeight() - inset_t - inset_b) / ui.scale;
+    SetMouseOffset((int)-inset_l, (int)-inset_t);
     SetMouseScale(1 / ui.scale, 1 / ui.scale);
     ui.mouse = GetMousePosition();
     take_events();
@@ -349,6 +360,7 @@ void ui_begin_frame(void)
     ui.focus_taken = 0;
     ui.keys_eaten = ui.focus != NULL;
     rlPushMatrix();
+    rlTranslatef(inset_l, inset_t, 0);
     rlScalef(ui.scale, ui.scale, 1);
 }
 
@@ -438,7 +450,7 @@ static int nscissors;
 
 static void apply_scissor(Rectangle r)
 {
-    BeginScissorMode((int)floorf(r.x * ui.scale), (int)floorf(r.y * ui.scale), (int)ceilf(r.width * ui.scale),
+    BeginScissorMode((int)floorf(inset_l + r.x * ui.scale), (int)floorf(inset_t + r.y * ui.scale), (int)ceilf(r.width * ui.scale),
                      (int)ceilf(r.height * ui.scale));
 }
 
