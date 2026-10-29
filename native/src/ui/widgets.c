@@ -838,6 +838,7 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
     if (!t->size) t->size = FS_NORMAL;
     text_reserve(t, t->len);
     int result = 0, focused = ui.focus == t;
+    if (focused && r.width > 0) ui.focus_rect = r;
     float pad = frame ? 5 : 1, lh = t->size * 1.36f;
     Rectangle inner = {r.x + pad, r.y + pad, r.width - 2 * pad, r.height - 2 * pad};
     int hover = ui_hover(r);

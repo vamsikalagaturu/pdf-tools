@@ -1,4 +1,4 @@
-# PDF Tools for Android (arm64-v8a)
+# PDF Tools for Android (arm64-v8a, Android 11+)
 
 The native window (`native/src/ui`, raylib + raygui + MuPDF) packaged as a debug-signed APK, without Gradle.
 
@@ -16,7 +16,7 @@ the repo. Re-runs are incremental.
 ## What build.sh does
 
 1. Downloads `mupdf-1.28.5-source.tar.gz` (checked against a pinned SHA-256), builds `libmupdf.a` and
-   `libmupdf-third.a` with the NDK clang (API 26). A dummy `pkg-config` keeps host libraries out.
+   `libmupdf-third.a` with the NDK clang (API 30). A dummy `pkg-config` keeps host libraries out.
 2. Downloads `pcre2-10.45.tar.bz2` (pinned SHA-256) and builds a static `libpcre2-8.a` (no JIT) for regex
    search and redaction.
 3. Configures `native/android/CMakeLists.txt` with the NDK toolchain. It pulls in `native/CMakeLists.txt`
@@ -24,7 +24,7 @@ the repo. Re-runs are incremental.
    `native/thirdparty/raylib` for `PLATFORM_ANDROID` with `raylib_core.c` in place of `rcore.c`, and links every
    `native/src/ui/*.c` (globbed, unmodified) plus the Android files below into `libpdf-tools.so`.
 4. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest and icon with `aapt2`
-   (minSdk 26, targetSdk 34, `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16`
+   (minSdk 30, targetSdk 34, `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16`
    and signs with `apksigner` using a debug keystore created in the cache folder.
 
 targetSdk is 34 because apps targeting 35+ are always drawn edge-to-edge: the system bars and display cutout
@@ -88,14 +88,13 @@ Cancel gives an empty list. Picked URIs keep their permission (`takePersistableU
 
 ### Storage access
 
-With "All files access" (API 30+) or the storage permissions (API 26-29), picked documents on shared storage
+With "All files access", picked documents on shared storage
 (`/storage/...`, also via the Downloads and media providers) open and save in place by path, and dialogs start
 in Download (`HOME`). Without it, everything works through copies and the dialogs start in `files/`.
 
 When the app asks: once at the first start (when its window first gets focus), and later at most once per run,
-when a file dialog opens without access (the picker follows when the request returns). API 30+: the system's
+when a file dialog opens without access (the picker follows when the request returns). The system's
 "All files access" page for PDF Tools opens; turn on "Allow access to manage all files", then go back.
-API 26-29: the system permission prompt; tap Allow.
 
 ## Touch
 
@@ -115,9 +114,12 @@ Escape and never closes the app; use Quit.
 - Clipboard: `SetClipboardText`/`GetClipboardText` are renamed for every window source to
   `pt_android_set_clipboard`/`pt_android_get_clipboard` (`ClipboardManager`).
 - Printing: the edited PDF goes to the system print dialog (`PrintManager`), which picks printer, copies and pages.
-- Fonts for text boxes: the NDK font matcher (`AFontMatcher`, Android 10+, looked up with `dlsym`) with the PDF's
-  family and a generic fallback (serif, monospace, sans-serif); on 8 and 9 a name match in `/system/fonts`.
-- System bars: `systemInsets()` (polled 4x a second) keeps the UI clear of the gesture/navigation bar.
+- Fonts for text boxes: the NDK font matcher (`AFontMatcher`) with the PDF's family and a generic fallback
+  (serif, monospace, sans-serif).
+- System bars and keyboard: `systemInsets()` (system bars, cutout and IME, polled every 0.1 s) keeps the UI clear
+  of the gesture bar and the soft keyboard; the page view scrolls a focused field above the keyboard.
+- Sharing: File > Share... (and the narrow toolbar's More menu) writes the edited PDF to `cache/share/` and opens
+  the share sheet; `ShareProvider` serves it read-only as `content://<package>.share/<name>`.
 
 ## Not available on Android
 

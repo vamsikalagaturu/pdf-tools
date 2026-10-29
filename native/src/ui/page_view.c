@@ -510,8 +510,13 @@ static void handle_input(tab *t, Rectangle area)
         t->gesture = selection_mode(t);
         if (t->gesture == G_BAND) t->band = fz_make_rect(scene.x, scene.y, scene.x, scene.y);
         else if (t->gesture == G_STROKE) {
-            t->stroke.n = 0;
-            pt_push(t->stroke, scene);
+            /* ink starts on a page and stays on it */
+            int p = page_at(t, scene);
+            if (p < 0 || !fz_is_point_inside_rect(scene, page_scene_rect(t, p))) t->gesture = G_NONE;
+            else {
+                t->stroke.n = 0;
+                pt_push(t->stroke, scene);
+            }
         } else if (t->gesture == G_NONE) t->gesture = G_CLICK;
     }
     if (over && ui.rpressed && t->gesture == G_NONE) {
@@ -526,6 +531,9 @@ static void handle_input(tab *t, Rectangle area)
     fz_point now = screen_to_scene(t, ui.mouse);
     if (ui.down) {
         if (t->gesture == G_STROKE) {
+            fz_rect pr = page_scene_rect(t, page_at(t, t->stroke.v[0]));
+            now.x = fminf(fmaxf(now.x, pr.x0), pr.x1);
+            now.y = fminf(fmaxf(now.y, pr.y0), pr.y1);
             fz_point last = t->stroke.v[t->stroke.n - 1];
             if (fabsf(now.x - last.x) + fabsf(now.y - last.y) > 0.4f / t->zoom) pt_push(t->stroke, now);
         } else if (t->gesture == G_BAND) {
@@ -614,12 +622,20 @@ void view_frame(tab *t, Rectangle area)
     t->view = area;
     DrawRectangleRec(area, pal.page_bg);
     if (!t->doc) return;
-    if (t->tool != T_VIEW) ui_touch_drag_area(area);
     if (t->fit_pending && area.width > 100) {
         t->fit_pending = 0;
         tab_fit_width(t);
         t->scroll_x = t->scroll_y = 0;
         t->want_scroll_page = -1;
+    }
+    /* fit width holds through rotation and resizing until the zoom is changed */
+    if (t->fitted && area.width > 100 && fabsf(area.width - t->fit_w) > 0.5f) {
+        /* the scene point at the top of the view stays there */
+        fz_point anchor = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y});
+        float old = t->zoom;
+        tab_fit_width(t);
+        t->want_scroll_page = -1;
+        t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
     }
     layout_scene(t);
     if (t->want_scroll_page >= 0) {
@@ -635,6 +651,17 @@ void view_frame(tab *t, Rectangle area)
         t->want_center = 0;
     }
     handle_input(t, area);
+    /* a soft keyboard that just opened (the view got shorter) or a field just focused must not cover the field */
+    if (ui.focus && (area.height < t->last_view_h - 0.5f || ui.focus != t->last_focus)) t->reveal_until = ui.now + 0.5;
+    if (ui.focus && ui.now < t->reveal_until) {
+        ui.dirty = 1;
+        Rectangle f = ui.focus_rect;
+        float bottom = area.y + area.height - 12;
+        if (f.width > 0 && f.x < area.x + area.width && f.x + f.width > area.x && f.y >= area.y && f.y + f.height > bottom)
+            t->scroll_y += fminf(f.y + f.height - bottom, f.y - area.y - 12);
+    }
+    t->last_view_h = area.height;
+    t->last_focus = ui.focus;
     clamp_scroll(t);
     /* in continuous view the page at the centre of the view is the current one */
     if (continuous() && t->gesture == G_NONE) {
@@ -645,7 +672,11 @@ void view_frame(tab *t, Rectangle area)
     ui_scissor_begin(area);
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
-        if (t->off_y[p] > -1e8f) draw_page(t, p);
+        if (t->off_y[p] < -1e8f) continue;
+        draw_page(t, p);
+        /* touch: one finger draws on the pages, and pans beside them */
+        if (t->tool != T_VIEW)
+            ui_touch_drag_area(GetCollisionRec(area, scene_rect_to_screen(t, page_scene_rect(t, p))));
     }
     for (int i = 0; i < t->st.items.n; i++) {
         int p = t->st.items.v[i].page;

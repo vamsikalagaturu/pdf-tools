@@ -63,6 +63,7 @@ typedef struct {
     unsigned mouse_layer;           /* layer that owns the mouse this frame */
     unsigned modal;                 /* topmost modal layer of the previous frame, or 0 */
     void *focus;                    /* text field with keyboard focus */
+    Rectangle focus_rect;           /* where it was last drawn, to keep it clear of a soft keyboard */
     int focus_taken;                /* set when a widget took focus this frame */
     unsigned active;                /* widget being pressed/dragged */
     unsigned hot;

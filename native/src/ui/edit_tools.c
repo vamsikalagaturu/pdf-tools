@@ -1147,6 +1147,7 @@ void text_box_frame(tab *t)
     pt_text_size(CTX, rf.font, *text ? text : " ", size, b->obj.box_width, &w, &h);
     fz_rect src = fz_make_rect(b->obj.rect.x0, b->obj.rect.y0, b->obj.rect.x0 + fmaxf(w, 2), b->obj.rect.y0 + h);
     Rectangle box = scene_rect_to_screen(t, to_scene(t, b->page, src));
+    ui.focus_rect = box;
     /* the text drawn by the PDF engine, as it will be saved */
     char *key = pt_format("%s|%s|%g|%d%d%d|%g|%g", text, b->obj.font, size, b->obj.rgb[0], b->obj.rgb[1], b->obj.rgb[2], b->obj.box_width, ui.scale * t->zoom);
     if (!b->preview_key || strcmp(key, b->preview_key)) {

@@ -8,10 +8,8 @@
 #ifdef PT_USE_FONTCONFIG
 #include <fontconfig/fontconfig.h>
 #elif defined(__ANDROID__)
-#include <dirent.h>
-#include <dlfcn.h>
-#include <stdbool.h>
-#include <stdint.h>
+#include <android/font.h>
+#include <android/font_matcher.h>
 #include <strings.h>
 #endif
 
@@ -212,82 +210,26 @@ static const char *generic_family(const char *family)
     return "sans-serif";
 }
 
-/* Android 10+: the NDK font matcher, looked up at run time since the APK also runs on 8 and 9 */
+/* the NDK font matcher (Android 10+; the APK needs 11) */
 static char *android_matched_font(const char *family, int bold, int italic)
 {
-    typedef void *(*create_fn)(void);
-    typedef void (*style_fn)(void *, uint16_t, bool);
-    typedef void *(*match_fn)(const void *, const char *, const uint16_t *, uint32_t, uint32_t *);
-    typedef const char *(*path_fn)(const void *);
-    typedef void (*close_fn)(void *);
-    static int tried;
-    static create_fn create;
-    static style_fn set_style;
-    static match_fn match;
-    static path_fn file_path;
-    static close_fn font_close, destroy;
-    if (!tried) {
-        tried = 1;
-        void *lib = dlopen("libandroid.so", RTLD_NOW);
-        if (lib) {
-            create = (create_fn)dlsym(lib, "AFontMatcher_create");
-            set_style = (style_fn)dlsym(lib, "AFontMatcher_setStyle");
-            match = (match_fn)dlsym(lib, "AFontMatcher_match");
-            file_path = (path_fn)dlsym(lib, "AFont_getFontFilePath");
-            font_close = (close_fn)dlsym(lib, "AFont_close");
-            destroy = (close_fn)dlsym(lib, "AFontMatcher_destroy");
-        }
-    }
-    if (!create || !set_style || !match || !file_path || !font_close || !destroy) return NULL;
-    void *m = create();
+    AFontMatcher *m = AFontMatcher_create();
     if (!m) return NULL;
-    set_style(m, bold ? 700 : 400, italic);
+    AFontMatcher_setStyle(m, bold ? AFONT_WEIGHT_BOLD : AFONT_WEIGHT_NORMAL, italic);
     /* the PDF's family first, then the generic one, as in a CSS font-family list */
     char *families = pt_format("%s, %s", family, generic_family(family));
     static const uint16_t sample[] = {'A'};
     uint32_t run;
-    void *font = match(m, families, sample, 1, &run);
+    AFont *font = AFontMatcher_match(m, families, sample, 1, &run);
     free(families);
     char *out = NULL;
     if (font) {
-        const char *p = file_path(font);
+        const char *p = AFont_getFontFilePath(font);
         if (p && font_file_ok(p)) out = pt_strdup(p);
-        font_close(font);
+        AFont_close(font);
     }
-    destroy(m);
+    AFontMatcher_destroy(m);
     return out;
-}
-
-/* Android 8 and 9: a file in /system/fonts whose name starts with the family (spaces dropped) and carries the
- * wanted style; else the generic family's Noto/Roboto/Droid file. */
-static char *android_scanned_font(const char *family, int bold, int italic)
-{
-    char compact[128] = "";
-    for (const char *c = family; *c && strlen(compact) < sizeof compact - 1; c++)
-        if (*c != ' ') strncat(compact, c, 1);
-    const char *generic = generic_family(family);
-    const char *fallback = !strcmp(generic, "serif") ? "NotoSerif" : !strcmp(generic, "monospace") ? "DroidSansMono" : "Roboto";
-    DIR *d = opendir("/system/fonts");
-    if (!d) return NULL;
-    char *best = NULL;
-    int best_score = -1;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        const char *n = e->d_name;
-        if (!font_file_ok(n)) continue;
-        int base = !strncasecmp(n, compact, strlen(compact)) && *compact ? 2
-                 : !strncasecmp(n, fallback, strlen(fallback)) ? 1 : 0;
-        if (!base) continue;
-        int has_bold = contains_ci(n, "bold") != 0, has_italic = contains_ci(n, "italic") != 0;
-        int score = base * 4 + (has_bold == !!bold) * 2 + (has_italic == !!italic);
-        if (score > best_score) {
-            free(best);
-            best = pt_format("/system/fonts/%s", n);
-            best_score = score;
-        }
-    }
-    closedir(d);
-    return best;
 }
 #endif
 
@@ -319,7 +261,6 @@ char *pt_system_font_file(const char *name)
     int bold, italic;
     pt_font_style(name, &bold, &italic);
     char *file = android_matched_font(family, bold, italic);
-    if (!file) file = android_scanned_font(family, bold, italic);
     free(family);
     return file;
 #else

@@ -82,7 +82,7 @@ void tab_restyle(tab *t) { (void)t; }
 /* ---- actions shared by toolbar, menus and shortcuts ---- */
 
 enum {
-    A_SAVE, A_SAVE_AS, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SPLIT,
+    A_SAVE, A_SAVE_AS, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_REMOVE, A_TICK, A_UNTICK,
@@ -105,6 +105,9 @@ static void run(void *ctx, intptr_t a)
     case A_PRINT: print_document(t, 0); break;
     case A_PREVIEW: print_document(t, 1); break;
     case A_COPY_PATH: tab_copy_path(t); break;
+#ifdef __ANDROID__
+    case A_SHARE: tab_share(t); break;
+#endif
     case A_SPLIT: tab_split(t); break;
     case A_UNDO: tab_undo(t); break;
     case A_REDO: tab_redo(t); break;
@@ -173,6 +176,9 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(file);
         menu_item(file, "Print...", "print", "Ctrl+P", run, t, A_PRINT, doc, 0);
         menu_item(file, "Print preview...", "print", NULL, run, t, A_PREVIEW, doc, 0);
+#ifdef __ANDROID__
+        menu_item(file, "Share...", "export", NULL, run, t, A_SHARE, doc, 0);
+#endif
         menu_sep(file);
         menu_item(file, "Copy file path", NULL, NULL, run, t, A_COPY_PATH, doc, 0);
     }
@@ -381,6 +387,9 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, "Remove password...", "unlock", NULL, run, t, A_UNPROTECT, doc && t->password, 0);
         menu_sep(m);
         menu_item(m, "Print...", "print", "Ctrl+P", run, t, A_PRINT, doc, 0);
+#ifdef __ANDROID__
+        menu_item(m, "Share...", "export", NULL, run, t, A_SHARE, doc, 0);
+#endif
         menu_open_below(m, more);
     }
     rx -= 34;

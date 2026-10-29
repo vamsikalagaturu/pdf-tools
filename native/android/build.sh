@@ -9,7 +9,8 @@ SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
 NDK=${ANDROID_NDK:-$SDK/ndk/28.2.13676358}
 BT=$SDK/build-tools/36.1.0
 ANDROID_JAR=$SDK/platforms/android-36.1/android.jar
-MIN_API=26
+# Android 11: all-files storage access, WindowInsets types and the NDK font matcher
+MIN_API=30
 # 35+ enforces edge-to-edge: system bars and display cutouts would cover the window, which raylib cannot inset
 TARGET_API=34
 ABI=arm64-v8a

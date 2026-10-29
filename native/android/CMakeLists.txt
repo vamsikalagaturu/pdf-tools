@@ -14,7 +14,7 @@ set(PT_BUILD_GUI OFF CACHE BOOL "" FORCE)
 set(PT_USE_PCRE2 ON CACHE BOOL "" FORCE)
 set(PT_USE_FONTCONFIG OFF CACHE BOOL "" FORCE)
 add_subdirectory(${PT_NATIVE} native EXCLUDE_FROM_ALL)
-target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY} dl)
+target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY} android)
 
 # raylib 6.2 for PLATFORM_ANDROID as its own CMake builds it, except that raylib_core.c (which includes rcore.c)
 # replaces rcore.c, so the window can follow rotation.

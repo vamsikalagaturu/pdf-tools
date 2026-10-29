@@ -1,16 +1,13 @@
 package io.github.vamsikalagaturu.pdftools;
 
-import android.Manifest;
 import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
@@ -24,8 +21,10 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
+import android.graphics.Insets;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -59,17 +58,13 @@ public class PdfToolsActivity extends NativeActivity {
         setIntent(intent);
     }
 
-    /* The visible system bars and display cutout over the window, in pixels: "left top right bottom". */
+    /* What covers the window, in pixels: "left top right bottom": the visible system bars, the display cutout and
+     * the soft keyboard (the window does not resize for it: adjustNothing). */
     public String systemInsets() {
-        android.view.WindowInsets w = getWindow().getDecorView().getRootWindowInsets();
+        WindowInsets w = getWindow().getDecorView().getRootWindowInsets();
         if (w == null) return null;
-        if (Build.VERSION.SDK_INT >= 30) {
-            android.graphics.Insets i = w.getInsets(android.view.WindowInsets.Type.systemBars()
-                | android.view.WindowInsets.Type.displayCutout());
-            return i.left + " " + i.top + " " + i.right + " " + i.bottom;
-        }
-        return w.getSystemWindowInsetLeft() + " " + w.getSystemWindowInsetTop() + " "
-            + w.getSystemWindowInsetRight() + " " + w.getSystemWindowInsetBottom();
+        Insets i = w.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+        return i.left + " " + i.top + " " + i.right + " " + i.bottom;
     }
 
     /* Ask for storage once, at the first start that reaches the window; later only when a file dialog opens. */
@@ -85,27 +80,19 @@ public class PdfToolsActivity extends NativeActivity {
         requestStorage();
     }
 
-    private boolean storageGranted() {
-        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
-        return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-            && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-    }
+    private boolean storageGranted() { return Environment.isExternalStorageManager(); }
 
+    /* "All files access" is a Settings page, not a runtime prompt */
     private void requestStorage() {
-        if (Build.VERSION.SDK_INT >= 30) {
+        try {
+            startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:" + getPackageName())), REQ_STORAGE);
+        } catch (Exception e) {
             try {
-                startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:" + getPackageName())), REQ_STORAGE);
-            } catch (Exception e) {
-                try {
-                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), REQ_STORAGE);
-                } catch (Exception e2) {
-                    storageAnswered();
-                }
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), REQ_STORAGE);
+            } catch (Exception e2) {
+                storageAnswered();
             }
-        } else {
-            requestPermissions(new String[] {Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
         }
     }
 
@@ -113,11 +100,6 @@ public class PdfToolsActivity extends NativeActivity {
         Intent pick = waitingPick;
         waitingPick = null;
         if (pick != null) startPick(pick);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
-        if (code == REQ_STORAGE) storageAnswered();
     }
 
     public String hasStorage() { return storageGranted() ? "1" : null; }
@@ -269,6 +251,22 @@ public class PdfToolsActivity extends NativeActivity {
             if (clip == null || clip.getItemCount() == 0) return null;
             CharSequence s = clip.getItemAt(0).coerceToText(this);
             return s == null ? null : s.toString();
+        });
+    }
+
+    /* ---- sharing ---- */
+
+    /* The share sheet for cache/share/<name>, which ShareProvider serves. */
+    public String share(String name) {
+        Uri uri = new Uri.Builder().scheme("content").authority(getPackageName() + ".share").appendPath(name).build();
+        return onUi(() -> {
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("application/pdf");
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            send.setClipData(ClipData.newRawUri(name, uri));
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(send, name));
+            return "1";
         });
     }
 

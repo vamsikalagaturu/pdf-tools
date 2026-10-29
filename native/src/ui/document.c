@@ -523,7 +523,10 @@ void tab_step_page(tab *t, int delta)
 void set_zoom(tab *t, float z)
 {
     if (!t->doc) return;
-    t->zoom = fminf(fmaxf(z, 0.3f), 6);
+    float zoom = fminf(fmaxf(z, 0.3f), 6);
+    if (zoom != t->zoom) t->zoom_t = ui.now;
+    t->zoom = zoom;
+    t->fitted = 0;
     if (continuous()) t->want_scroll_page = t->pno;
 }
 
@@ -539,6 +542,8 @@ void tab_fit_width(tab *t)
     float width = t->view.width, page_w = 0;
     for (int i = 0; i < t->st.order.n; i++) page_w = fmaxf(page_w, page_bounds(t, t->st.order.v[i]).x1);
     set_zoom(t, width > 100 && page_w > 0 ? (width - 40) / page_w : 1.5f);
+    t->fitted = width > 100 && page_w > 0;
+    t->fit_w = width;
 }
 
 /* ---- caches ---- */
@@ -561,6 +566,11 @@ Texture2D *page_texture(tab *t, int page, float scale)
         page_tex *pt = &t->pix[i];
         if (pt->ok && pt->page == page) {
             if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
+            /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
+            if (ui.now - t->zoom_t < ZOOM_SETTLE_S) {
+                ui.dirty = 1;
+                return &pt->tex;
+            }
             UnloadTexture(pt->tex);
             pt->ok = 0;
             free_slot = i;
@@ -1343,6 +1353,31 @@ void tab_copy_path(tab *t)
     SetClipboardText(t->path);
     status("Path copied", 4);
 }
+
+#ifdef __ANDROID__
+char *pt_java(const char *method, int nargs, ...);
+
+/* The edited document, as a copy under the cache's share/ folder that PdfToolsActivity's provider serves. */
+void tab_share(tab *t)
+{
+    fz_buffer *data = tab_edited(t, NULL, NULL);
+    if (!data) return;
+    const char *tmp = getenv("TMPDIR");
+    char *dir = pt_format("%s/share", tmp ? tmp : "."), *path = pt_format("%s/%s", dir, pt_basename(t->path));
+    pt_mkdirs(dir);
+    int ok = 0;
+    fz_try(CTX) {
+        fz_save_buffer(CTX, data, path);
+        ok = 1;
+    }
+    fz_always(CTX) fz_drop_buffer(CTX, data);
+    fz_catch(CTX) fz_ignore_error(CTX);
+    char *r = ok ? pt_java("share", 1, pt_basename(t->path)) : NULL;
+    if (!r) message_box(MSG_ERROR, "Share", "Could not share the document.", NULL, NULL);
+    free(r);
+    free(dir), free(path);
+}
+#endif
 
 /* ---- mark colours (settings) ---- */
 

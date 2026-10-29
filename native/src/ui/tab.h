@@ -10,6 +10,7 @@
 
 #define PAGE_GAP 12.0f
 #define PIX_CACHE 12
+#define ZOOM_SETTLE_S 0.2
 #define THUMB_W 150.0f
 #define THUMB_H 196.0f
 #define NOTE_SIZE 18.0f
@@ -103,6 +104,12 @@ struct tab {
     int nhist, caphist, nfut, capfut;
     int pno;
     float zoom;
+    int fitted;       /* the zoom is fit width, for a view fit_w wide */
+    float fit_w;
+    double zoom_t;    /* when the zoom last changed */
+    float last_view_h;
+    void *last_focus;
+    double reveal_until;   /* keep the focused field above the bottom of the view until then */
     tool_id tool;
     unsigned char manual_rgb[3], pen_rgb[3];
     float pen_width;
@@ -253,6 +260,7 @@ void tick_all(tab *t, int value);
 pt_synctex *tab_synctex(tab *t);
 void inverse_search(tab *t, fz_point scene);
 void tab_copy_path(tab *t);
+void tab_share(tab *t);   /* Android: the edited PDF to the system share sheet */
 char *mark_colour_hex(int style);
 void mark_colour(int style, unsigned char rgb[3]);
 int mark_style(void);
