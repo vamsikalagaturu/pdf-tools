@@ -258,6 +258,7 @@ const char *annot_comment(tab *t, int page, const annot_info *a);
 void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3]);
 void tab_save(tab *t);
 void tab_save_as(tab *t);
+void tab_save_optimized(tab *t);
 void tab_export(tab *t);
 void tab_protect(tab *t);
 void tab_unprotect(tab *t);

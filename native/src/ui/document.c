@@ -1035,7 +1035,7 @@ void tab_save(tab *t)
     free(msg);
 }
 
-typedef struct { tab *t; pt_ints pages; int has_pages, dpi, keep_password; char *password; } copy_job;
+typedef struct { tab *t; pt_ints pages; int has_pages, dpi, keep_password, optimize; char *password; } copy_job;
 
 static void write_copy_chosen(void *ctx, pt_strs *paths)
 {
@@ -1068,6 +1068,18 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
                 fz_drop_buffer(CTX, data);
                 data = flat;
             }
+            size_t before = data ? data->len : 0;
+            if (data && job->optimize) {
+                fz_buffer *small = NULL;
+                fz_try(CTX) small = pt_optimize(CTX, data);
+                fz_catch(CTX) {
+                    char *msg = pt_format("Could not optimize the document:\n%s", fz_caught_message(CTX));
+                    message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+                    free(msg);
+                }
+                fz_drop_buffer(CTX, data);
+                data = small;
+            }
             const char *pw = job->keep_password ? t->password : job->password;
             if (data && pw) {
                 fz_buffer *locked = NULL;
@@ -1078,7 +1090,15 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
             }
             if (data) {
                 if (pt_write_file(out, data->data, data->len)) message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
-                else tab_report(t, out, &leaks, scrubs(t, job->has_pages ? &job->pages : NULL) || job->dpi);
+                else {
+                    tab_report(t, out, &leaks, scrubs(t, job->has_pages ? &job->pages : NULL) || job->dpi);
+                    if (job->optimize) {
+                        char *msg = pt_format("Optimized copy saved: %.1f MB -> %.1f MB (%d%% smaller)", before / 1048576.0,
+                                              data->len / 1048576.0, before ? (int)lround(100.0 * (1 - (double)data->len / before)) : 0);
+                        status(msg, 8);
+                        free(msg);
+                    }
+                }
                 fz_drop_buffer(CTX, data);
             }
             pt_leaks_free(&leaks);
@@ -1106,6 +1126,19 @@ static void write_copy(tab *t, const pt_ints *pages, const char *default_name, i
     file_dialog(FD_SAVE, "Save copy", start, "PDF", "*.pdf", write_copy_chosen, job);
     free(dir);
     free(start);
+}
+
+void tab_save_optimized(tab *t)
+{
+    if (!t->doc) return;
+    char *stem = pt_stem(t->path), *name = pt_format("%s-optimized.pdf", stem);
+    copy_job *job = calloc(1, sizeof *job);
+    job->t = t;
+    job->keep_password = 1;
+    job->optimize = 1;
+    char *dir = pt_dirname(t->path), *start = pt_join(dir, name);
+    file_dialog(FD_SAVE, "Save optimized copy", start, "PDF", "*.pdf", write_copy_chosen, job);
+    free(dir), free(start), free(stem), free(name);
 }
 
 void tab_save_as(tab *t)

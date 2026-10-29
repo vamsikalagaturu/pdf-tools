@@ -819,6 +819,54 @@ fz_buffer *pt_protect(fz_context *ctx, fz_buffer *data, const char *password)
     return out;
 }
 
+/* A smaller copy, after Ghostscript's /ebook preset: colour and gray images above 225 dpi go down to 150 dpi
+ * (bicubic) and lossy ones are re-encoded as JPEG quality 75, each kept only when smaller; embedded fonts are
+ * cut to the glyphs used; objects are deduplicated and packed into object streams. */
+fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data)
+{
+    pdf_document *doc = pt_open_pdf_bytes(ctx, data->data, data->len, NULL);
+    fz_buffer *buf = NULL;
+    fz_output *out = NULL;
+    fz_var(buf);
+    fz_var(out);
+    fz_try(ctx) {
+        pdf_image_rewriter_options img = {0};
+        img.color_lossless_image_subsample_method = img.color_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC;
+        img.gray_lossless_image_subsample_method = img.gray_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC;
+        img.color_lossless_image_subsample_threshold = img.color_lossy_image_subsample_threshold = 225;
+        img.gray_lossless_image_subsample_threshold = img.gray_lossy_image_subsample_threshold = 225;
+        img.color_lossless_image_subsample_to = img.color_lossy_image_subsample_to = 150;
+        img.gray_lossless_image_subsample_to = img.gray_lossy_image_subsample_to = 150;
+        img.color_lossless_image_recompress_method = img.gray_lossless_image_recompress_method = FZ_RECOMPRESS_SAME;
+        img.color_lossy_image_recompress_method = img.gray_lossy_image_recompress_method = FZ_RECOMPRESS_JPEG;
+        img.color_lossy_image_recompress_quality = img.gray_lossy_image_recompress_quality = "75";
+        img.bitonal_image_recompress_method = FZ_RECOMPRESS_SAME;
+        img.recompress_when = FZ_RECOMPRESS_WHEN_SMALLER;
+        pdf_rewrite_images(ctx, doc, &img);
+        /* font subsetting is best effort: some fonts cannot be cut */
+        fz_try(ctx) pdf_subset_fonts(ctx, doc, 0, NULL);
+        fz_catch(ctx) fz_ignore_error(ctx);
+        pdf_write_options o = pdf_default_write_options;
+        o.do_garbage = 4;
+        o.do_compress = o.do_compress_images = o.do_compress_fonts = 1;
+        o.do_clean = 1;
+        o.do_use_objstms = 1;
+        buf = fz_new_buffer(ctx, data->len);
+        out = fz_new_output_with_buffer(ctx, buf);
+        pdf_write_document(ctx, doc, out, &o);
+        fz_close_output(ctx, out);
+    }
+    fz_always(ctx) {
+        fz_drop_output(ctx, out);
+        pdf_drop_document(ctx, doc);
+    }
+    fz_catch(ctx) {
+        fz_drop_buffer(ctx, buf);
+        fz_rethrow(ctx);
+    }
+    return buf;
+}
+
 fz_pixmap *pt_render_page(fz_context *ctx, fz_page *page, float zoom, int alpha)
 {
     return fz_new_pixmap_from_page(ctx, page, fz_scale(zoom, zoom), fz_device_rgb(ctx), alpha);

@@ -186,6 +186,7 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
 fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *password, const pt_state *s, pt_leaks *leaks);
 fz_buffer *pt_protect(fz_context *ctx, fz_buffer *data, const char *password);
 fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi);
+fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data);   /* a smaller copy (images, fonts, object streams) */
 typedef struct { char *path; pt_ints pages; } pt_part;
 PT_VEC(pt_parts, pt_part);
 fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts);

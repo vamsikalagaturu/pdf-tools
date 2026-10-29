@@ -82,7 +82,7 @@ void tab_restyle(tab *t) { (void)t; }
 /* ---- actions shared by toolbar, menus and shortcuts ---- */
 
 enum {
-    A_SAVE, A_SAVE_AS, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
+    A_SAVE, A_SAVE_AS, A_OPTIMIZE, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
@@ -104,6 +104,7 @@ static void run(void *ctx, intptr_t a)
     switch (a) {
     case A_SAVE: tab_save(t); break;
     case A_SAVE_AS: tab_save_as(t); break;
+    case A_OPTIMIZE: tab_save_optimized(t); break;
     case A_EXPORT: tab_export(t); break;
     case A_PROTECT: tab_protect(t); break;
     case A_UNPROTECT: tab_unprotect(t); break;
@@ -177,6 +178,7 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(file);
         menu_item(file, "Save (overwrite original)", "save", "Ctrl+S", run, t, A_SAVE, n > 0, 0);
         menu_item(file, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
+        menu_item(file, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(file, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
         menu_sep(file);
         menu_item(file, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
@@ -472,6 +474,7 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, "Continuous scroll", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
         menu_sep(m);
         menu_item(m, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
+        menu_item(m, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(m, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
         menu_item(m, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
         menu_item(m, "Remove password...", "unlock", NULL, run, t, A_UNPROTECT, doc && t->password, 0);
@@ -560,6 +563,7 @@ void tab_toolbar(tab *t, Rectangle area)
         int n = tab_edit_count(t);
         menu_item(m, "Save (overwrite original)", "save", "Ctrl+S", run, t, A_SAVE, n > 0, 0);
         menu_item(m, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
+        menu_item(m, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(m, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
         menu_sep(m);
         menu_item(m, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
