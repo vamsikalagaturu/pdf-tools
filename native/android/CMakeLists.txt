@@ -52,7 +52,7 @@ configure_file(${PT_GEN}/icons.c.tmp ${PT_GEN}/icons.c COPYONLY)
 # All shared window sources, unmodified; new ones are picked up on reconfigure.
 file(GLOB PT_UI_SOURCES CONFIGURE_DEPENDS ${PT_NATIVE}/src/ui/*.c)
 add_library(pdf-tools SHARED
-  ${PT_UI_SOURCES} glfw_stubs.c android_main.c
+  ${PT_UI_SOURCES} glfw_stubs.c android_main.c file_dialog_android.c
   ${PT_GEN}/ui_font.c ${PT_GEN}/ui_font_bold.c ${PT_GEN}/man.c ${PT_GEN}/icons.c ${PT_ICON_SOURCES})
 target_include_directories(pdf-tools PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PT_NATIVE}/src/ui ${PT_NATIVE}/thirdparty/raygui/src
   ${ANDROID_NDK}/sources/android/native_app_glue)
@@ -62,6 +62,9 @@ set_source_files_properties(${PT_NATIVE}/src/ui/app.c PROPERTIES COMPILE_DEFINIT
   "main=pt_app_main;InitWindow=pt_android_init_window;file_dialogs_poll=pt_android_frame;run_detached=pt_android_run_detached")
 set_source_files_properties(${PT_NATIVE}/src/ui/widgets.c PROPERTIES COMPILE_DEFINITIONS
   "GetCharPressed=pt_android_char_pressed;GetMouseWheelMoveV=pt_android_wheel")
+# the system document picker (file_dialog_android.c) instead of zenity/kdialog/the built-in browser
+set_source_files_properties(${PT_NATIVE}/src/ui/file_dialog.c PROPERTIES COMPILE_DEFINITIONS
+  "file_dialog=pt_desktop_file_dialog;file_dialogs_poll=pt_desktop_file_dialogs_poll;file_dialog_busy=pt_desktop_file_dialog_busy;move_to_trash=pt_desktop_move_to_trash")
 # C++ link for MuPDF's HarfBuzz (libc++ is static: ANDROID_STL defaults to c++_static)
 set_target_properties(pdf-tools PROPERTIES LINKER_LANGUAGE CXX)
 # -u keeps the glue's entry point, which nothing in the library references

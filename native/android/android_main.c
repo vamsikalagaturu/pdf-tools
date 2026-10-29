@@ -58,15 +58,6 @@ static jobject call_obj(JNIEnv *e, jobject o, const char *name, const char *sig,
     return jfailed(e) ? NULL : r;
 }
 
-static void call_void(JNIEnv *e, jobject o, const char *name)
-{
-    jclass c = (*e)->GetObjectClass(e, o);
-    jmethodID m = (*e)->GetMethodID(e, c, name, "()V");
-    (*e)->DeleteLocalRef(e, c);
-    if (!jfailed(e) && m) (*e)->CallVoidMethod(e, o, m);
-    jfailed(e);
-}
-
 static char *jstr(JNIEnv *e, jobject s)
 {
     if (!s) return NULL;
@@ -79,6 +70,33 @@ static char *jstr(JNIEnv *e, jobject s)
 static char *dir_of(JNIEnv *e, jobject file)
 {
     return jstr(e, call_obj(e, file, "getAbsolutePath", "()Ljava/lang/String;"));
+}
+
+char *pt_java(const char *method, int nargs, ...)
+{
+    JNIEnv *e = jni();
+    (*e)->PushLocalFrame(e, 16);
+    char sig[160] = "(";
+    jvalue args[4] = {0};
+    va_list ap;
+    va_start(ap, nargs);
+    for (int i = 0; i < nargs && i < 4; i++) {
+        const char *s = va_arg(ap, const char *);
+        args[i].l = s ? (*e)->NewStringUTF(e, s) : NULL;
+        strcat(sig, "Ljava/lang/String;");
+    }
+    va_end(ap);
+    strcat(sig, ")Ljava/lang/String;");
+    jobject act = GetAndroidApp()->activity->clazz;
+    jclass c = (*e)->GetObjectClass(e, act);
+    jmethodID m = (*e)->GetMethodID(e, c, method, sig);
+    char *r = NULL;
+    if (!jfailed(e) && m) {
+        jobject s = (*e)->CallObjectMethodA(e, act, m, args);
+        if (!jfailed(e)) r = jstr(e, s);
+    }
+    (*e)->PopLocalFrame(e, NULL);
+    return r;
 }
 
 /* ---- environment ---- */
@@ -98,12 +116,16 @@ static void setup_environment(void)
     pt_mkdirs(data);
     pt_mkdirs(run);
     chmod(run, 0700);
-    setenv("HOME", files, 1);
+    /* HOME is where dialogs start and what Home shortens to "~": the shared Download folder once storage access
+     * is granted; settings stay in files/ through XDG_CONFIG_HOME either way. */
+    char *shared = pt_java("sharedFolder", 0);
+    setenv("HOME", shared ? shared : files, 1);
+    free(shared);
     setenv("XDG_CONFIG_HOME", config, 1);
     setenv("XDG_DATA_HOME", data, 1);
     setenv("XDG_RUNTIME_DIR", run, 1);
     setenv("TMPDIR", cache_dir, 1);
-    setenv("PDF_TOOLS_BUILTIN_CHOOSER", "1", 1);
+    pt_android_cache_dir = cache_dir;
     /* the app-specific external folder is the one place a PC (USB/MTP) can reach without a storage permission */
     if (external) {
         char *link = pt_join(files, "external");
@@ -117,66 +139,6 @@ static void setup_environment(void)
 
 /* ---- PDFs from other apps ---- */
 
-static char *display_name(JNIEnv *e, jobject resolver, jobject uri)
-{
-    jclass strc = (*e)->FindClass(e, "java/lang/String");
-    jobjectArray cols = (*e)->NewObjectArray(e, 1, strc, (*e)->NewStringUTF(e, "_display_name"));
-    jobject cur = call_obj(e, resolver, "query",
-                           "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
-                           uri, cols, NULL, NULL, NULL);
-    char *name = NULL;
-    if (cur) {
-        jclass c = (*e)->GetObjectClass(e, cur);
-        jmethodID first = (*e)->GetMethodID(e, c, "moveToFirst", "()Z");
-        if ((*e)->CallBooleanMethod(e, cur, first) && !jfailed(e))
-            name = jstr(e, call_obj(e, cur, "getString", "(I)Ljava/lang/String;", (jint)0));
-        jfailed(e);
-        call_void(e, cur, "close");
-    }
-    if (!name) name = jstr(e, call_obj(e, uri, "getLastPathSegment", "()Ljava/lang/String;"));
-    if (!name || !*name) free(name), name = pt_strdup("document.pdf");
-    for (char *p = name; *p; p++)
-        if (*p == '/' || *p == '\\') *p = '_';
-    if (*name == '.') *name = '_';
-    if (!strrchr(name, '.')) {
-        char *with = pt_format("%s.pdf", name);
-        free(name);
-        name = with;
-    }
-    return name;
-}
-
-/* Copy a content:// document into cache/opened/<name>: MuPDF and the file watcher need a real path. */
-static char *copy_content(JNIEnv *e, jobject uri)
-{
-    jobject resolver = call_obj(e, GetAndroidApp()->activity->clazz, "getContentResolver", "()Landroid/content/ContentResolver;");
-    if (!resolver) return NULL;
-    jobject in = call_obj(e, resolver, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;", uri);
-    if (!in) return NULL;
-    char *name = display_name(e, resolver, uri);
-    char *dir = pt_join(cache_dir, "opened"), *dest = pt_join(dir, name), *part = pt_format("%s.part", dest);
-    pt_mkdirs(dir);
-    int fd = open(part, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600), ok = fd >= 0;
-    jclass c = (*e)->GetObjectClass(e, in);
-    jmethodID rd = (*e)->GetMethodID(e, c, "read", "([B)I");
-    jbyteArray buf = (*e)->NewByteArray(e, 1 << 16);
-    static jbyte chunk[1 << 16];
-    while (ok) {
-        jint n = (*e)->CallIntMethod(e, in, rd, buf);
-        if (jfailed(e)) ok = 0;
-        if (!ok || n < 0) break;
-        (*e)->GetByteArrayRegion(e, buf, 0, n, chunk);
-        if (write(fd, chunk, (size_t)n) != n) ok = 0;
-    }
-    call_void(e, in, "close");
-    if (fd >= 0 && close(fd)) ok = 0;
-    if (ok && rename(part, dest)) ok = 0;
-    if (!ok) unlink(part), LOG("could not copy %s", name);
-    free(name), free(dir), free(part);
-    if (!ok) free(dest), dest = NULL;
-    return dest;
-}
-
 static jobject last_intent;
 
 /* PdfToolsActivity.onNewIntent() calls setIntent(), so a changed getIntent() is a new document. */
@@ -189,9 +151,12 @@ static void check_intent(void)
         if (last_intent) (*e)->DeleteGlobalRef(e, last_intent);
         last_intent = (*e)->NewGlobalRef(e, intent);
         jobject uri = call_obj(e, intent, "getData", "()Landroid/net/Uri;");
-        char *scheme = jstr(e, call_obj(e, uri, "getScheme", "()Ljava/lang/String;")), *path = NULL;
-        if (scheme && !strcmp(scheme, "file")) path = jstr(e, call_obj(e, uri, "getPath", "()Ljava/lang/String;"));
-        else if (scheme && !strcmp(scheme, "content")) path = copy_content(e, uri);
+        char *text = jstr(e, call_obj(e, uri, "toString", "()Ljava/lang/String;")), *path = NULL;
+        if (text && !strncmp(text, "file://", 7)) path = jstr(e, call_obj(e, uri, "getPath", "()Ljava/lang/String;"));
+        else if (text && !strncmp(text, "content:", 8)) {
+            free(pt_java("keep", 1, text));
+            path = pt_android_open_uri(text);
+        }
         if (path) {
             pt_strs paths = {0};
             pt_push(paths, path);
@@ -199,7 +164,7 @@ static void check_intent(void)
             pt_strs_free(&paths);
             ui.dirty = 1;
         } else if (uri) status("Could not open the document.", 5);
-        free(scheme);
+        free(text);
     }
     (*e)->PopLocalFrame(e, NULL);
 }

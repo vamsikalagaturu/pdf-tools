@@ -863,8 +863,12 @@ static void save_confirmed(void *ctx, int yes)
 void tab_save(tab *t)
 {
     if (!tab_edit_count(t)) return;
+#ifdef __ANDROID__
+    char *msg = pt_format("Overwrite %s with the edited version?", pt_basename(t->path));
+#else
     char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the trash (restore with trash-restore).",
                           pt_basename(t->path));
+#endif
     question_box("Overwrite original", msg, "Overwrite", "Cancel", save_confirmed, t);
     free(msg);
 }
