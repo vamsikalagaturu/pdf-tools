@@ -15,10 +15,18 @@ set(PT_USE_FONTCONFIG OFF CACHE BOOL "" FORCE)
 add_subdirectory(${PT_NATIVE} native EXCLUDE_FROM_ALL)
 target_link_libraries(ptcore PUBLIC ${MUPDF_THIRD_LIBRARY})
 
-set(PLATFORM Android CACHE STRING "" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(CUSTOMIZE_BUILD OFF CACHE BOOL "" FORCE)
-add_subdirectory(${PT_NATIVE}/thirdparty/raylib raylib EXCLUDE_FROM_ALL)
+# raylib 6.2 for PLATFORM_ANDROID as its own CMake builds it, except that raylib_core.c (which includes rcore.c)
+# replaces rcore.c, so the window can follow rotation.
+set(RAYLIB_SRC ${PT_NATIVE}/thirdparty/raylib/src)
+add_library(raylib STATIC raylib_core.c ${RAYLIB_SRC}/rshapes.c ${RAYLIB_SRC}/rtext.c ${RAYLIB_SRC}/rtextures.c
+  ${RAYLIB_SRC}/raudio.c ${RAYLIB_SRC}/rmodels.c ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+set_target_properties(raylib PROPERTIES C_STANDARD 99 C_EXTENSIONS ON)
+target_compile_definitions(raylib PUBLIC PLATFORM_ANDROID GRAPHICS_API_OPENGL_ES2)
+target_include_directories(raylib PUBLIC ${RAYLIB_SRC} ${ANDROID_NDK}/sources/android/native_app_glue)
+target_compile_options(raylib PRIVATE -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith)
+# raylib's own build wraps fopen for APK asset loading; rcore_android.c defines __wrap_fopen and needs __real_fopen
+target_link_options(raylib PUBLIC -Wl,--wrap=fopen)
+target_link_libraries(raylib PUBLIC log android EGL GLESv2 OpenSLES m)
 
 # The window's embedded files, generated as in native/CMakeLists.txt (pt_embed is defined there).
 set(PT_GEN ${CMAKE_CURRENT_BINARY_DIR}/generated)

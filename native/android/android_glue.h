@@ -11,6 +11,7 @@ extern pt_glfw_mouse_fn pt_glfw_mouse;   /* widgets.c's callbacks, registered th
 extern pt_glfw_key_fn pt_glfw_key;
 
 double pt_android_wait_limit(void);      /* seconds the idle wait may sleep */
+void pt_raylib_follow_window(void);      /* raylib_core.c: adopt the window's current size */
 
 /* Replacements the build substitutes into the shared sources with -D (see CMakeLists.txt):
  * app.c:     main, InitWindow, file_dialogs_poll, run_detached

@@ -18,9 +18,9 @@ the repo. Re-runs are incremental.
 1. Downloads `mupdf-1.28.5-source.tar.gz` (checked against a pinned SHA-256), builds `libmupdf.a` and
    `libmupdf-third.a` with the NDK clang (API 26). A dummy `pkg-config` keeps host libraries out.
 2. Configures `native/android/CMakeLists.txt` with the NDK toolchain. It pulls in `native/CMakeLists.txt`
-   (for `ptcore`, `ptcli` and `pt_embed`; GUI, PCRE2 and fontconfig off) and raylib 6.2 from
-   `native/thirdparty/raylib` with `PLATFORM=Android`, and links every `native/src/ui/*.c` (globbed, unmodified)
-   plus the Android files below into `libpdf-tools.so`.
+   (for `ptcore`, `ptcli` and `pt_embed`; GUI, PCRE2 and fontconfig off), builds raylib 6.2 from
+   `native/thirdparty/raylib` for `PLATFORM_ANDROID` with `raylib_core.c` in place of `rcore.c`, and links every
+   `native/src/ui/*.c` (globbed, unmodified) plus the Android files below into `libpdf-tools.so`.
 3. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest and icon with `aapt2`
    (minSdk 26, targetSdk 34, `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16`
    and signs with `apksigner` using a debug keystore created in the cache folder.
@@ -34,9 +34,10 @@ would cover the window, and raylib cannot inset its framebuffer.
 | --- | --- |
 | `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR`, `TMPDIR` and `PDF_TOOLS_BUILTIN_CHOOSER=1`, runs app.c's `main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), two-finger drag into wheel scrolling, Back into Escape. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
 | `glfw_stubs.c` | The GLFW symbols the shared sources call. Cursor, focus and close calls are no-ops; the mouse/key callback setters store widgets.c's handlers; `glfwWaitEventsTimeout` sleeps on the ALooper so an idle window does not redraw at 60 fps. |
-| `android_glue.h` | Declarations shared by the two files. |
+| `raylib_core.c` | `#include "rcore.c"` plus `pt_raylib_follow_window()`, which needs raylib's static `CORE`/`platform`: raylib sizes its framebuffer once at window creation and has no public resize on Android. Each frame it sets the buffer geometry to follow the window (0x0, also after a surface rebind), and when the EGL surface size differs from `GetScreenWidth/Height` it updates display/screen/render/current-FBO size, clears the render offset and screen scale, and resets rlgl's framebuffer size, viewport and projection (`SetupViewport`). Scissor and touch scaling read those fields. After a config change, resize or new window, `android_main.c` keeps drawing for 1 s so the surface reaches the new size. If raylib is upgraded, check that the field names still match. |
+| `android_glue.h` | Declarations shared by the files above. |
 | `java/.../PdfToolsActivity.java` | `NativeActivity` subclass whose `onNewIntent()` calls `setIntent()`, so a PDF opened from another app while the window runs reaches the native side. |
-| `AndroidManifest.xml` | Landscape (`sensorLandscape`), `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. No permissions. |
+| `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. No permissions. |
 
 ### Substitutions in shared sources (keep in sync)
 
@@ -77,5 +78,4 @@ touch (a mouse works: right and middle buttons, wheel). Back acts as Escape and 
 Printing (no `lp`), SyncTeX (no `synctex` binary), editor commands, new windows and `--forward`, clipboard
 (raylib's Android platform has none), regular-expression redaction (built without PCRE2), font matching via
 fontconfig. Text input from the soft keyboard is limited to characters that map to key events (no IME
-composition, so CJK and similar input do not arrive). Rotation is locked to landscape: raylib does not resize
-its framebuffer.
+composition, so CJK and similar input do not arrive).

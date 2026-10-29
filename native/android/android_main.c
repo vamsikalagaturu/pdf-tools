@@ -381,10 +381,26 @@ int pt_android_char_pressed(void)
 
 Vector2 pt_android_wheel(void) { return wheel_frame; }
 
+/* After a rotation the surface takes the new size only once a frame has been drawn into a new buffer, so the
+ * window keeps drawing for a moment instead of idling at the old size. */
+static double resizing_until;
+
 double pt_android_wait_limit(void)
 {
-    if (nchars || wheel_acc.x || wheel_acc.y) return 0;
+    if (nchars || wheel_acc.x || wheel_acc.y || GetTime() < resizing_until) return 0;
     return touch.pending ? 0.05 : 1e9;
+}
+
+static void (*raylib_cmd)(struct android_app *, int32_t);
+
+static void on_cmd(struct android_app *a, int32_t cmd)
+{
+    raylib_cmd(a, cmd);
+    if (cmd == APP_CMD_CONFIG_CHANGED || cmd == APP_CMD_WINDOW_RESIZED || cmd == APP_CMD_CONTENT_RECT_CHANGED ||
+        cmd == APP_CMD_INIT_WINDOW) {
+        resizing_until = GetTime() + 1;
+        ui.dirty = 1;
+    }
 }
 
 /* ---- hooks in app.c ---- */
@@ -396,6 +412,9 @@ void pt_android_init_window(int width, int height, const char *title)
     struct android_app *a = GetAndroidApp();
     raylib_input = a->onInputEvent;
     a->onInputEvent = on_input;
+    raylib_cmd = a->onAppCmd;
+    a->onAppCmd = on_cmd;
+    pt_raylib_follow_window();
 }
 
 void pt_android_frame(void)
@@ -404,6 +423,7 @@ void pt_android_frame(void)
     static double intent_checked = -1;
     static int keyboard;
     if (a->destroyRequested) app.quit = 1;
+    pt_raylib_follow_window();
     file_dialogs_poll();
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
