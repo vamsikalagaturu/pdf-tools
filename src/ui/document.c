@@ -1521,6 +1521,9 @@ static void save_confirmed(void *ctx, int yes)
     char *tmp = pt_format("%s/.%s.XXXXXX", dir, pt_basename(t->path));
     free(dir);
     int fd = mkstemp(tmp);
+    /* mkstemp makes the file rw------- and it takes the original's place: keep the original's permissions */
+    struct stat st;
+    if (fd >= 0 && !stat(t->path, &st)) fchmod(fd, st.st_mode & 07777);
     int ok = fd >= 0 && write(fd, data->data, data->len) == (ssize_t)data->len;
     if (fd >= 0) close(fd);
     fz_drop_buffer(CTX, data);
