@@ -2,7 +2,8 @@
 
 `pdf-tools` is a PDF viewer/editor with a window, plus commands that run without one. Use the
 commands: they never prompt, print one JSON object on stdout, and exit with a meaningful code.
-`pdf-tools help` prints this file; `pdf-tools COMMAND --help` lists a command's options.
+`pdf-tools help` prints this file; `pdf-tools COMMAND --help` lists a command's options;
+`pdf-tools --version` prints `pdf-tools X.Y.Z (MuPDF X.Y.Z)`.
 
 Conventions: pages are 1-based; ranges look like `1-3,7`; coordinates are PDF points
 (1/72 inch) measured from the page's top-left corner; output never overwrites the input

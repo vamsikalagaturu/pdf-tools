@@ -86,8 +86,7 @@ APP="$ROOT/out/PDF Tools.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/build/pdf-tools" "$APP/Contents/MacOS/pdf-tools"
-VERSION=$(git -C "$REPO" describe --tags --always 2>/dev/null || echo 0.1.0)
-sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
+sed "s/@VERSION@/$PT_VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources/tessdata"
 cp "$ROOT/dl/eng.traineddata" "$APP/Contents/Resources/tessdata/"
 # the icon: logo.svg drawn by mutool at 1024 px, then the iconset sizes

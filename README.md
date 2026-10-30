@@ -68,6 +68,7 @@ pdf-tools file.pdf                          # open in the window
 pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}'
 pdf-tools info in.pdf
 pdf-tools COMMAND --help
+pdf-tools --version
 ```
 
 Commands print one JSON object and exit with a meaningful code; `AGENTS.md` documents them. Others: `search`,

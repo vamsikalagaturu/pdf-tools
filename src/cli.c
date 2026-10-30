@@ -1949,6 +1949,7 @@ void pt_cli_usage(FILE *out)
           "  pdf-tools --new-window [file.pdf ...]          open in a new window\n"
           "  pdf-tools --forward file.pdf LINE source.tex   SyncTeX: show where a source line is typeset\n"
           "  pdf-tools --install-desktop | --uninstall-desktop\n"
+          "  pdf-tools --version\n"
           "  pdf-tools COMMAND ...                          without the window, JSON output:\n"
           "      info redact fill pages merge split protect unprotect flatten synctex\n"
           "      search render annotate draw insert-text insert-image sign prepare-signature scrub inspect\n"
@@ -1972,6 +1973,10 @@ int pt_cli_main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
         pt_cli_usage(stdout);
+        return OK;
+    }
+    if (!strcmp(argv[1], "--version")) {
+        printf("pdf-tools %s (MuPDF %s)\n", PT_VERSION, FZ_VERSION);
         return OK;
     }
     const cmd *c = NULL;

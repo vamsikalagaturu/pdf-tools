@@ -277,7 +277,7 @@ static void reset_accent(void)
 void app_about(void)
 {
     message_box(MSG_INFO, "About " APP_NAME,
-                APP_NAME "\n\nView, redact, fill, annotate, sign and merge PDFs.\n\n" REPO_URL
+                APP_NAME " " PT_VERSION "\n\nView, redact, fill, annotate, sign and merge PDFs.\n\n" REPO_URL
                          "\n\nLicense: AGPL-3.0-or-later. Icons: Lucide (ISC). UI font: Noto Sans (OFL-1.1).\n"
                          "Native build: MuPDF, raylib, raygui.",
                 NULL, NULL);

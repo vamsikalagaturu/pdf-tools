@@ -113,8 +113,11 @@ MANIFEST=$HERE/AndroidManifest.xml
 "$BT/aapt2" compile --dir "$HERE/res" -o "$APK/res.zip"
 mkdir -p "$APK/assets/tessdata"
 cp "$TESSDATA" "$APK/assets/tessdata/eng.traineddata"
+# versionCode must grow with each release: 1.2.3 -> 10203
+IFS=. read -r V_MAJOR V_MINOR V_PATCH <<<"$PT_VERSION"
 "$BT/aapt2" link -o "$APK/unsigned.apk" -I "$ANDROID_JAR" --manifest "$MANIFEST" -R "$APK/res.zip" -A "$APK/assets" \
-    --min-sdk-version $MIN_API --target-sdk-version $TARGET_API --debug-mode --auto-add-overlay
+    --min-sdk-version $MIN_API --target-sdk-version $TARGET_API --debug-mode --auto-add-overlay \
+    --version-name "$PT_VERSION" --version-code $((V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH))
 
 step "package"
 "$TC/llvm-strip" --strip-unneeded -o "$APK/lib/$ABI/libpdf-tools.so" "$ROOT/build/libpdf-tools.so"

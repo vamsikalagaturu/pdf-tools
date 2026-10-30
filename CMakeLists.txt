@@ -119,6 +119,8 @@ if(PT_USE_OPENSSL)
   endif()
 endif()
 
+target_compile_definitions(ptcore PUBLIC PT_VERSION="${PROJECT_VERSION}")
+
 add_library(ptcli STATIC src/cli.c ${PT_GEN}/agents_md.c)
 target_link_libraries(ptcli PUBLIC ptcore)
 target_compile_options(ptcli PRIVATE -Wall -Wextra -Wno-clobbered)

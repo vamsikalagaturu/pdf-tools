@@ -2,6 +2,9 @@
 # settings all of them are compiled with. Sourced by platform/{linux,macos,android}/build.sh; the CI workflow runs
 # those scripts.
 
+# the app's own version, from project() in CMakeLists.txt
+PT_VERSION=$(sed -n 's/^project(pdf_tools VERSION \([0-9.]*\).*/\1/p' "$(dirname "${BASH_SOURCE[0]}")/../CMakeLists.txt")
+
 # optimised for speed, each function and object in its own section, so the final link drops what nothing uses
 SIZE_CFLAGS="-O2 -ffunction-sections -fdata-sections"
 # build folders named after the settings, so a change rebuilds everything with them
