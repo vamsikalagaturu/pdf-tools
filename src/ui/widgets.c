@@ -691,7 +691,7 @@ int ui_swatch_button(unsigned id, Rectangle r, const unsigned char rgb[3], int c
     if (hover && ui.pressed) ui.active = id;
     if (checked) ui_panel(r, BLANK, pal.highlight, 4), DrawRectangleLinesEx(r, 2, pal.highlight);
     else if (hover) ui_panel(r, pal.button, pal.border, 4);
-    ui_swatch((Rectangle){r.x + 5, r.y + (r.height - 16) / 2, 16, 16}, rgb);
+    ui_swatch((Rectangle){r.x + (r.width - 16) / 2, r.y + (r.height - 16) / 2, 16, 16}, rgb);
     ui_tooltip(id, r, tip);
     return hover && ui.released && ui.active == id;
 }
