@@ -167,6 +167,8 @@ void tab_free(tab *t)
     pt_vec_free(t->annot_types);
     pt_vec_free(t->sync_marks);
     free(t->ticked);
+    free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
+    free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);

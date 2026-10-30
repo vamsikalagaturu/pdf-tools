@@ -37,7 +37,7 @@ would cover the window, and raylib cannot inset its framebuffer.
 
 | File | Why |
 | --- | --- |
-| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (shared Download folder with storage access, else `files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), one- and two-finger drags into wheel scrolling, Back into Escape or a close prompt. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
+| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (shared Download folder with storage access, else `files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `pt_app_main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), one- and two-finger drags into wheel scrolling, Back into Escape or a close prompt. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
 | `glfw_stubs.c` | The GLFW symbols the shared sources call. Cursor, focus and close calls are no-ops; the mouse/key callback setters store widgets.c's handlers; `glfwWaitEventsTimeout` sleeps on the ALooper so an idle window does not redraw at 60 fps. |
 | `raylib_core.c` | `#include "rcore.c"` plus `pt_raylib_follow_window()`, which needs raylib's static `CORE`/`platform`: raylib sizes its framebuffer once at window creation and has no public resize on Android. Each frame it sets the buffer geometry to follow the window (0x0, also after a surface rebind), and when the EGL surface size differs from `GetScreenWidth/Height` it updates display/screen/render/current-FBO size, clears the render offset and screen scale, and resets rlgl's framebuffer size, viewport and projection (`SetupViewport`). Scissor and touch scaling read those fields. After a config change, resize or new window, `android_main.c` keeps drawing for 1 s so the surface reaches the new size. If raylib is upgraded, check that the field names still match. |
 | `file_dialog_android.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` for Android: the system document picker, copies of `content://` documents and writing them back (see below). |
@@ -51,7 +51,6 @@ The shared files are compiled unmodified; `CMakeLists.txt` renames a few calls p
 
 | File | Name | Replacement | Why |
 | --- | --- | --- | --- |
-| `app.c` | `main` | `pt_app_main` | `android_main.c` provides `main` and calls it after setting up the environment. |
 | `app.c` | `InitWindow` | `pt_android_init_window` | Uses `InitWindow(0, 0)` (the whole display, not a 1280x1100 framebuffer scaled into it) and installs the input hook. |
 | `app.c` | `file_dialogs_poll` | `pt_android_frame` | Per-frame hook (keyboard, intents, deferred touch press, wheel), then calls the real function. |
 | `app.c` | `run_detached` | `pt_android_run_detached` | There is no second window. "Move to new window" reopens the tab in this window instead of losing it. |

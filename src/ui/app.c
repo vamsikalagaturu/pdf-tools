@@ -696,7 +696,7 @@ static void log_to_raylib(pt_log_level level, const char *message)
     TraceLog(RAYLIB_LEVEL[level], "%s", message);
 }
 
-int main(int argc, char **argv)
+int pt_app_main(int argc, char **argv)
 {
     if (argc == 2 && (!strcmp(argv[1], "--install-desktop") || !strcmp(argv[1], "--uninstall-desktop"))) {
         if (!strcmp(argv[1], "--install-desktop")) {
@@ -723,7 +723,6 @@ int main(int argc, char **argv)
         pt_cli_usage(stdout);
         return 0;
     }
-    if (argc > 1 && (!strcmp(argv[1], "help") || pt_cli_is_command(argv[1]))) return pt_cli_main(argc, argv);
 
     const char *adopt = argc == 3 && !strcmp(argv[1], "--adopt") ? argv[2] : NULL;
     int new_window = 0;
