@@ -2,6 +2,7 @@
  * the comment popover, the text box typed on the page with its format bar, and find. */
 #include "tab.h"
 #include "dialogs.h"
+#include "doc_tools.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -405,7 +406,8 @@ void on_band(tab *t, fz_rect scene)
     int page = page_at(t, (fz_point){(scene.x0 + scene.x1) / 2, (scene.y0 + scene.y1) / 2});
     if (page < 0) return;
     fz_rect sel = scene_to_src(t, page, scene);
-    if (t->tool == T_REDACT) add_redaction_rects(t, page, &sel, 1);
+    if (t->tool == T_SIGN && cert_placing(t)) cert_place(t, page, sel);
+    else if (t->tool == T_REDACT) add_redaction_rects(t, page, &sel, 1);
     else if (t->tool == T_CROP) crop_menu(t, page, sel);
     else if (t->tool == T_TEXT) start_text(t, page, (fz_point){sel.x0, sel.y0}, sel.x1 - sel.x0, -1);
     else if (t->tool == T_IMAGE) pick_image(t, page, sel, -1);
@@ -434,6 +436,7 @@ void on_click(tab *t, fz_point scene)
     if (page < 0 || !fz_is_point_inside_rect(scene, page_scene_rect(t, page))) return;
     fz_point pos = scene_to_src_point(t, page, scene);
     if (t->tool == T_TEXT) start_text(t, page, pos, 0, -1);
+    else if (t->tool == T_SIGN && cert_placing(t)) cert_place(t, page, fz_make_rect(pos.x, pos.y, pos.x + 200, pos.y + 70));
     else if (t->tool == T_SIGN) place_signature(t, pos, page);
     else if (t->tool == T_IMAGE) pick_image(t, page, fz_make_rect(pos.x, pos.y, pos.x, pos.y), -1);
     else if (t->tool == T_NOTE) place_note(t, pos, page);

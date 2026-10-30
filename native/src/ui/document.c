@@ -2,6 +2,7 @@
  * watching and SyncTeX. */
 #include "tab.h"
 #include "dialogs.h"
+#include "doc_tools.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,6 +166,8 @@ void tab_free(tab *t)
     pt_vec_free(t->annot_types);
     pt_vec_free(t->sync_marks);
     free(t->ticked);
+    free(t->cert_path);
+    if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);
 }
 
@@ -636,7 +639,8 @@ void tab_step_page(tab *t, int delta)
 {
     int i = order_index(t, t->pno);
     if (i < 0) return;
-    i += delta;
+    int start = spread_start(t, i);
+    i = delta > 0 ? start + spread_len(t, start) : spread_start(t, start - 1);
     if (i >= 0 && i < t->st.order.n) tab_goto(t, t->st.order.v[i]);
 }
 
@@ -663,10 +667,12 @@ static float fit_zoom(tab *t, fit_mode fit)
     float page_w = 0, page_h = 0;
     for (int i = 0; i < t->st.order.n; i++) {
         fz_rect b = page_bounds(t, t->st.order.v[i]);
-        page_w = fmaxf(page_w, b.x1), page_h = fmaxf(page_h, b.y1);
+        page_h = fmaxf(page_h, b.y1);
+        if (spread_start(t, i) == i) page_w = fmaxf(page_w, spread_width(t, i));
     }
     if (fit == FIT_HEIGHT) return t->view.height > 100 && page_h > 0 ? t->view.height / (page_h + 2 * PAGE_GAP) : 0;
-    return t->view.width > 100 && page_w > 0 ? (t->view.width - 40) / page_w : 0;
+    /* the gaps beside the pages scale with the zoom; 14 px stay for the vertical scrollbar */
+    return t->view.width > 100 && page_w > 0 ? (t->view.width - 14) / (page_w + 2 * PAGE_GAP) : 0;
 }
 
 /* Zoom buttons and keys: the zoom glides to `target` around the middle of the view (page_view.c); a fit mode
@@ -1051,6 +1057,8 @@ static void save_confirmed(void *ctx, int yes)
         if (!locked) return;
         data = locked;
     }
+    data = cert_sign_output(t, data, NULL, t->password);
+    if (!data) return;
     char *dir = pt_dirname(t->path);
     char *tmp = pt_format("%s/.%s.XXXXXX", dir, pt_basename(t->path));
     free(dir);
@@ -1149,6 +1157,7 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
                 fz_drop_buffer(CTX, data);
                 data = locked;
             }
+            if (data && !job->dpi) data = cert_sign_output(t, data, job->has_pages ? &job->pages : NULL, pw);
             if (data) {
                 if (pt_write_file(out, data->data, data->len)) message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
                 else {

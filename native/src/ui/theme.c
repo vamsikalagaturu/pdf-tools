@@ -1,5 +1,6 @@
 /* Dark and light themes: the colours every widget draws with. */
 #include "ui.h"
+#include <stdio.h>
 #include <string.h>
 
 ui_palette pal;
@@ -24,6 +25,14 @@ void theme_apply(const char *mode)
             .disabled_text = hex(0x7a7a7a), .placeholder = hex(0x8a8a8a), .link = hex(0x6ab0ff),
             .tooltip = hex(0x2b2b2b), .page_bg = hex(0x5f6368), .border = hex(0x4a4a4a), .dark_mode = 1,
         };
+    }
+    /* the user's accent for this theme, with black or white text on it, whichever contrasts more (Rec. 709 luma) */
+    const char *accent = pt_settings_str(&app.settings, pal.dark_mode ? "accent_colour_dark" : "accent_colour_light");
+    unsigned v;
+    if (accent && accent[0] == '#' && strlen(accent) == 7 && sscanf(accent + 1, "%6x", &v) == 1) {
+        pal.highlight = hex(v);
+        float luma = 0.2126f * pal.highlight.r + 0.7152f * pal.highlight.g + 0.0722f * pal.highlight.b;
+        pal.highlighted_text = luma > 150 ? hex(0x111111) : hex(0xffffff);
     }
 }
 

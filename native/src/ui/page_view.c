@@ -1,6 +1,7 @@
 /* The page canvas of a document tab: lays out the pages, draws them with their edits, annotations, crops and
  * overlays, and turns mouse input into selections, bands, strokes, clicks and item moves for edit_tools.c. */
 #include "tab.h"
+#include "doc_tools.h"
 #include "rlgl.h"
 #include <math.h>
 #include <stdlib.h>
@@ -197,23 +198,50 @@ void layout_scene(tab *t)
     if (!t->doc || !t->st.order.n) return;
     int cont = continuous();
     if (order_index(t, t->pno) < 0) t->pno = t->st.order.v[0];
+    /* rows of one page, or two side by side (a spread); one page at a time shows the row of the current page */
+    int here = spread_start(t, order_index(t, t->pno));
     float width = 0;
-    for (int i = 0; i < t->st.order.n; i++) {
-        int p = t->st.order.v[i];
-        if (!cont && p != t->pno) continue;
-        width = fmaxf(width, page_bounds(t, p).x1);
+    for (int i = 0; i < t->st.order.n; i += spread_len(t, i)) {
+        if (!cont && i != here) continue;
+        width = fmaxf(width, spread_width(t, i));
     }
     float y = 0;
-    for (int i = 0; i < t->st.order.n; i++) {
-        int p = t->st.order.v[i];
-        if (!cont && p != t->pno) continue;
-        fz_rect b = page_bounds(t, p);
-        t->off_x[p] = (width - b.x1) / 2;
-        t->off_y[p] = y;
-        y += b.y1 + PAGE_GAP;
+    for (int i = 0; i < t->st.order.n; i += spread_len(t, i)) {
+        if (!cont && i != here) continue;
+        float x = (width - spread_width(t, i)) / 2, h = 0;
+        for (int k = i; k < i + spread_len(t, i); k++) {
+            int p = t->st.order.v[k];
+            fz_rect b = page_bounds(t, p);
+            t->off_x[p] = x;
+            t->off_y[p] = y;
+            x += b.x1 + PAGE_GAP;
+            h = fmaxf(h, b.y1);
+        }
+        y += h + PAGE_GAP;
     }
     t->scene_w = width + 2 * PAGE_GAP;
     t->scene_h = y + PAGE_GAP;
+}
+
+/* the first position (in page order) of the row holding position i: pairs, or the cover alone then pairs */
+int spread_start(tab *t, int i)
+{
+    if (!t->two_pages || i < 0) return i;
+    if (t->cover_alone) return i == 0 ? 0 : 1 + (i - 1) / 2 * 2;
+    return i / 2 * 2;
+}
+
+int spread_len(tab *t, int start)
+{
+    if (!t->two_pages || (t->cover_alone && start == 0)) return 1;
+    return start + 1 < t->st.order.n ? 2 : 1;
+}
+
+float spread_width(tab *t, int start)
+{
+    float w = 0;
+    for (int k = start; k < start + spread_len(t, start); k++) w += page_bounds(t, t->st.order.v[k]).x1 + (k > start ? PAGE_GAP : 0);
+    return w;
 }
 
 void scroll_to_page(tab *t, int page)
@@ -459,6 +487,7 @@ static gesture_kind selection_mode(tab *t)
     case T_CROP: case T_TEXT: case T_IMAGE: return G_BAND;
     case T_DRAW: return G_STROKE;
     case T_SHAPE: return G_SHAPE;
+    case T_SIGN: return cert_placing(t) ? G_BAND : G_NONE;
     default: return G_NONE;
     }
 }
@@ -863,6 +892,7 @@ void view_frame(tab *t, Rectangle area)
         fields_frame(t, p);
     }
     text_box_frame(t);
+    cert_draw(t);
     ui_scissor_end();
 
     /* scrollbars */

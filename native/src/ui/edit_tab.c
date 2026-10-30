@@ -88,7 +88,8 @@ enum {
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
     A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_FIT_HEIGHT, A_PREV, A_NEXT, A_GOTO,
-    A_PII, A_BATES, A_WATERMARK, A_PROPERTIES, A_EXPORT_IMAGES, A_TOOL0,
+    A_PII, A_BATES, A_WATERMARK, A_PROPERTIES, A_EXPORT_IMAGES, A_TWO_PAGES, A_COVER, A_PRESENT, A_COMPARE, A_OCR,
+    A_CERT, A_TOOL0,
     A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5, A_SHAPE0 = A_MARKC0 + 5,
 };
 
@@ -168,6 +169,17 @@ static void run(void *ctx, intptr_t a)
     case A_WATERMARK: watermark_dialog(t); break;
     case A_PROPERTIES: properties_dialog(t); break;
     case A_EXPORT_IMAGES: export_images_dialog(t); break;
+    case A_TWO_PAGES:
+    case A_COVER:
+        if (a == A_TWO_PAGES) t->two_pages = !t->two_pages;
+        else t->cover_alone = !t->cover_alone;
+        if (t->fit) zoom_to(t, 0, t->fit);
+        t->want_scroll_page = t->pno;
+        break;
+    case A_PRESENT: present_start(t); break;
+    case A_COMPARE: compare_start(t); break;
+    case A_OCR: ocr_dialog(t); break;
+    case A_CERT: cert_sign_start(t); break;
     default:
         if (a >= A_TOOL0 && a < A_TOOL0 + T_COUNT) tool_set(t, (tool_id)(a - A_TOOL0));
         else if (a >= A_STYLE0 && a < A_STYLE0 + 5) set_mark_style(t, (int)(a - A_STYLE0));
@@ -227,6 +239,9 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(tools);
         menu_item(tools, "Bates numbering...", "bates", NULL, run, t, A_BATES, doc, 0);
         menu_item(tools, "Watermark...", "stamp", NULL, run, t, A_WATERMARK, doc, 0);
+        menu_item(tools, "Sign with certificate...", "certificate", NULL, run, t, A_CERT, doc, 0);
+        menu_item(tools, "Recognize text (OCR)...", "ocr", NULL, run, t, A_OCR, doc, 0);
+        menu_item(tools, "Compare with...", "compare", NULL, run, t, A_COMPARE, doc, 0);
         menu_sep(tools);
         ui_menu *s = menu_sub(tools, "Mark style", "highlight");
         for (int i = 0; i < 5; i++) menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, mark_style() == i);
@@ -256,6 +271,9 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
     if (view) {
         menu_item(view, "Show sidebar", "sidebar", "F9", run, t, A_SIDEBAR, 1, pt_settings_int(&app.settings, "show_sidebar"));
         menu_item(view, "Continuous", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
+        menu_item(view, "Two pages", "two-pages", NULL, run, t, A_TWO_PAGES, doc, t->two_pages);
+        menu_item(view, "Cover page alone", "file", NULL, run, t, A_COVER, doc && t->two_pages, t->cover_alone);
+        menu_item(view, "Presentation", "presentation", "F5", run, t, A_PRESENT, doc, 0);
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
         menu_item(view, "Zoom out", "zoom-out", "Ctrl+-", run, t, A_ZOOM_OUT, doc, 0);
@@ -301,6 +319,7 @@ void tab_shortcuts(tab *t)
         {0, 0, KEY_DELETE, A_DELETE}, {1, 0, KEY_EQUAL, A_ZOOM_IN}, {1, 1, KEY_EQUAL, A_ZOOM_IN}, {1, 0, KEY_KP_ADD, A_ZOOM_IN},
         {1, 0, KEY_MINUS, A_ZOOM_OUT}, {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT}, {1, 0, KEY_ZERO, A_FIT}, {1, 0, KEY_NINE, A_FIT_HEIGHT},
         {0, 0, KEY_LEFT, A_PREV}, {0, 0, KEY_PAGE_UP, A_PREV}, {0, 0, KEY_RIGHT, A_NEXT}, {0, 0, KEY_PAGE_DOWN, A_NEXT},
+        {0, 0, KEY_F5, A_PRESENT},
     };
     for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
         if (ui_shortcut(keys[i].ctrl, keys[i].shift, keys[i].key)) run(t, keys[i].action);
@@ -405,6 +424,12 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
             } else if (ui_swatch_button(bid(t, 48), cb, current, 1, "Custom colour...")) run(t, A_MARK_COLOUR);
         }
         x += 30;
+    } else if (t->tool == T_SIGN) {
+        float w = button_width("Sign with certificate...", "certificate", 0);
+        if (draw && ui_button(bid(t, 34), (Rectangle){x, y, w, h}, "Sign with certificate...", "certificate", B_FLAT,
+                              "A digital signature from a .p12/.pfx certificate, made when you save"))
+            run(t, A_CERT);
+        x += w + 2;
     } else if (t->tool == T_CROP) {
         float w1 = button_width("Crop to content", "crop", 0), w2 = button_width("Remove crop", "close", 0);
         if (draw && ui_button(bid(t, 50), (Rectangle){x, y, w1, h}, "Crop to content", "crop", B_FLAT, NULL)) run(t, A_FIT_CONTENT);
@@ -457,7 +482,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
 
 static int tool_has_options(tab *t)
 {
-    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW || t->tool == T_SHAPE;
+    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW || t->tool == T_SHAPE ||
+           t->tool == T_SIGN;
 }
 
 /* phone-sized windows: one picker for the tools, the rest in an overflow menu; tool options get their own row */

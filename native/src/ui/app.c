@@ -6,6 +6,7 @@
 #include "ui.h"
 #include "pt_cli.h"
 #include "tab.h"
+#include "doc_tools.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,12 @@ void glfwSetWindowShouldClose(void *window, int value);
 void glfwWaitEventsTimeout(double timeout);
 void glfwFocusWindow(void *window);
 void glfwRequestWindowAttention(void *window);
+#if defined(__linux__) && !defined(__ANDROID__)
+void glfwInitHint(int hint, int value);
+#define GLFW_PLATFORM 0x00050003
+#define GLFW_PLATFORM_WAYLAND 0x00060003
+#define GLFW_PLATFORM_X11 0x00060004
+#endif
 
 extern const unsigned char pt_asset_man[];
 extern const int pt_asset_man_size;
@@ -224,6 +231,30 @@ void app_set_theme(const char *mode)
     theme_apply(mode);
 }
 
+static const char *accent_key(void) { return pal.dark_mode ? "accent_colour_dark" : "accent_colour_light"; }
+
+static void accent_picked(void *ctx, const unsigned char rgb[3])
+{
+    (void)ctx;
+    if (!rgb) return;
+    char hex[8];
+    snprintf(hex, sizeof hex, "#%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
+    pt_settings_set_str(&app.settings, accent_key(), hex);
+    theme_apply(pt_settings_str(&app.settings, "theme"));
+}
+
+static void pick_accent(void)
+{
+    unsigned char rgb[3] = {pal.highlight.r, pal.highlight.g, pal.highlight.b};
+    colour_dialog(pal.dark_mode ? "Accent colour (dark theme)" : "Accent colour (light theme)", rgb, accent_picked, NULL);
+}
+
+static void reset_accent(void)
+{
+    pt_settings_set_str(&app.settings, accent_key(), "");
+    theme_apply(pt_settings_str(&app.settings, "theme"));
+}
+
 void app_about(void)
 {
     message_box(MSG_INFO, "About " APP_NAME,
@@ -325,6 +356,8 @@ static void m_action(void *ctx, intptr_t a)
     case 9: app_set_theme("dark"); break;
     case 10: app_set_theme("light"); break;
     case 11: app_about(); break;
+    case 12: pick_accent(); break;
+    case 13: reset_accent(); break;
     }
 }
 
@@ -374,6 +407,9 @@ ui_menu *app_build_menu(tab *t)
     int dark = strcmp(pt_settings_str(&app.settings, "theme"), "light");
     menu_item(a, "Dark", "dark", NULL, m_action, NULL, 9, 1, dark);
     menu_item(a, "Light", "light", NULL, m_action, NULL, 10, 1, !dark);
+    menu_sep(a);
+    menu_item(a, "Accent colour...", "custom-colour", NULL, m_action, NULL, 12, 1, 0);
+    menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()), 0);
     menu_sep(m);
     menu_item(m, "About " APP_NAME, "about", NULL, m_action, NULL, 11, 1, 0);
     return m;
@@ -384,30 +420,31 @@ ui_menu *app_build_menu(tab *t)
 static void t_move(void *ctx, intptr_t a) { (void)a; move_to_new_window(ctx); }
 static void t_close(void *ctx, intptr_t a) { (void)a; tab_close(ctx); }
 
+#define TAB_FS 15.0f
+
 static void tab_strip(Rectangle r)
 {
     DrawRectangleRec(r, pal.window);
     ui_separator_h(r.x, r.x + r.width, r.y + r.height - 1);
-    float x = r.x + 4;
+    float x = r.x;
     int n = app.tabs.n, move_to = -1;
-    float avail = r.width - 8, each = fminf(260, avail / fmaxf(1, n));
+    float avail = r.width - 4, each = fminf(260, avail / fmaxf(1, n));
     for (int i = 0; i < n; i++) {
         win_tab *w = &app.tabs.v[i];
         char *title = w->kind == TAB_HOME ? pt_strdup("Home") : w->kind == TAB_WORKSPACE ? pt_strdup("Combine & split") : tab_title(w->doc);
-        float tw = fminf(each, text_width(title, FS_NORMAL, F_REGULAR) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0));
+        float tw = fminf(each, text_width(title, TAB_FS, F_BOLD) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0));
         Rectangle tr = {x, r.y, tw, r.height};
         int hover = ui_hover(tr), current = i == app.current;
-        /* the current tab is an accent pill with light text; the others are plain, dimmer text */
-        Rectangle pill = {tr.x + 2, tr.y + 6, tr.width - 4, tr.height - 12};
-        if (current) DrawRectangleRounded(pill, 1, 12, pal.highlight);
-        else if (hover) DrawRectangleRounded(pill, 1, 12, with_alpha(pal.light, 160));
+        /* the current tab filled with the accent colour, light text; the others plain, dimmer text */
+        if (current) DrawRectangleRec(tr, pal.highlight);
+        else if (hover) DrawRectangleRec(tr, with_alpha(pal.light, 160));
         Color fg = current ? pal.highlighted_text : hover ? pal.window_text : with_alpha(pal.window_text, 170);
         font_kind fk = current ? F_BOLD : F_REGULAR;
         float tx = tr.x + 12, cy = tr.y;
         if (w->kind == TAB_HOME) draw_logo((Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}), tx += 20;
         else if (w->kind == TAB_WORKSPACE) draw_icon("merge", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
-        char *el = elide_middle(title, tr.x + tr.width - 28 - tx, FS_NORMAL, fk);
-        draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, FS_NORMAL, fk, fg, -1);
+        char *el = elide_middle(title, tr.x + tr.width - 28 - tx, TAB_FS, fk);
+        draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, TAB_FS, fk, fg, -1);
         free(el);
         Rectangle close = {tr.x + tr.width - 26, tr.y + (tr.height - 20) / 2, 20, 20};
         int on_close = ui_hover(close);
@@ -492,6 +529,12 @@ static void handle_drops(void)
 static void frame(void)
 {
     ui_begin_frame();
+    if (present_active()) {
+        present_frame();
+        ui_end_frame();
+        cursor_commit();
+        return;
+    }
     ClearBackground(pal.window);
     tab *t = app_current_doc();
     win_tab *cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
@@ -655,7 +698,16 @@ int main(int argc, char **argv)
 #else
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
 #endif
+#if defined(__linux__) && !defined(__ANDROID__)
+    /* GLFW alone goes by XDG_SESSION_TYPE and does not fall back to X11 when Wayland is unreachable */
+    const char *wl = getenv("WAYLAND_DISPLAY");
+    glfwInitHint(GLFW_PLATFORM, wl && *wl ? GLFW_PLATFORM_WAYLAND : GLFW_PLATFORM_X11);
+#endif
     InitWindow(1280, 1100, APP_NAME);
+    if (!IsWindowReady()) {
+        pt_log(PT_LOG_ERROR, "cannot open a window (no Wayland or X11 display?)");
+        return 1;
+    }
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);

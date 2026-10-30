@@ -144,6 +144,9 @@ struct tab {
     float want_center_x, want_center_y;
     int want_center;
     fit_mode fit_pending;
+    int two_pages, cover_alone;   /* pages side by side in pairs; the first page on its own */
+    char *cert_path, *cert_password;   /* a certificate chosen to sign with; the password only in memory */
+    int cert_placing;
 
     page_tex pix[PIX_CACHE];
     Texture2D *thumbs;
@@ -301,6 +304,9 @@ int mark_style(void);
 /* page_view.c */
 void view_frame(tab *t, Rectangle area);
 void layout_scene(tab *t);
+int spread_start(tab *t, int i);    /* rows of pages: positions in page order */
+int spread_len(tab *t, int start);
+float spread_width(tab *t, int start);
 void scroll_to_page(tab *t, int page);
 void center_on(tab *t, fz_rect scene);
 void clear_selection(tab *t);

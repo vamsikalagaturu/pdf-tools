@@ -26,6 +26,10 @@ const pt_setting_def pt_settings_defs[] = {
     {"last_signature", PT_SET_STR, "", 0, "Signature preselected in the Sign dialog"},
     {"recent_files", PT_SET_LIST, NULL, 0, "Recently opened PDFs, newest first"},
     {"favourite_colours", PT_SET_LIST, NULL, 0, "Favourite colours (#rrggbb), offered wherever a colour is picked"},
+    {"accent_colour_dark", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the dark theme; empty: the default blue"},
+    {"accent_colour_light", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the light theme; empty: the default blue"},
+    {"ocr_language", PT_SET_STR, "eng", 0, "Tesseract language(s) for text recognition, e.g. eng or deu+eng"},
+    {"signing_certificate", PT_SET_STR, "", 0, "The .p12/.pfx certificate used last to sign (its password is never stored)"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 

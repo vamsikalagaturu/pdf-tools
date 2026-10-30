@@ -197,15 +197,26 @@ static const cursor_spec SPECS[CUR_COUNT] = {
 };
 static void *cursors[CUR_COUNT];
 static cursor_kind wanted = CUR_ARROW, shown = CUR_COUNT;
-static float cursor_scale;
-#define CURSOR_PX 24
+static int cursor_px;
+
+/* The desktop's cursor size: XCURSOR_SIZE or HYPRCURSOR_SIZE (default 24), times the scale the window system
+ * reports. Not ui.scale: that comes from the monitor's DPI under XWayland and would draw it far larger than the
+ * desktop's own pointer. */
+static int desktop_cursor_px(void)
+{
+    const char *env = getenv("XCURSOR_SIZE");
+    if (!env || atoi(env) <= 0) env = getenv("HYPRCURSOR_SIZE");
+    int base = env && atoi(env) > 0 ? atoi(env) : 24;
+    float scale = GetWindowScaleDPI().x;
+    return (int)roundf(base * (scale > 0.5f ? scale : 1));
+}
 
 static void make_cursors(void)
 {
     for (int i = 0; i < CUR_COUNT; i++)
         if (cursors[i]) glfwDestroyCursor(cursors[i]), cursors[i] = NULL;
-    cursor_scale = ui.scale > 0 ? ui.scale : 1;
-    int size = (int)roundf(CURSOR_PX * cursor_scale);
+    cursor_px = desktop_cursor_px();
+    int size = cursor_px;
     float s = size / 24.0f;
     for (int i = 0; i < CUR_COUNT; i++) {
         const cursor_spec *c = &SPECS[i];
@@ -262,7 +273,7 @@ void set_cursor(cursor_kind c) { wanted = c; }
 
 void cursor_commit(void)
 {
-    if (fabsf(cursor_scale - ui.scale) > 0.01f) make_cursors();
+    if (cursor_px != desktop_cursor_px()) make_cursors();
     if (wanted != shown && cursors[wanted]) {
         glfwSetCursor(glfwGetCurrentContext(), cursors[wanted]);
         shown = wanted;

@@ -271,6 +271,21 @@ int pt_is_image_file(fz_context *ctx, const char *path);
 fz_pixmap *pt_render_page(fz_context *ctx, fz_page *page, float zoom, int alpha);
 fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg);   /* PNG, or JPEG quality 90 */
 
+/* ---- ocr.c: text recognition (Tesseract through MuPDF) ---- */
+/* the first folder holding <lang>.traineddata for every part of `language` ("deu+eng"), or NULL */
+char *pt_tessdata_dir(const char *language, const char *exe_dir);
+int pt_ocr_page(fz_context *ctx, pdf_document *doc, int page, const char *language, const char *datadir); /* characters added */
+
+/* ---- sign.c: certificate signatures (OpenSSL) ---- */
+int pt_have_signing(void);
+char *pt_certificate_name(fz_context *ctx, const char *p12, const char *password);   /* throws on a wrong password */
+/* `pdf` signed on `page` in a field at user_rect (PDF user space), as an incremental update */
+fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, int page, fz_rect user_rect, const char *p12,
+                       const char *p12_password, const char *reason);
+
+/* ---- compare.c: what changed between two pages' words ---- */
+void pt_compare_pages(fz_context *ctx, fz_page *a, fz_page *b, pt_rects *only_a, pt_rects *only_b);   /* a or b may be NULL */
+
 /* ---- synctex.py ---- */
 typedef struct { char kind; int tag, line; fz_rect rect; } pt_sync_node;
 PT_VEC(pt_sync_nodes, pt_sync_node);

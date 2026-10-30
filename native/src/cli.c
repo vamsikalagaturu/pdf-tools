@@ -1122,6 +1122,220 @@ static int cmd_insert_image(args *a)
     return write_item(a, it);
 }
 
+static int write_stamp(args *a, pt_stamp st)
+{
+    const char *path = input(a), *pw = get(a, "--password");
+    pdf_document *doc = opened(path, pw);
+    const char *at = get(a, "--position");
+    int pos = pt_stamp_at_from_name(at);
+    if (pos < 0 || (st.kind == PT_STAMP_BATES && pos >= PT_AT_CENTRE))
+        fail("--position wants top-left, top, top-right, bottom-left, bottom, bottom-right%s, got '%s'",
+             st.kind == PT_STAMP_BATES ? "" : ", centre or diagonal", at);
+    st.at = (pt_stamp_at)pos;
+    st.pages = pt_strdup(get(a, "--pages"));
+    pt_ints check = {0};
+    page_list(st.pages, pdf_count_pages(ctx, doc), &check);
+    pt_vec_free(check);
+    pt_state s;
+    pt_state_init(&s, 0);
+    pt_push(s.stamps, st);
+    fz_buffer *data = apply(path, pw, &s, NULL);
+    char *out = write_out(get(a, "--output"), finish(doc, data, pw), path);
+    pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    if (st.kind == PT_STAMP_BATES) {
+        int n = 0;
+        pt_ints pages = {0};
+        page_list(st.pages, pdf_count_pages(ctx, doc), &pages);
+        n = pages.n;
+        pt_vec_free(pages);
+        char *first = pt_bates_label(&st, 0), *last = pt_bates_label(&st, n ? n - 1 : 0);
+        pt_json_key(&j, "first");
+        pt_json_string(&j, first);
+        pt_json_key(&j, "last");
+        pt_json_string(&j, last);
+        free(first), free(last);
+    }
+    pt_json_key(&j, "pages");
+    pt_json_int(&j, pdf_count_pages(ctx, doc));
+    pt_state_free(&s);
+    return emit_end(&j, OK);
+}
+
+static int cmd_bates(args *a)
+{
+    pt_stamp st = {PT_STAMP_BATES, pt_strdup(get(a, "--prefix")), pt_strdup(get(a, "--suffix")), int_arg(a, "--start", 1),
+                   int_arg(a, "--digits", 6), PT_AT_BOTTOM_RIGHT, strtof(get(a, "--size"), NULL), 1, {0, 0, 0}, NULL};
+    if (st.digits < 1 || st.digits > 12) fail("--digits wants 1 to 12");
+    colour_arg(a, "#000000", st.rgb);
+    return write_stamp(a, st);
+}
+
+static int cmd_watermark(args *a)
+{
+    pt_stamp st = {PT_STAMP_WATERMARK, pt_strdup(get(a, "--text")), NULL, 0, 0, PT_AT_DIAGONAL, strtof(get(a, "--size"), NULL),
+                   strtof(get(a, "--opacity"), NULL), {0, 0, 0}, NULL};
+    if (st.opacity <= 0 || st.opacity > 1) fail("--opacity wants a number in (0, 1]");
+    colour_arg(a, "#c81e1e", st.rgb);
+    return write_stamp(a, st);
+}
+
+static int cmd_ocr(args *a)
+{
+    const char *path = input(a), *pw = get(a, "--password"), *language = get(a, "--language");
+    pdf_document *check = opened(path, pw);
+    pdf_drop_document(ctx, check);
+    char *datadir = get(a, "--tessdata") ? pt_strdup(get(a, "--tessdata")) : pt_tessdata_dir(language, NULL);
+    if (!datadir) fail("no Tesseract data for '%s': put %s.traineddata in ~/.local/share/pdf-tools/tessdata or pass --tessdata", language, language);
+    pdf_document *doc = NULL;
+    fz_buffer *data = NULL;
+    pt_ints pages = {0};
+    int chars = 0;
+    fz_try(ctx) {
+        doc = pt_open_pdf(ctx, path, pw, NULL);
+        page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
+        for (int i = 0; i < pages.n; i++) chars += pt_ocr_page(ctx, doc, pages.v[i], language, datadir);
+        data = pt_doc_bytes(ctx, doc, pdf_needs_password(ctx, doc) ? pw : NULL);
+    }
+    fz_catch(ctx) fail("%s", fz_caught_message(ctx));
+    char *out = write_out(get(a, "--output"), data, path);
+    pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    pt_json_key(&j, "pages");
+    pt_json_int(&j, pages.n);
+    pt_json_key(&j, "characters_added");
+    pt_json_int(&j, chars);
+    return emit_end(&j, OK);
+}
+
+static int cmd_compare(args *a)
+{
+    if (a->positional.n != 2) usage_error(a->c, "compare wants exactly two PDFs");
+    pdf_document *doc[2];
+    for (int k = 0; k < 2; k++) doc[k] = opened(a->positional.v[k], k ? get(a, "--password2") : get(a, "--password"));
+    int n[2] = {pdf_count_pages(ctx, doc[0]), pdf_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1], changed = 0;
+    pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "pages");
+    pt_json_begin_array(&j);
+    for (int p = 0; p < pages; p++) {
+        pt_rects only[2] = {{0}, {0}};
+        fz_page *pg[2] = {NULL, NULL};
+        fz_try(ctx) {
+            for (int k = 0; k < 2; k++) pg[k] = p < n[k] ? fz_load_page(ctx, (fz_document *)doc[k], p) : NULL;
+            pt_compare_pages(ctx, pg[0], pg[1], &only[0], &only[1]);
+        }
+        fz_always(ctx) fz_drop_page(ctx, pg[0]), fz_drop_page(ctx, pg[1]);
+        fz_catch(ctx) fail("page %d: %s", p + 1, fz_caught_message(ctx));
+        if (only[0].n || only[1].n) {
+            changed++;
+            pt_json_begin_object(&j);
+            pt_json_key(&j, "page");
+            pt_json_int(&j, p + 1);
+            static const char *KEYS[2] = {"only_in_first", "only_in_second"};
+            for (int k = 0; k < 2; k++) {
+                pt_json_key(&j, KEYS[k]);
+                pt_json_begin_array(&j);
+                for (int i = 0; i < only[k].n; i++) pt_json_rect(&j, only[k].v[i]);
+                pt_json_end_array(&j);
+            }
+            pt_json_end_object(&j);
+        }
+        pt_vec_free(only[0]), pt_vec_free(only[1]);
+    }
+    pt_json_end_array(&j);
+    pt_json_key(&j, "changed_pages");
+    pt_json_int(&j, changed);
+    pt_json_key(&j, "page_counts");
+    pt_json_begin_array(&j);
+    pt_json_int(&j, n[0]), pt_json_int(&j, n[1]);
+    pt_json_end_array(&j);
+    return emit_end(&j, OK);
+}
+
+static int cmd_export_images(args *a)
+{
+    const char *path = input(a), *pw = get(a, "--password"), *format = get(a, "--format"), *dir = get(a, "--directory");
+    int jpeg = !strcmp(format, "jpeg") || !strcmp(format, "jpg");
+    if (!jpeg && strcmp(format, "png")) fail("--format wants png or jpeg, got '%s'", format);
+    int dpi = int_arg(a, "--dpi", 150);
+    if (dpi < 18 || dpi > 2400) fail("--dpi wants 18 to 2400");
+    pdf_document *doc = opened(path, pw);
+    pt_ints pages = {0};
+    page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
+    if (pt_mkdirs(dir)) fail("cannot create %s", dir);
+    char *stem = pt_stem(path);
+    pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "files");
+    pt_json_begin_array(&j);
+    for (int i = 0; i < pages.n; i++) {
+        char *name = pt_format("%s-page%d.%s", stem, pages.v[i] + 1, jpeg ? "jpg" : "png"), *out = pt_join(dir, name);
+        fz_buffer *img = NULL;
+        fz_page *p = NULL;
+        fz_try(ctx) {
+            p = fz_load_page(ctx, (fz_document *)doc, pages.v[i]);
+            img = pt_page_image(ctx, p, dpi, jpeg);
+        }
+        fz_always(ctx) fz_drop_page(ctx, p);
+        fz_catch(ctx) fail("page %d: %s", pages.v[i] + 1, fz_caught_message(ctx));
+        if (pt_write_file(out, img->data, img->len)) fail("cannot write %s", out);
+        pt_json_string(&j, out);
+        fz_drop_buffer(ctx, img);
+        free(name), free(out);
+    }
+    pt_json_end_array(&j);
+    pt_json_key(&j, "dpi");
+    pt_json_int(&j, dpi);
+    free(stem);
+    return emit_end(&j, OK);
+}
+
+/* sign: a signature image, or with --cert a digital signature from a PKCS#12 certificate */
+static int cmd_sign(args *a)
+{
+    if (!given(a, "--cert")) {
+        if (!given(a, "--image")) usage_error(a->c, "one of the arguments --image --cert is required");
+        return cmd_insert_image(a);
+    }
+    if (!pt_have_signing()) fail("this build cannot make certificate signatures (no OpenSSL)");
+    const char *path = input(a), *pw = get(a, "--password");
+    pdf_document *doc = opened(path, pw);
+    int page = one_page(a, doc);
+    fz_rect r = rect_arg(a, "--rect");
+    fz_buffer *data = NULL, *signed_pdf = NULL;
+    char *name = NULL;
+    fz_try(ctx) {
+        name = pt_certificate_name(ctx, get(a, "--cert"), get(a, "--cert-password"));
+        pdf_page *pg = pdf_load_page(ctx, doc, page);
+        fz_matrix ctm;
+        pdf_page_transform(ctx, pg, NULL, &ctm);
+        fz_drop_page(ctx, (fz_page *)pg);
+        pt_bytes file = {0};
+        if (pt_read_file(path, &file)) fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot read %s", path);
+        data = fz_new_buffer_from_data(ctx, file.data, file.len);
+        signed_pdf = pt_sign_pdf(ctx, data, pw, page, fz_transform_rect(r, fz_invert_matrix(ctm)), get(a, "--cert"),
+                                 get(a, "--cert-password"), get(a, "--reason"));
+    }
+    fz_always(ctx) fz_drop_buffer(ctx, data);
+    fz_catch(ctx) fail("%s", fz_caught_message(ctx));
+    char *out = write_out(get(a, "--output"), signed_pdf, path);
+    pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    pt_json_key(&j, "signer");
+    pt_json_string(&j, name);
+    pt_json_key(&j, "page");
+    pt_json_int(&j, page + 1);
+    free(name);
+    return emit_end(&j, OK);
+}
+
 static int cmd_prepare_signature(args *a)
 {
     fz_buffer *png = NULL;
@@ -1312,9 +1526,37 @@ static const cmd COMMANDS[] = {
     {"insert-image", "Place an image on a page", INPUT, 0, cmd_insert_image,
      {OUTPUT, PASSWORD, PAGE, {"--image", NULL, VALUE, 1, "FILE", "PNG, JPEG or another image", NULL},
       {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points (the image keeps its proportions)", NULL}}, {0}},
-    {"sign", "Place a signature image on a page", INPUT, 0, cmd_insert_image,
-     {OUTPUT, PASSWORD, PAGE, {"--image", NULL, VALUE, 1, "FILE", "signature PNG (see prepare-signature)", NULL},
-      {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL}}, {0}},
+    {"sign", "Place a signature image, or sign digitally with a certificate (--cert)", INPUT, 0, cmd_sign,
+     {OUTPUT, PASSWORD, PAGE, {"--image", NULL, VALUE, 0, "FILE", "signature PNG (see prepare-signature)", NULL},
+      {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL},
+      {"--cert", NULL, VALUE, 0, "P12", "PKCS#12 certificate (.p12/.pfx) for a digital signature", NULL},
+      {"--cert-password", NULL, VALUE, 0, "PASSWORD", "the certificate's password", NULL},
+      {"--reason", NULL, VALUE, 0, "REASON", "reason shown with the digital signature", NULL}}, {0}},
+    {"bates", "Stamp Bates numbers (PREFIX000001SUFFIX) on the pages", INPUT, 0, cmd_bates,
+     {OUTPUT, PASSWORD, {"--prefix", NULL, VALUE, 0, "PREFIX", "text before the number", ""},
+      {"--suffix", NULL, VALUE, 0, "SUFFIX", "text after the number", ""},
+      {"--start", NULL, VALUE, 0, "START", "first number (default 1)", "1"},
+      {"--digits", NULL, VALUE, 0, "DIGITS", "zero-padded to this many digits (default 6)", "6"},
+      {"--position", NULL, VALUE, 0, "WHERE", "top-left | top | top-right | bottom-left | bottom | bottom-right", "bottom-right"},
+      {"--size", NULL, VALUE, 0, "SIZE", "font size (default 10)", "10"},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7 (numbers count these)", NULL}, COLOR}, {0}},
+    {"watermark", "Stamp text across or on a corner of the pages", INPUT, 0, cmd_watermark,
+     {OUTPUT, PASSWORD, {"--text", NULL, VALUE, 1, "TEXT", "e.g. CONFIDENTIAL", NULL},
+      {"--position", NULL, VALUE, 0, "WHERE", "diagonal | centre | top-left | top | ... | bottom-right", "diagonal"},
+      {"--size", NULL, VALUE, 0, "SIZE", "font size; 0 fits a diagonal to the page (default)", "0"},
+      {"--opacity", NULL, VALUE, 0, "OPACITY", "0..1 (default 0.3)", "0.3"},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL}, COLOR}, {0}},
+    {"ocr", "Recognize text on scanned pages: adds an invisible, searchable text layer (Tesseract)", INPUT, 0, cmd_ocr,
+     {OUTPUT, PASSWORD, {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
+      {"--language", NULL, VALUE, 0, "LANG", "Tesseract language(s), e.g. eng or deu+eng (default eng)", "eng"},
+      {"--tessdata", NULL, VALUE, 0, "DIR", "folder with LANG.traineddata", NULL}}, {0}},
+    {"compare", "Words that differ between two PDFs, page by page", "inputs", "the two PDFs", 1, cmd_compare,
+     {PASSWORD, {"--password2", NULL, VALUE, 0, "PASSWORD", "password of the second PDF", NULL}}, {0}},
+    {"export-images", "Save pages as PNG or JPEG images", INPUT, 0, cmd_export_images,
+     {PASSWORD, {"--directory", "-d", VALUE, 1, "DIRECTORY", "folder for NAME-pageN.png", NULL},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
+      {"--format", NULL, VALUE, 0, "FORMAT", "png | jpeg (default png)", "png"},
+      {"--dpi", NULL, VALUE, 0, "DPI", NULL, "150"}}, {0}},
     {"prepare-signature", "Turn a scanned signature into a cropped transparent PNG", "scan", "image of the signature",
      0, cmd_prepare_signature, {{"--output", "-o", VALUE, 1, "OUTPUT", "output PNG", NULL}}, {0}},
     {"scrub", "Remove hidden data: metadata, attachments, scripts, hidden text, thumbnails", INPUT, 0, cmd_scrub,
