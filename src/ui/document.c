@@ -42,6 +42,8 @@ const preset PEN_COLOURS[6] = {
 const struct pen_width PEN_WIDTHS[3] = {{"Thin", 1}, {"Medium", 2}, {"Thick", 4}};
 const char *MARK_LABELS[5] = {"Highlight", "Underline", "Strikethrough", "Squiggly", "Text colour"};
 const char *MARK_ICONS[5] = {"highlight", "underline", "strikeout", "squiggly", "textcolour"};
+const char *PEN_LABELS[PT_PEN_COUNT] = {"Pen", "Highlighter", "Marker", "Dashed"};
+const char *PEN_ICONS[PT_PEN_COUNT] = {"pen-pen", "pen-highlighter", "pen-marker", "pen-dashed"};
 
 tab *tab_new(void)
 {
@@ -2204,6 +2206,18 @@ void set_mark_style(tab *t, int style)
     pt_settings_set_str(&app.settings, "highlight_style", pt_mark_names[style]);
 }
 
+pt_pen pen_style(void)
+{
+    int p = pt_pen_from_name(pt_settings_str(&app.settings, "pen_style"));
+    return p < 0 ? PT_PEN_PEN : (pt_pen)p;
+}
+
+void set_pen_style(tab *t, pt_pen pen)
+{
+    pt_settings_set_str(&app.settings, "pen_style", pt_pen_names[pen]);
+    t->ink_page = -1; /* the next stroke starts a drawing of its own */
+}
+
 /* ---- watching the file ---- */
 
 static void reload_now(tab *t)
@@ -2344,7 +2358,7 @@ static void write_state(FILE *f, const pt_state *s)
             w_int(f, it->strokes.v[k].n);
             fwrite(it->strokes.v[k].v, sizeof(fz_point), (size_t)it->strokes.v[k].n, f);
         }
-        w_float(f, it->pen_width);
+        w_float(f, it->pen_width), w_int(f, (int)it->pen);
         w_int(f, (int)it->shape);
         w_int(f, (int)it->data.len);
         if (it->data.len) fwrite(it->data.data, 1, it->data.len, f);
@@ -2407,7 +2421,7 @@ static void read_state(FILE *f, pt_state *s)
             }
             pt_push(it.strokes, pts);
         }
-        it.pen_width = r_float(f);
+        it.pen_width = r_float(f), it.pen = (pt_pen)r_int(f);
         it.shape = (pt_shape)r_int(f);
         int len = r_int(f);
         if (len > 0) {
@@ -2477,7 +2491,7 @@ int tab_write_state(tab *t, const char *file)
 {
     FILE *f = fopen(file, "wb");
     if (!f) return -1;
-    fwrite("PTTAB2", 1, 6, f);
+    fwrite("PTTAB3", 1, 6, f);
     w_str(f, t->path), w_str(f, t->password), w_int(f, t->pno), w_float(f, t->zoom);
     write_state(f, &t->st);
     w_int(f, t->nhist);
@@ -2493,7 +2507,7 @@ tab *tab_read_state(const char *file)
     FILE *f = fopen(file, "rb");
     if (!f) return NULL;
     char magic[6];
-    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB2", 6)) {
+    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB3", 6)) {
         fclose(f);
         return NULL;
     }

@@ -31,6 +31,50 @@ static int resizable(const pt_item *it)
 
 /* A shape between two screen points, as its annotation is drawn: rectangle and ellipse strokes inside their box,
  * lines with round ends, an arrow with an open head at b. */
+/* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
+ * one strip, since overlapping pieces showed darker at every joint; the highlighter multiplies a light tint into
+ * the page, as the saved annotation does. */
+static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
+{
+    w = fmaxf(1, w);
+    if (n == 1) {
+        DrawCircleV(v[0], w / 2, with_alpha(c, (int)(255 * pt_pen_opacity(pen))));
+        return;
+    }
+    if (pen == PT_PEN_HIGHLIGHTER) {
+        float o = pt_pen_opacity(pen);
+        Color tint = {(unsigned char)(255 - (255 - c.r) * o), (unsigned char)(255 - (255 - c.g) * o),
+                      (unsigned char)(255 - (255 - c.b) * o), 255};
+        BeginBlendMode(BLEND_MULTIPLIED);
+        DrawSplineLinear(v, n, w, tint);
+        EndBlendMode();
+    } else if (pen == PT_PEN_MARKER) {
+        DrawSplineLinear(v, n, w, with_alpha(c, (int)(255 * pt_pen_opacity(pen))));
+    } else if (pen == PT_PEN_DASHED) {
+        /* on 3 widths, off 2, along the whole stroke (the saved annotation's dash pattern) */
+        double on = 3.0 * w, period = 5.0 * w, at = 0;
+        for (int k = 1; k < n; k++) {
+            Vector2 a = v[k - 1], d = {v[k].x - a.x, v[k].y - a.y};
+            double len = hypot(d.x, d.y);
+            /* in doubles with a least step: in floats a step below the position's precision never advanced */
+            for (double s = 0; s < len;) {
+                double phase = fmod(at + s, period);
+                double step = fmin(len - s, fmax(1e-3, phase < on ? on - phase : period - phase));
+                if (phase < on)
+                    DrawLineEx((Vector2){(float)(a.x + d.x * s / len), (float)(a.y + d.y * s / len)},
+                               (Vector2){(float)(a.x + d.x * (s + step) / len), (float)(a.y + d.y * (s + step) / len)},
+                               w, c);
+                s += step;
+            }
+            at += len;
+        }
+    } else
+        for (int k = 1; k < n; k++) {
+            DrawLineEx(v[k - 1], v[k], w, c);
+            DrawCircleV(v[k], w / 2, c);
+        }
+}
+
 static void draw_shape(pt_shape shape, Vector2 a, Vector2 b, float w, Color c)
 {
     Rectangle r = {fminf(a.x, b.x), fminf(a.y, b.y), fabsf(b.x - a.x), fabsf(b.y - a.y)};
@@ -410,15 +454,14 @@ static void draw_item(tab *t, int index)
     case PT_INK:
         for (int s = 0; s < it->strokes.n; s++) {
             const pt_points *pts = &it->strokes.v[s];
-            for (int k = 1; k < pts->n; k++) {
-                fz_rect a =
-                    to_scene(t, page, fz_make_rect(pts->v[k - 1].x, pts->v[k - 1].y, pts->v[k - 1].x, pts->v[k - 1].y));
-                fz_rect b = to_scene(t, page, fz_make_rect(pts->v[k].x, pts->v[k].y, pts->v[k].x, pts->v[k].y));
-                Vector2 p = scene_to_screen(t, (fz_point){a.x0, a.y0}), q = scene_to_screen(t, (fz_point){b.x0, b.y0});
-                p.x += shift.x, p.y += shift.y, q.x += shift.x, q.y += shift.y;
-                DrawLineEx(p, q, fmaxf(1, it->pen_width * t->zoom), rgb3(it->rgb));
-                DrawCircleV(q, fmaxf(0.5f, it->pen_width * t->zoom / 2), rgb3(it->rgb));
+            Vector2 *v = malloc(sizeof *v * (size_t)(pts->n + 1));
+            for (int k = 0; k < pts->n; k++) {
+                fz_rect a = to_scene(t, page, fz_make_rect(pts->v[k].x, pts->v[k].y, pts->v[k].x, pts->v[k].y));
+                v[k] = scene_to_screen(t, (fz_point){a.x0, a.y0});
+                v[k].x += shift.x, v[k].y += shift.y;
             }
+            draw_ink(v, pts->n, pt_pen_width(it->pen, it->pen_width) * t->zoom, rgb3(it->rgb), it->pen);
+            free(v);
         }
         break;
     case PT_TEXT: {
@@ -991,12 +1034,12 @@ void view_frame(tab *t, Rectangle area)
     if (t->gesture == G_SHAPE && t->stroke.n == 2)
         draw_shape(t->shape, scene_to_screen(t, t->stroke.v[0]), scene_to_screen(t, t->stroke.v[1]),
                    fmaxf(1, t->pen_width * t->zoom), rgb3(t->pen_rgb));
-    if (t->gesture == G_STROKE)
-        for (int k = 1; k < t->stroke.n; k++) {
-            Vector2 a = scene_to_screen(t, t->stroke.v[k - 1]), b = scene_to_screen(t, t->stroke.v[k]);
-            DrawLineEx(a, b, fmaxf(1, t->pen_width * t->zoom), rgb3(t->pen_rgb));
-            DrawCircleV(b, fmaxf(0.5f, t->pen_width * t->zoom / 2), rgb3(t->pen_rgb));
-        }
+    if (t->gesture == G_STROKE && t->stroke.n) {
+        Vector2 *v = malloc(sizeof *v * (size_t)t->stroke.n);
+        for (int k = 0; k < t->stroke.n; k++) v[k] = scene_to_screen(t, t->stroke.v[k]);
+        draw_ink(v, t->stroke.n, pt_pen_width(pen_style(), t->pen_width) * t->zoom, rgb3(t->pen_rgb), pen_style());
+        free(v);
+    }
     for (int k = 0; k < t->st.order.n; k++) {
         int p = t->st.order.v[k];
         if (t->off_y[p] < -1e8f) continue;

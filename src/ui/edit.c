@@ -145,6 +145,7 @@ enum {
     A_STYLE0 = A_TOOL0 + T_COUNT,
     A_MARKC0 = A_STYLE0 + 5,
     A_SHAPE0 = A_MARKC0 + 5,
+    A_PEN0 = A_SHAPE0 + 4,
 };
 
 static const char *SHAPE_ICONS[4] = {"shape-rect", "shape-ellipse", "shape-line", "shape-arrow"};
@@ -241,6 +242,7 @@ static void run(void *ctx, intptr_t a)
             const preset *p = mark_style() == PT_MARK_HIGHLIGHT ? HIGHLIGHT_PRESETS : INK_PRESETS;
             set_mark_colour(t, p[a - A_MARKC0].rgb);
         } else if (a >= A_SHAPE0 && a < A_SHAPE0 + 4) t->shape = (pt_shape)(a - A_SHAPE0);
+        else if (a >= A_PEN0 && a < A_PEN0 + PT_PEN_COUNT) set_pen_style(t, (pt_pen)(a - A_PEN0));
     }
     pt_vec_free(pages);
 }
@@ -307,6 +309,9 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
             menu_swatch_item(c, p[i].name, p[i].rgb, run, t, A_MARKC0 + i, !memcmp(current, p[i].rgb, 3));
         menu_sep(c);
         menu_item(c, "Custom mark colour...", "custom-colour", NULL, run, t, A_MARK_COLOUR, 1, 0);
+        ui_menu *pens = menu_sub(tools, "Pen style", "pen-pen");
+        for (int i = 0; i < PT_PEN_COUNT; i++)
+            menu_item(pens, PEN_LABELS[i], PEN_ICONS[i], NULL, run, t, A_PEN0 + i, 1, (int)pen_style() == i);
     }
     if (pages) {
         menu_item(pages, "Rotate left", "rotate-left", "Ctrl+Shift+L", run, t, A_ROTATE_LEFT, doc, 0);
@@ -534,6 +539,15 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
             snprintf(tip, sizeof tip, "Shape: %s", SHAPE_LABELS[t->shape]);
             if (draw) ui_tooltip(bid(t, 65), sb, tip);
             x += 44;
+        } else {
+            for (int i = 0; i < PT_PEN_COUNT; i++) {
+                int flags = B_FLAT | B_ICON_ONLY | ((int)pen_style() == i ? B_CHECKED : 0);
+                if (draw &&
+                    ui_button(bid(t, 70 + i), (Rectangle){x, y, 34, h}, NULL, PEN_ICONS[i], flags, PEN_LABELS[i]))
+                    set_pen_style(t, (pt_pen)i);
+                x += 36;
+            }
+            x += 6;
         }
         int known = 0;
         for (int i = 0; i < 6; i++) {
@@ -962,7 +976,7 @@ fz_rect ink_bounds(const pt_item *it)
             box = first ? fz_make_rect(p.x, p.y, p.x, p.y) : fz_include_point_in_rect(box, p);
             first = 0;
         }
-    float half = it->pen_width / 2 + 1;
+    float half = pt_pen_width(it->pen, it->pen_width) / 2 + 1;
     return fz_make_rect(box.x0 - half, box.y0 - half, box.x1 + half, box.y1 + half);
 }
 
@@ -1416,12 +1430,12 @@ void on_stroke(tab *t)
     int index = -1;
     if (t->ink_page == page && ui.now - t->ink_time < INK_GROUP_S && t->ink_index >= 0 &&
         t->ink_index < t->st.items.n && t->st.items.v[t->ink_index].kind == PT_INK &&
-        t->st.items.v[t->ink_index].page == page)
+        t->st.items.v[t->ink_index].page == page && t->st.items.v[t->ink_index].pen == pen_style())
         index = t->ink_index;
     if (index >= 0) pt_push(t->st.items.v[index].strokes, points);
     else {
         pt_item it = {0};
-        it.page = page, it.kind = PT_INK, it.pen_width = t->pen_width;
+        it.page = page, it.kind = PT_INK, it.pen_width = t->pen_width, it.pen = pen_style();
         memcpy(it.rgb, t->pen_rgb, 3);
         pt_push(it.strokes, points);
         pt_push(t->st.items, it);

@@ -22,6 +22,7 @@ const pt_setting_def pt_settings_defs[] = {
     {"highlight_colour", PT_SET_STR, "#ffe45c", 0, "Colour of new background highlights"},
     {"ink_colour", PT_SET_STR, "#c62828", 0, "Colour of new underline / strikethrough / squiggly / text-colour marks"},
     {"highlight_style", PT_SET_STR, "highlight", 0, "highlight | underline | strikeout | squiggly | textcolour"},
+    {"pen_style", PT_SET_STR, "pen", 0, "Draw tool pen: pen | highlighter | marker | dashed"},
     {"editor_command", PT_SET_STR, "", 0,
      "SyncTeX Ctrl+click opens the source with this; %f = file, %l = line (e.g. code -g %f:%l)"},
     {"last_folder", PT_SET_STR, "", 0, "Folder the Open dialog starts in"},

@@ -73,6 +73,8 @@ extern const struct pen_width {
 } PEN_WIDTHS[3];
 extern const char *MARK_LABELS[5];
 extern const char *MARK_ICONS[5];
+extern const char *PEN_LABELS[PT_PEN_COUNT];
+extern const char *PEN_ICONS[PT_PEN_COUNT];
 
 typedef enum { FIT_NONE, FIT_WIDTH, FIT_HEIGHT } fit_mode;
 
@@ -425,6 +427,8 @@ void pick_mark_colour(tab *t);
 void pick_pen_colour(tab *t);
 void set_pen_colour(tab *t, const unsigned char rgb[3]);
 void set_mark_style(tab *t, int style);
+pt_pen pen_style(void);
+void set_pen_style(tab *t, pt_pen pen);
 void set_mark_colour(tab *t, const unsigned char rgb[3]);
 void run_search(tab *t);
 void step_match(tab *t, int delta);

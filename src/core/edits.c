@@ -16,12 +16,29 @@ const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highl
 const char *pt_shape_names[] = {"rectangle", "ellipse", "line", "arrow"};
 const char *pt_mark_names[] = {"highlight", "underline", "strikeout", "squiggly", "textcolour"};
 
+const char *pt_pen_names[] = {"pen", "highlighter", "marker", "dashed"};
+
 int pt_mark_from_name(const char *name)
 {
     for (int i = 0; i < 5; i++)
         if (name && !strcmp(name, pt_mark_names[i])) return i;
     return -1;
 }
+
+int pt_pen_from_name(const char *name)
+{
+    for (int i = 0; i < PT_PEN_COUNT; i++)
+        if (name && !strcmp(name, pt_pen_names[i])) return i;
+    return -1;
+}
+
+float pt_pen_width(pt_pen pen, float width)
+{
+    if (width <= 0) width = 2;
+    return pen == PT_PEN_HIGHLIGHTER ? width * 3 : pen == PT_PEN_MARKER ? width * 1.5f : width;
+}
+
+float pt_pen_opacity(pt_pen pen) { return pen == PT_PEN_HIGHLIGHTER ? 0.4f : pen == PT_PEN_MARKER ? 0.8f : 1; }
 
 /* ---- state ---- */
 
@@ -534,16 +551,15 @@ static void annot_rgb(fz_context *ctx, pdf_annot *a, const unsigned char rgb[3])
 }
 
 /* Lighten (ISO 32000-1, 11.3.5): dark glyphs take the colour, a light background stays as it is. */
-static void set_lighten(fz_context *ctx, pdf_annot *a)
+static void set_blend(fz_context *ctx, pdf_annot *a, const char *mode)
 {
     pdf_obj *obj = pdf_annot_obj(ctx, a);
-    pdf_obj *lighten = pdf_new_name(ctx, "Lighten");
-    pdf_dict_put(ctx, obj, PDF_NAME(BM), lighten);
+    pdf_obj *bm = pdf_new_name(ctx, mode);
+    pdf_dict_put(ctx, obj, PDF_NAME(BM), bm);
     pdf_obj *ap = pdf_dict_getp(ctx, obj, "AP/N");
     pdf_obj *gs = pdf_dict_getp(ctx, ap, "Resources/ExtGState");
-    for (int i = 0; i < pdf_dict_len(ctx, gs); i++)
-        pdf_dict_put(ctx, pdf_dict_get_val(ctx, gs, i), PDF_NAME(BM), lighten);
-    pdf_drop_obj(ctx, lighten);
+    for (int i = 0; i < pdf_dict_len(ctx, gs); i++) pdf_dict_put(ctx, pdf_dict_get_val(ctx, gs, i), PDF_NAME(BM), bm);
+    pdf_drop_obj(ctx, bm);
 }
 
 void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
@@ -566,7 +582,7 @@ void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
             annot_rgb(ctx, a, it->rgb);
             if (it->text && *it->text) pdf_set_annot_contents(ctx, a, it->text);
             pdf_update_annot(ctx, a);
-            if (it->style == PT_MARK_TEXTCOLOUR) set_lighten(ctx, a);
+            if (it->style == PT_MARK_TEXTCOLOUR) set_blend(ctx, a, "Lighten");
         } else if (it->kind == PT_INK) {
             a = pdf_create_annot(ctx, page, PDF_ANNOT_INK);
             for (int s = 0; s < it->strokes.n; s++) {
@@ -575,8 +591,18 @@ void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
                     pdf_add_annot_ink_list_stroke_vertex(ctx, a, it->strokes.v[s].v[k]);
             }
             annot_rgb(ctx, a, it->rgb);
-            pdf_set_annot_border_width(ctx, a, it->pen_width > 0 ? it->pen_width : 2);
+            float w = pt_pen_width(it->pen, it->pen_width);
+            pdf_set_annot_border_width(ctx, a, w);
+            if (it->pen == PT_PEN_DASHED) {
+                pdf_set_annot_border_style(ctx, a, PDF_BORDER_STYLE_DASHED);
+                pdf_clear_annot_border_dash(ctx, a);
+                pdf_add_annot_border_dash_item(ctx, a, w * 3);
+                pdf_add_annot_border_dash_item(ctx, a, w * 2);
+            }
+            pdf_set_annot_opacity(ctx, a, pt_pen_opacity(it->pen));
             pdf_update_annot(ctx, a);
+            /* a highlighter darkens what is under it instead of covering it */
+            if (it->pen == PT_PEN_HIGHLIGHTER) set_blend(ctx, a, "Multiply");
         } else if (it->kind == PT_SHAPE) {
             float w = it->pen_width > 0 ? it->pen_width : 2;
             if (it->shape == PT_SHAPE_LINE || it->shape == PT_SHAPE_ARROW) {

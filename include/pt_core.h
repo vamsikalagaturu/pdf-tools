@@ -158,10 +158,17 @@ typedef enum { PT_REDACT, PT_TEXT, PT_NOTE, PT_SIGN, PT_IMAGE, PT_HIGHLIGHT, PT_
 typedef enum { PT_MARK_HIGHLIGHT, PT_MARK_UNDERLINE, PT_MARK_STRIKEOUT, PT_MARK_SQUIGGLY, PT_MARK_TEXTCOLOUR } pt_mark;
 /* saved as Square, Circle and Line annotations (an arrow is a Line with an open arrowhead at its end) */
 typedef enum { PT_SHAPE_RECT, PT_SHAPE_ELLIPSE, PT_SHAPE_LINE, PT_SHAPE_ARROW } pt_shape;
+/* ink pens: highlighter 3x wide, 40% opaque, multiplied over the page; marker 1.5x wide, 80% opaque; dashed */
+typedef enum { PT_PEN_PEN, PT_PEN_HIGHLIGHTER, PT_PEN_MARKER, PT_PEN_DASHED } pt_pen;
+#define PT_PEN_COUNT 4
 extern const char *pt_kind_names[];
 extern const char *pt_mark_names[];
 extern const char *pt_shape_names[];
+extern const char *pt_pen_names[];
 int pt_mark_from_name(const char *name);
+int pt_pen_from_name(const char *name);
+float pt_pen_width(pt_pen pen, float width); /* the stroke width a pen draws with `width` chosen */
+float pt_pen_opacity(pt_pen pen);
 PT_VEC(pt_strokes, pt_points);
 typedef struct {
     int page;
@@ -177,6 +184,7 @@ typedef struct {
     pt_rects rects;     /* mark: one rect per line */
     pt_strokes strokes; /* ink; line and arrow shapes: one stroke, start and end */
     float pen_width;    /* ink, shape */
+    pt_pen pen;         /* ink */
     pt_shape shape;     /* shape: rect and ellipse fill `rect` */
     pt_bytes data;      /* sign: PNG, image: file bytes */
 } pt_item;
