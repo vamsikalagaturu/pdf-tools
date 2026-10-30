@@ -50,6 +50,7 @@ tab *tab_new(void)
     t->want_scroll_page = -1;
     t->sel = SEL_NONE;
     t->text_sel_page = -1;
+    t->outline_sel = t->outline_drag = -1;
     t->side_tab = 0;
     t->side_w = SIDEBAR_WIDTH;
     t->side_target = pt_settings_int(&app.settings, "show_sidebar");
@@ -95,9 +96,9 @@ void tab_invalidate_pages(tab *t)
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    fz_drop_outline(CTX, t->outline);
-    t->outline = NULL;
+    pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
+    t->outline_drag = -1;
     int n = t->doc ? pdf_count_pages(CTX, t->doc) : 0;
     char *ticked = calloc((size_t)n + 1, 1);
     for (int p = 0; p < n && p < t->npages && t->ticked; p++) ticked[p] = t->ticked[p];
@@ -168,7 +169,7 @@ void tab_free(tab *t)
 }
 
 /* ---- reading positions: $XDG_DATA_HOME/pdf-tools/positions.tsv, "path\tpage\tzoom\ttop" per line, newest
- * first; zoom 0 = fit width; top = the view's top edge below the page's top, in page points ---- */
+ * first; zoom 0 = fit width, -1 = fit height; top = the view's top edge below the page's top, in page points ---- */
 
 #define POSITIONS_MAX 200
 
@@ -211,7 +212,7 @@ static int position_of(const char *file, int *page, float *zoom, float *top)
 static void current_position(tab *t, int *page, float *zoom, float *top)
 {
     *page = t->pno;
-    *zoom = t->fitted ? 0 : t->zoom;
+    *zoom = t->fit == FIT_WIDTH ? 0 : t->fit == FIT_HEIGHT ? -1 : t->zoom;
     *top = t->off_y && t->off_y[t->pno] > -1e8f ? t->scroll_y / t->zoom - PAGE_GAP - t->off_y[t->pno] : 0;
 }
 
@@ -283,14 +284,15 @@ int tab_load(tab *t, const char *path, const char *password)
     t->pno = 0;
     t->loaded = 1;
     tool_set(t, T_VIEW);
-    t->fit_pending = 1;
+    t->fit_pending = FIT_WIDTH;
     t->scroll_x = t->scroll_y = 0;
     /* back where this file was left */
     int page;
     float zoom, top;
     if (position_of(t->path, &page, &zoom, &top) && page >= 0 && page < t->own) {
         t->pno = page;
-        if (zoom > 0) t->fit_pending = 0, t->zoom = fminf(fmaxf(zoom, 0.3f), 6);
+        if (zoom > 0) t->fit_pending = FIT_NONE, t->zoom = fminf(fmaxf(zoom, 0.3f), 6);
+        else if (zoom < 0) t->fit_pending = FIT_HEIGHT;
         t->restore_pending = 1, t->restore_top = top;
     }
     current_position(t, &t->saved_page, &t->saved_zoom, &t->saved_top);
@@ -325,6 +327,14 @@ void reload_display(tab *t)
             pdf_obj *page = pdf_lookup_page_obj(CTX, fresh, t->st.rotation.v[i].page);
             int old = pdf_dict_get_inheritable_int(CTX, page, PDF_NAME(Rotate));
             pdf_dict_put_int(CTX, page, PDF_NAME(Rotate), ((old + t->st.rotation.v[i].degrees) % 360 + 360) % 360);
+        }
+        if (t->st.stamps.n) {
+            int pages = pdf_count_pages(CTX, fresh);
+            int *out = malloc(sizeof(int) * (size_t)(pages + 1));
+            for (int p = 0; p < pages; p++) out[p] = order_index(t, p);
+            fz_try(CTX) pt_apply_stamps(CTX, fresh, &t->st.stamps, out, t->st.order.n);
+            fz_always(CTX) free(out);
+            fz_catch(CTX) fz_rethrow(CTX);
         }
     }
     fz_catch(CTX) {
@@ -518,8 +528,27 @@ static void touched_pages(tab *t, const pt_state *a, const pt_state *b, char *ou
         if (!pt_state_has_key(&a->deleted, b->deleted.v[i]) && b->deleted.v[i].page < t->npages) out[b->deleted.v[i].page] = 1;
 }
 
+static int same_str(const char *a, const char *b) { return !strcmp(a ? a : "", b ? b : ""); }
+
+/* stamps are drawn into the display copy, numbered in page order */
+static int stamps_differ(const pt_state *a, const pt_state *b)
+{
+    if (a->stamps.n != b->stamps.n) return 1;
+    if (!a->stamps.n) return 0;
+    if (a->order.n != b->order.n || memcmp(a->order.v, b->order.v, sizeof(int) * (size_t)a->order.n)) return 1;
+    for (int i = 0; i < a->stamps.n; i++) {
+        const pt_stamp *x = &a->stamps.v[i], *y = &b->stamps.v[i];
+        if (x->kind != y->kind || !same_str(x->text, y->text) || !same_str(x->suffix, y->suffix) || x->start != y->start ||
+            x->digits != y->digits || x->at != y->at || x->size != y->size || x->opacity != y->opacity ||
+            memcmp(x->rgb, y->rgb, 3) || !same_str(x->pages, y->pages))
+            return 1;
+    }
+    return 0;
+}
+
 static int layout_differs(const pt_state *a, const pt_state *b)
 {
+    if (stamps_differ(a, b)) return 1;
     if (a->rotation.n != b->rotation.n || a->inserted.n != b->inserted.n || a->deleted.n != b->deleted.n) return 1;
     for (int i = 0; i < a->rotation.n; i++)
         if (pt_rotation_of(b, a->rotation.v[i].page) != a->rotation.v[i].degrees) return 1;
@@ -617,7 +646,7 @@ void set_zoom(tab *t, float z)
     float zoom = fminf(fmaxf(z, 0.3f), 6);
     if (zoom != t->zoom) t->zoom_t = ui.now;
     t->zoom = zoom;
-    t->fitted = 0;
+    t->fit = FIT_NONE;
     if (continuous()) t->want_scroll_page = t->pno;
 }
 
@@ -627,20 +656,25 @@ void toggle_continuous(tab *t)
     if (t->doc) t->want_scroll_page = t->pno;
 }
 
-/* the zoom at which the widest page fills the view, or 0 when that is not known yet */
-static float fit_zoom(tab *t)
+/* the zoom at which the widest page fills the view's width (the tallest its height, gaps included), or 0 when
+ * that is not known yet */
+static float fit_zoom(tab *t, fit_mode fit)
 {
-    float width = t->view.width, page_w = 0;
-    for (int i = 0; i < t->st.order.n; i++) page_w = fmaxf(page_w, page_bounds(t, t->st.order.v[i]).x1);
-    return width > 100 && page_w > 0 ? (width - 40) / page_w : 0;
+    float page_w = 0, page_h = 0;
+    for (int i = 0; i < t->st.order.n; i++) {
+        fz_rect b = page_bounds(t, t->st.order.v[i]);
+        page_w = fmaxf(page_w, b.x1), page_h = fmaxf(page_h, b.y1);
+    }
+    if (fit == FIT_HEIGHT) return t->view.height > 100 && page_h > 0 ? t->view.height / (page_h + 2 * PAGE_GAP) : 0;
+    return t->view.width > 100 && page_w > 0 ? (t->view.width - 40) / page_w : 0;
 }
 
-/* Zoom buttons and keys: the zoom glides to `target` around the middle of the view (page_view.c); fit = 1
- * lands in fit-width mode. */
-void zoom_to(tab *t, float target, int fit)
+/* Zoom buttons and keys: the zoom glides to `target` around the middle of the view (page_view.c); a fit mode
+ * lands in that mode. */
+void zoom_to(tab *t, float target, fit_mode fit)
 {
     if (!t->doc) return;
-    if (fit && !(target = fit_zoom(t))) return;
+    if (fit && !(target = fit_zoom(t, fit))) return;
     t->zanim_from = t->zoom;
     t->zanim_to = fminf(fmaxf(target, 0.3f), 6);
     t->zanim_fit = fit;
@@ -649,13 +683,13 @@ void zoom_to(tab *t, float target, int fit)
 
 void zoom_by(tab *t, float factor) { zoom_to(t, (t->zanim_t0 > 0 ? t->zanim_to : t->zoom) * factor, 0); }
 
-void tab_fit_width(tab *t)
+void tab_fit(tab *t, fit_mode fit)
 {
     if (!t->doc) return;
-    float width = t->view.width, z = fit_zoom(t);
+    float z = fit_zoom(t, fit);
     set_zoom(t, z ? z : 1.5f);
-    t->fitted = z > 0;
-    t->fit_w = width;
+    t->fit = z > 0 ? fit : FIT_NONE;
+    t->fit_w = t->view.width, t->fit_h = t->view.height;
 }
 
 /* ---- caches ---- */
@@ -1280,7 +1314,7 @@ void change_pages_begin(tab *t, pt_state *snap)
 void change_pages_end(tab *t, pt_state *snap, int reload)
 {
     push_undo(t, snap);
-    if (reload) reload_display(t);
+    if (reload || t->st.stamps.n) reload_display(t);
     if (order_index(t, t->pno) < 0) t->pno = t->st.order.v[0];
     if (continuous()) t->want_scroll_page = t->pno;
     t->sel = SEL_NONE;
@@ -1821,6 +1855,19 @@ static void write_state(FILE *f, const pt_state *s)
     fwrite(s->crop.v, sizeof(pt_crop), (size_t)s->crop.n, f);
     w_int(f, s->inserted.n);
     for (int i = 0; i < s->inserted.n; i++) w_str(f, s->inserted.v[i].path), w_int(f, s->inserted.v[i].pages);
+    w_int(f, s->stamps.n);
+    for (int i = 0; i < s->stamps.n; i++) {
+        const pt_stamp *st = &s->stamps.v[i];
+        w_int(f, st->kind), w_str(f, st->text), w_str(f, st->suffix), w_int(f, st->start), w_int(f, st->digits);
+        w_int(f, st->at), w_float(f, st->size), w_float(f, st->opacity), w_str(f, st->pages);
+        fwrite(st->rgb, 1, 3, f);
+    }
+    w_str(f, s->meta.title), w_str(f, s->meta.author), w_str(f, s->meta.subject), w_str(f, s->meta.keywords);
+    w_int(f, s->outline_set);
+    w_int(f, s->outline.n);
+    for (int i = 0; i < s->outline.n; i++)
+        w_int(f, s->outline.v[i].level), w_str(f, s->outline.v[i].title), w_int(f, s->outline.v[i].page), w_float(f, s->outline.v[i].y);
+    w_str(f, s->cert.cert), w_int(f, s->cert.page), w_rect(f, s->cert.rect);
 }
 
 static void read_state(FILE *f, pt_state *s)
@@ -1892,13 +1939,30 @@ static void read_state(FILE *f, pt_state *s)
         in.path = r_str(f), in.pages = r_int(f);
         pt_push(s->inserted, in);
     }
+    n = r_int(f);
+    for (int i = 0; i < n; i++) {
+        pt_stamp st = {0};
+        st.kind = (pt_stamp_kind)r_int(f), st.text = r_str(f), st.suffix = r_str(f), st.start = r_int(f), st.digits = r_int(f);
+        st.at = (pt_stamp_at)r_int(f), st.size = r_float(f), st.opacity = r_float(f), st.pages = r_str(f);
+        if (fread(st.rgb, 1, 3, f) != 3) memset(st.rgb, 0, 3);
+        pt_push(s->stamps, st);
+    }
+    s->meta.title = r_str(f), s->meta.author = r_str(f), s->meta.subject = r_str(f), s->meta.keywords = r_str(f);
+    s->outline_set = r_int(f);
+    n = r_int(f);
+    for (int i = 0; i < n; i++) {
+        pt_bookmark b = {0};
+        b.level = r_int(f), b.title = r_str(f), b.page = r_int(f), b.y = r_float(f);
+        pt_push(s->outline, b);
+    }
+    s->cert.cert = r_str(f), s->cert.page = r_int(f), s->cert.rect = r_rect(f);
 }
 
 int tab_write_state(tab *t, const char *file)
 {
     FILE *f = fopen(file, "wb");
     if (!f) return -1;
-    fwrite("PTTAB1", 1, 6, f);
+    fwrite("PTTAB2", 1, 6, f);
     w_str(f, t->path), w_str(f, t->password), w_int(f, t->pno), w_float(f, t->zoom);
     write_state(f, &t->st);
     w_int(f, t->nhist);
@@ -1913,7 +1977,7 @@ tab *tab_read_state(const char *file)
     FILE *f = fopen(file, "rb");
     if (!f) return NULL;
     char magic[6];
-    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB1", 6)) {
+    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB2", 6)) {
         fclose(f);
         return NULL;
     }
@@ -1946,7 +2010,7 @@ tab *tab_read_state(const char *file)
     reload_display(t);
     t->pno = order_index(t, pno) >= 0 ? pno : t->st.order.v[0];
     t->zoom = zoom > 0 ? zoom : 1.5f;
-    t->fit_pending = 0;
+    t->fit_pending = FIT_NONE;
     t->want_scroll_page = t->pno;
     free(path);
     free(password);

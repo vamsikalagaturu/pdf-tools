@@ -226,6 +226,73 @@ static void test_settings(void)
     free(path);
 }
 
+static void test_personal_data(void)
+{
+    if (!pt_have_regex()) return;
+    /* one line that fits the page: text past its edge is clipped */
+    char *path = text_pdf("pii.pdf", "03.11.2024 jane.doe@example.com DE89 3704 0044 0532 0130 00 4111 1111 1111 1111 "
+                                     "DE89370400440532013001");
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_piis found = {0};
+    pt_find_personal_data(ctx, st, &found);
+    int count[PT_PII_COUNT] = {0};
+    for (int i = 0; i < found.n; i++) count[found.v[i].kind]++;
+    CHECK(count[PT_PII_EMAIL] == 1 && count[PT_PII_IBAN] == 1 && count[PT_PII_CARD] == 1 && count[PT_PII_DATE] == 1);
+    for (int i = 0; i < found.n; i++)
+        if (found.v[i].kind == PT_PII_IBAN) CHECK(!strcmp(found.v[i].text, "DE89 3704 0044 0532 0130 00"));
+    pt_piis_free(&found);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+}
+
+/* Bates numbers and a watermark on two pages, new properties and a two-entry outline, through the save */
+static void test_stamps(void)
+{
+    char *path = text_pdf("stamps.pdf", "Body text");
+    pt_state s;
+    pt_state_init(&s, 1);
+    pt_push(s.inserted, ((pt_inserted){pt_strdup(PT_BLANK_PAGE "595x842"), 1}));
+    pt_push(s.order, 1);
+    pt_push(s.stamps, ((pt_stamp){PT_STAMP_BATES, pt_strdup("X-"), NULL, 7, 4, PT_AT_BOTTOM_RIGHT, 10, 1, {0, 0, 0}, NULL}));
+    pt_push(s.stamps, ((pt_stamp){PT_STAMP_WATERMARK, pt_strdup("DRAFT"), NULL, 0, 0, PT_AT_DIAGONAL, 0, 0.3f, {200, 0, 0}, pt_strdup("2")}));
+    s.meta.title = pt_strdup("Stamped");
+    pt_push(s.outline, ((pt_bookmark){0, pt_strdup("Start"), 0, 0}));
+    pt_push(s.outline, ((pt_bookmark){1, pt_strdup("Blank"), 1, 100}));
+    s.outline_set = 1;
+    CHECK(pt_count_edits(&s, 1, 2) == 1 + 2 + 1 + 1);
+    fz_buffer *out = pt_apply_edits(ctx, path, NULL, &s, NULL);
+    pdf_document *doc = pt_open_pdf_bytes(ctx, out->data, out->len, NULL);
+    CHECK(pdf_count_pages(ctx, doc) == 2);
+    for (int i = 0; i < 2; i++) {
+        fz_page *p = fz_load_page(ctx, (fz_document *)doc, i);
+        char *text = pt_page_text(ctx, p);
+        CHECK(strstr(text, i ? "X-0008" : "X-0007") != NULL);
+        CHECK((strstr(text, "DRAFT") != NULL) == (i == 1));
+        free(text);
+        fz_drop_page(ctx, p);
+    }
+    pt_meta meta;
+    pt_get_meta(ctx, doc, &meta);
+    CHECK(meta.title && !strcmp(meta.title, "Stamped"));
+    pt_meta_free(&meta);
+    pt_bookmarks marks = {0};
+    pt_read_outline(ctx, (fz_document *)doc, &marks);
+    CHECK(marks.n == 2 && marks.v[1].level == 1 && marks.v[1].page == 1 && !strcmp(marks.v[1].title, "Blank"));
+    pt_bookmarks_free(&marks);
+    pdf_drop_document(ctx, doc);
+    fz_drop_buffer(ctx, out);
+    /* discarding from the Edits list */
+    pt_ref refs[2] = {{PT_E_STAMP, PT_DOCUMENT, 0, {0, 0}}, {PT_E_OUTLINE, PT_DOCUMENT, 0, {0, 0}}};
+    pt_discard(&s, refs, 2, 1);
+    CHECK(s.stamps.n == 1 && s.stamps.v[0].kind == PT_STAMP_WATERMARK && !s.outline_set && !s.outline.n);
+    pt_state_free(&s);
+    free(path);
+}
+
 /* the test's own temporary folder, emptied and removed at the end */
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
@@ -244,6 +311,8 @@ int main(void)
     test_optimize();
     test_regex();
     test_settings();
+    test_personal_data();
+    test_stamps();
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;
     if (failures) fprintf(stderr, "%d check(s) failed\n", failures);

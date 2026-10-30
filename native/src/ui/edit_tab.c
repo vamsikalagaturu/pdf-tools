@@ -1,6 +1,7 @@
 /* One open PDF in the window: the toolbar with the active tool's options, the find bar, the sidebar and page view
  * side by side, the status line, keyboard shortcuts and the tab's menu entries. */
 #include "tab.h"
+#include "doc_tools.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,7 +87,8 @@ enum {
     A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
     A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
     A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
-    A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_PREV, A_NEXT, A_GOTO, A_TOOL0,
+    A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_FIT_HEIGHT, A_PREV, A_NEXT, A_GOTO,
+    A_PII, A_BATES, A_WATERMARK, A_PROPERTIES, A_EXPORT_IMAGES, A_TOOL0,
     A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5, A_SHAPE0 = A_MARKC0 + 5,
 };
 
@@ -156,10 +158,16 @@ static void run(void *ctx, intptr_t a)
     case A_CONTINUOUS: toggle_continuous(t); break;
     case A_ZOOM_IN: zoom_by(t, 1.25f); break;
     case A_ZOOM_OUT: zoom_by(t, 1 / 1.25f); break;
-    case A_FIT: zoom_to(t, 0, 1); break;
+    case A_FIT: zoom_to(t, 0, FIT_WIDTH); break;
+    case A_FIT_HEIGHT: zoom_to(t, 0, FIT_HEIGHT); break;
     case A_PREV: tab_step_page(t, -1); break;
     case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
+    case A_PII: pii_dialog(t); break;
+    case A_BATES: bates_dialog(t); break;
+    case A_WATERMARK: watermark_dialog(t); break;
+    case A_PROPERTIES: properties_dialog(t); break;
+    case A_EXPORT_IMAGES: export_images_dialog(t); break;
     default:
         if (a >= A_TOOL0 && a < A_TOOL0 + T_COUNT) tool_set(t, (tool_id)(a - A_TOOL0));
         else if (a >= A_STYLE0 && a < A_STYLE0 + 5) set_mark_style(t, (int)(a - A_STYLE0));
@@ -180,6 +188,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(file, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
         menu_item(file, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(file, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
+        menu_item(file, "Export pages as images...", "export-images", NULL, run, t, A_EXPORT_IMAGES, doc, 0);
+        menu_item(file, "Properties...", "about", NULL, run, t, A_PROPERTIES, doc, 0);
         menu_sep(file);
         menu_item(file, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
         menu_item(file, "Remove password...", "unlock", NULL, run, t, A_UNPROTECT, doc && t->password, 0);
@@ -190,17 +200,17 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(file, "Share...", "export", NULL, run, t, A_SHARE, doc, 0);
 #endif
         menu_sep(file);
-        menu_item(file, "Copy file path", NULL, NULL, run, t, A_COPY_PATH, doc, 0);
+        menu_item(file, "Copy file path", "copy", NULL, run, t, A_COPY_PATH, doc, 0);
     }
     if (edit) {
         menu_item(edit, "Undo", "undo", "Ctrl+Z", run, t, A_UNDO, doc && t->nhist, 0);
         menu_item(edit, "Redo", "redo", "Ctrl+Shift+Z", run, t, A_REDO, doc && t->nfut, 0);
         menu_sep(edit);
-        menu_item(edit, "Copy text", NULL, "Ctrl+C", run, t, A_COPY, doc && t->text_sel_page >= 0, 0);
-        menu_item(edit, "Delete selected", NULL, "Del", run, t, A_DELETE, doc, 0);
+        menu_item(edit, "Copy text", "copy", "Ctrl+C", run, t, A_COPY, doc && t->text_sel_page >= 0, 0);
+        menu_item(edit, "Delete selected", "remove", "Del", run, t, A_DELETE, doc, 0);
         menu_sep(edit);
-        menu_item(edit, "Clear page", NULL, NULL, run, t, A_CLEAR_PAGE, doc, 0);
-        menu_item(edit, "Clear all", NULL, NULL, run, t, A_CLEAR_ALL, n > 0, 0);
+        menu_item(edit, "Clear page", "remove", NULL, run, t, A_CLEAR_PAGE, doc, 0);
+        menu_item(edit, "Clear all", "remove", NULL, run, t, A_CLEAR_ALL, n > 0, 0);
         menu_sep(edit);
         menu_item(edit, "Find...", "find", "Ctrl+F", run, t, A_FIND, doc, 0);
     }
@@ -210,19 +220,23 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
             menu_item(tools, TOOLS[i].label, TOOLS[i].icon, sc, run, t, A_TOOL0 + i, doc, t->tool == (tool_id)i);
         }
         menu_sep(tools);
-        menu_item(tools, "Snap to text", NULL, NULL, run, t, A_SNAP, 1, t->snap_text);
-        menu_item(tools, "Auto fill", NULL, NULL, run, t, A_AUTO, 1, t->auto_fill);
-        menu_item(tools, "Redaction colour...", NULL, NULL, run, t, A_REDACT_COLOUR, doc, 0);
+        menu_item(tools, "Snap to text", "snap", NULL, run, t, A_SNAP, 1, t->snap_text);
+        menu_item(tools, "Auto fill", "fill", NULL, run, t, A_AUTO, 1, t->auto_fill);
+        menu_item(tools, "Redaction colour...", "custom-colour", NULL, run, t, A_REDACT_COLOUR, doc, 0);
+        menu_item(tools, "Find personal data...", "pii", NULL, run, t, A_PII, doc, 0);
         menu_sep(tools);
-        ui_menu *s = menu_sub(tools, "Mark style", NULL);
+        menu_item(tools, "Bates numbering...", "bates", NULL, run, t, A_BATES, doc, 0);
+        menu_item(tools, "Watermark...", "stamp", NULL, run, t, A_WATERMARK, doc, 0);
+        menu_sep(tools);
+        ui_menu *s = menu_sub(tools, "Mark style", "highlight");
         for (int i = 0; i < 5; i++) menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, mark_style() == i);
-        ui_menu *c = menu_sub(tools, "Mark colour", NULL);
+        ui_menu *c = menu_sub(tools, "Mark colour", "custom-colour");
         const preset *p = mark_style() == PT_MARK_HIGHLIGHT ? HIGHLIGHT_PRESETS : INK_PRESETS;
         unsigned char current[3];
         mark_colour(mark_style(), current);
         for (int i = 0; i < 5; i++) menu_swatch_item(c, p[i].name, p[i].rgb, run, t, A_MARKC0 + i, !memcmp(current, p[i].rgb, 3));
         menu_sep(c);
-        menu_item(c, "Custom mark colour...", NULL, NULL, run, t, A_MARK_COLOUR, 1, 0);
+        menu_item(c, "Custom mark colour...", "custom-colour", NULL, run, t, A_MARK_COLOUR, 1, 0);
     }
     if (pages) {
         menu_item(pages, "Rotate left", "rotate-left", "Ctrl+Shift+L", run, t, A_ROTATE_LEFT, doc, 0);
@@ -236,8 +250,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(pages, "Remove page(s)", "remove", NULL, run, t, A_REMOVE, doc, 0);
         menu_sep(pages);
         menu_item(pages, "Split into files...", "split", NULL, run, t, A_SPLIT, doc, 0);
-        menu_item(pages, "Tick all pages", NULL, NULL, run, t, A_TICK, doc, 0);
-        menu_item(pages, "Untick all pages", NULL, NULL, run, t, A_UNTICK, doc, 0);
+        menu_item(pages, "Tick all pages", "tick", NULL, run, t, A_TICK, doc, 0);
+        menu_item(pages, "Untick all pages", "untick", NULL, run, t, A_UNTICK, doc, 0);
     }
     if (view) {
         menu_item(view, "Show sidebar", "sidebar", "F9", run, t, A_SIDEBAR, 1, pt_settings_int(&app.settings, "show_sidebar"));
@@ -246,10 +260,11 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(view, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
         menu_item(view, "Zoom out", "zoom-out", "Ctrl+-", run, t, A_ZOOM_OUT, doc, 0);
         menu_item(view, "Fit width", "fit", "Ctrl+0", run, t, A_FIT, doc, 0);
+        menu_item(view, "Fit height", "fit-height", "Ctrl+9", run, t, A_FIT_HEIGHT, doc, 0);
         menu_sep(view);
         menu_item(view, "Previous page", "prev", "Left", run, t, A_PREV, doc, 0);
         menu_item(view, "Next page", "next", "Right", run, t, A_NEXT, doc, 0);
-        menu_item(view, "Go to page...", NULL, "Ctrl+G", run, t, A_GOTO, doc, 0);
+        menu_item(view, "Go to page...", "goto", "Ctrl+G", run, t, A_GOTO, doc, 0);
         menu_sep(view);
     }
 }
@@ -284,7 +299,7 @@ void tab_shortcuts(tab *t)
         {1, 0, KEY_P, A_PRINT}, {1, 0, KEY_G, A_GOTO}, {1, 1, KEY_L, A_ROTATE_LEFT}, {1, 1, KEY_R, A_ROTATE_RIGHT}, {0, 0, KEY_F9, A_SIDEBAR},
         {1, 0, KEY_Z, A_UNDO}, {1, 1, KEY_Z, A_REDO}, {1, 0, KEY_Y, A_REDO}, {1, 0, KEY_C, A_COPY},
         {0, 0, KEY_DELETE, A_DELETE}, {1, 0, KEY_EQUAL, A_ZOOM_IN}, {1, 1, KEY_EQUAL, A_ZOOM_IN}, {1, 0, KEY_KP_ADD, A_ZOOM_IN},
-        {1, 0, KEY_MINUS, A_ZOOM_OUT}, {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT}, {1, 0, KEY_ZERO, A_FIT},
+        {1, 0, KEY_MINUS, A_ZOOM_OUT}, {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT}, {1, 0, KEY_ZERO, A_FIT}, {1, 0, KEY_NINE, A_FIT_HEIGHT},
         {0, 0, KEY_LEFT, A_PREV}, {0, 0, KEY_PAGE_UP, A_PREV}, {0, 0, KEY_RIGHT, A_NEXT}, {0, 0, KEY_PAGE_DOWN, A_NEXT},
     };
     for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
@@ -352,6 +367,9 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
                                      "Manual redaction colour (turns Auto fill off)"))
             run(t, A_REDACT_COLOUR);
         x += 30;
+        if (draw && ui_button(bid(t, 33), (Rectangle){x, y, 32, h}, NULL, "pii", B_FLAT, "Find personal data..."))
+            run(t, A_PII);
+        x += 34;
         x += favourites(t, x, y, h, draw, opts_room - (x - x0), t->auto_fill ? NULL : t->manual_rgb, picked, &hit);
         if (hit) set_redaction_colour(t, picked);
     } else if (t->tool == T_HIGHLIGHT) {
@@ -471,6 +489,7 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
         menu_item(m, "Zoom out", "zoom-out", "Ctrl+-", run, t, A_ZOOM_OUT, doc, 0);
         menu_item(m, "Fit width", "fit", "Ctrl+0", run, t, A_FIT, doc, 0);
+        menu_item(m, "Fit height", "fit-height", "Ctrl+9", run, t, A_FIT_HEIGHT, doc, 0);
         menu_item(m, "Continuous scroll", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
         menu_sep(m);
         menu_item(m, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
@@ -507,7 +526,7 @@ void tab_toolbar(tab *t, Rectangle area)
     int dis = doc ? 0 : B_DISABLED;
     /* right side, laid out first so the tools know how much room they have */
     float save_w = button_width("Save", "save", 0) + 22;
-    float right = 34 * 3 + 52 + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
+    float right = 34 * 4 + 52 + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
     float x = area.x;
     if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", pt_settings_int(&app.settings, "show_sidebar") ? B_CHECKED : B_FLAT,
                   "Show or hide the sidebar (F9)"))
@@ -543,7 +562,13 @@ void tab_toolbar(tab *t, Rectangle area)
     x += 52;
     if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis, "Zoom in (Ctrl++)")) run(t, A_ZOOM_IN);
     x += 34;
-    if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit", B_FLAT | dis, "Fit width (Ctrl+0)")) run(t, A_FIT);
+    if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit", (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis,
+                  "Fit width (Ctrl+0)"))
+        run(t, A_FIT);
+    x += 34;
+    if (ui_button(bid(t, 27), (Rectangle){x, y, 32, h}, NULL, "fit-height", (doc && t->fit == FIT_HEIGHT ? B_CHECKED : B_FLAT) | dis,
+                  "Fit height (Ctrl+9)"))
+        run(t, A_FIT_HEIGHT);
     x += 34;
     x = separator(x, y, h);
     if (ui_button(bid(t, 23), (Rectangle){x, y, 32, h}, NULL, "continuous", (continuous() ? B_CHECKED : B_FLAT) | dis,

@@ -38,6 +38,8 @@ extern const struct pen_width { const char *name; float width; } PEN_WIDTHS[3];
 extern const char *MARK_LABELS[5];
 extern const char *MARK_ICONS[5];
 
+typedef enum { FIT_NONE, FIT_WIDTH, FIT_HEIGHT } fit_mode;
+
 typedef struct { int page; float scale; Texture2D tex; int ok; } page_tex;
 typedef struct { int page; fz_rect rect; } hit;
 PT_VEC(hits, hit);
@@ -109,11 +111,11 @@ struct tab {
     int nhist, caphist, nfut, capfut;
     int pno;
     float zoom;
-    int fitted;       /* the zoom is fit width, for a view fit_w wide */
-    float fit_w;
+    fit_mode fit;     /* the zoom fits the pages to a view fit_w x fit_h */
+    float fit_w, fit_h;
     double zoom_t;    /* when the zoom last changed */
     float zanim_from, zanim_to;   /* a zoom gliding from one value to another since zanim_t0 (0: none) */
-    int zanim_fit;
+    fit_mode zanim_fit;
     double zanim_t0;
     float last_view_h;
     void *last_focus;
@@ -141,7 +143,7 @@ struct tab {
     int want_scroll_page;     /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
     int want_center;
-    int fit_pending;
+    fit_mode fit_pending;
 
     page_tex pix[PIX_CACHE];
     Texture2D *thumbs;
@@ -192,8 +194,11 @@ struct tab {
     char *ticked;             /* per display page */
     int side_tab;                 /* 0 Pages, 1 Annotations, 2 Edits, 3 Outline */
     float side_scroll[4];
-    fz_outline *outline;          /* the document's bookmarks, loaded once per document */
+    pt_bookmarks file_outline;    /* the file's bookmarks (source space), loaded once per document */
     int outline_ok;
+    int outline_sel;              /* selected entry of the Outline tab, -1 none */
+    int outline_drag;             /* entry being dragged, -1 none */
+    float outline_drag_y;
     float side_w, side_shown_w;
     double side_anim_t0;
     float side_anim_from, side_anim_to;
@@ -248,7 +253,8 @@ int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
 void tab_step_page(tab *t, int delta);
 void set_zoom(tab *t, float z);
-void zoom_to(tab *t, float target, int fit);   /* animated; fit = 1: to fit width, target ignored */
+void zoom_to(tab *t, float target, fit_mode fit);   /* animated; with a fit mode the target is ignored */
+void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
 int continuous(void);
 void toggle_continuous(tab *t);

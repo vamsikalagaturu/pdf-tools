@@ -628,7 +628,7 @@ int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int
     float x = r.x + 6, cy = r.y + r.height / 2;
     int icon_only = (flags & B_ICON_ONLY) || !label || !*label;
     if (icon) {
-        float s = 18;
+        float s = fminf(18, r.height - 8);
         float ix = icon_only ? r.x + (r.width - s - ((flags & B_MENU) ? 12 : 0)) / 2 : x;
         draw_icon(icon, (Rectangle){ix, cy - s / 2, s, s}, fg);
         x = ix + s + 6;

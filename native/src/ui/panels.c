@@ -15,7 +15,8 @@ static const struct { const char *label, *icon; } EDIT_KINDS[] = {
     [PT_E_INK] = {"Drawing", "draw"}, [PT_E_SHAPE] = {"Shape", "shapes"}, [PT_E_FORM] = {"Field", "file"}, [PT_E_DELETED] = {"Removed", "remove"},
     [PT_E_COMMENT] = {"Comment", "note"}, [PT_E_ROTATE] = {"Rotated", "rotate"}, [PT_E_CROP] = {"Cropped", "crop"},
     [PT_E_REMOVE_PAGE] = {"Page removed", "remove"}, [PT_E_INSERT] = {"Inserted from", "add"},
-    [PT_E_REORDER] = {"Pages reordered", "sort"},
+    [PT_E_REORDER] = {"Pages reordered", "sort"}, [PT_E_STAMP] = {"Watermark", "stamp"}, [PT_E_META] = {"Properties", "about"},
+    [PT_E_OUTLINE] = {"Outline", "outline"}, [PT_E_CERT] = {"Certificate signature", "certificate"},
 };
 
 static char *shorten(const char *text, int limit)
@@ -396,6 +397,7 @@ static void edit_label(const pt_entry *e, char *out, size_t n)
         int s = pt_mark_from_name(e->name);
         snprintf(out, n, "%s", MARK_LABELS[s < 0 ? 0 : s]);
     } else if (e->kind == PT_E_INSERT && !*e->detail) snprintf(out, n, "Blank page inserted");
+    else if (e->kind == PT_E_STAMP && !strcmp(e->name, "bates")) snprintf(out, n, "Bates numbers");
     else if (*e->name && (e->kind == PT_E_FORM || e->kind == PT_E_DELETED)) snprintf(out, n, "%s %s", EDIT_KINDS[e->kind].label, e->name);
     else snprintf(out, n, "%s", EDIT_KINDS[e->kind].label);
 }
@@ -406,6 +408,7 @@ static const char *edit_icon(const pt_entry *e)
         int s = pt_mark_from_name(e->name);
         return MARK_ICONS[s < 0 ? 0 : s];
     }
+    if (e->kind == PT_E_STAMP && !strcmp(e->name, "bates")) return "bates";
     return EDIT_KINDS[e->kind].icon;
 }
 
@@ -552,90 +555,236 @@ static void edits_panel(tab *t, Rectangle area)
 
 /* ---- Outline ---- */
 
-static fz_outline *outline(tab *t)
+/* The outline shown: the edited one, else the file's (read once; y converted to source space). */
+static pt_bookmarks *outline(tab *t)
 {
+    if (t->st.outline_set) return &t->st.outline;
     if (!t->outline_ok) {
         t->outline_ok = 1;
-        fz_try(CTX) t->outline = fz_load_outline(CTX, (fz_document *)t->doc);
-        fz_catch(CTX) {
-            fz_ignore_error(CTX);
-            t->outline = NULL;
+        fz_try(CTX) pt_read_outline(CTX, (fz_document *)t->doc, &t->file_outline);
+        fz_catch(CTX) fz_ignore_error(CTX);
+        for (int i = 0; i < t->file_outline.n; i++) {
+            pt_bookmark *b = &t->file_outline.v[i];
+            if (b->page >= 0 && b->page < t->npages) b->y = disp_to_src(t, b->page, fz_make_point(0, b->y)).y;
         }
     }
-    return t->outline;
+    return &t->file_outline;
 }
 
-typedef struct { fz_outline *o; int level, page; } outline_row;
-PT_VEC(outline_rows, outline_row);
-
-static void flatten(tab *t, fz_outline *o, int level, outline_rows *out)
+/* an edit of the outline: the file's entries become the edited outline first */
+static void outline_begin(tab *t, pt_state *snap)
 {
-    for (; o; o = o->next) {
-        int page = -1;
-        fz_try(CTX) page = fz_page_number_from_location(CTX, (fz_document *)t->doc, o->page);
-        fz_catch(CTX) fz_ignore_error(CTX);
-        pt_push(*out, ((outline_row){o, level, page}));
-        flatten(t, o->down, level + 1, out);
+    snapshot(t, snap);
+    if (t->st.outline_set) return;
+    pt_bookmarks *file = outline(t);
+    for (int i = 0; i < file->n; i++) {
+        pt_bookmark b = file->v[i];
+        b.title = pt_strdup(b.title);
+        pt_push(t->st.outline, b);
     }
+    t->st.outline_set = 1;
+}
+
+/* entries i .. end-1: i and its sub-entries */
+static int subtree_end(const pt_bookmarks *b, int i)
+{
+    int end = i + 1;
+    while (end < b->n && b->v[end].level > b->v[i].level) end++;
+    return end;
+}
+
+/* move entries [i, end) so they start at `to` (an index outside them, counted before the move) */
+static void move_block(pt_bookmarks *b, int i, int end, int to)
+{
+    int n = end - i;
+    pt_bookmark *tmp = malloc(sizeof *tmp * (size_t)n);
+    memcpy(tmp, b->v + i, sizeof *tmp * (size_t)n);
+    if (to > i) {
+        memmove(b->v + i, b->v + end, sizeof *tmp * (size_t)(to - end));
+        memcpy(b->v + to - n, tmp, sizeof *tmp * (size_t)n);
+    } else {
+        memmove(b->v + to + n, b->v + to, sizeof *tmp * (size_t)(i - to));
+        memcpy(b->v + to, tmp, sizeof *tmp * (size_t)n);
+    }
+    free(tmp);
+}
+
+enum { O_ADD, O_RENAME, O_DELETE, O_UP, O_DOWN, O_IN, O_OUT };
+
+static void outline_renamed(void *ctx, const char *text)
+{
+    tab *t = ctx;
+    if (!text || t->outline_sel < 0 || t->outline_sel >= outline(t)->n) return;
+    pt_state snap;
+    outline_begin(t, &snap);
+    pt_bookmark *b = &t->st.outline.v[t->outline_sel];
+    free(b->title);
+    b->title = pt_strdup(text);
+    push_undo(t, &snap);
+}
+
+static void outline_action(void *ctx, intptr_t action)
+{
+    tab *t = ctx;
+    int i = t->outline_sel, n = outline(t)->n;
+    if (action != O_ADD && (i < 0 || i >= n)) return;
+    if (action == O_RENAME) {
+        input_box("Rename entry", "Title:", outline(t)->v[i].title, 0, outline_renamed, t);
+        return;
+    }
+    pt_state snap;
+    outline_begin(t, &snap);
+    pt_bookmarks *b = &t->st.outline;
+    int changed = 1;
+    if (action == O_ADD) {
+        /* the current page, at the top of the view */
+        fz_point top = screen_to_scene(t, (Vector2){t->view.x, t->view.y});
+        fz_rect page = page_scene_rect(t, t->pno);
+        float y = fmaxf(0, top.y - page.y0);
+        pt_bookmark e = {i >= 0 ? b->v[i].level : 0, pt_strdup("New entry"), t->pno, disp_to_src(t, t->pno, fz_make_point(0, y)).y};
+        int at = i >= 0 ? subtree_end(b, i) : b->n;
+        pt_push(*b, e);
+        memmove(b->v + at + 1, b->v + at, sizeof(pt_bookmark) * (size_t)(b->n - 1 - at));
+        b->v[at] = e;
+        t->outline_sel = at;
+    } else if (action == O_DELETE) {
+        free(b->v[i].title);
+        for (int k = i + 1; k < subtree_end(b, i); k++) b->v[k].level--;
+        memmove(b->v + i, b->v + i + 1, sizeof(pt_bookmark) * (size_t)(b->n - i - 1));
+        b->n--;
+        if (t->outline_sel >= b->n) t->outline_sel = b->n - 1;
+    } else if (action == O_UP || action == O_DOWN) {
+        int end = subtree_end(b, i), lvl = b->v[i].level;
+        if (action == O_UP) {
+            int prev = i - 1;
+            while (prev >= 0 && b->v[prev].level > lvl) prev--;
+            if (prev >= 0 && b->v[prev].level == lvl) {
+                move_block(b, i, end, prev);
+                t->outline_sel = prev;
+            } else changed = 0;
+        } else if (end < b->n && b->v[end].level == lvl) {
+            int next_end = subtree_end(b, end);
+            move_block(b, i, end, next_end);
+            t->outline_sel = next_end - (end - i);
+        } else changed = 0;
+    } else if (action == O_IN || action == O_OUT) {
+        int end = subtree_end(b, i), d = action == O_IN ? 1 : -1;
+        if ((d > 0 && (i == 0 || b->v[i].level > b->v[i - 1].level)) || (d < 0 && b->v[i].level == 0)) changed = 0;
+        else
+            for (int k = i; k < end; k++) b->v[k].level += d;
+    }
+    if (changed) push_undo(t, &snap);
+    else pt_state_free(&snap);
 }
 
 static void outline_panel(tab *t, Rectangle area)
 {
-    outline_rows rows = {0};
-    flatten(t, outline(t), 0, &rows);
-    const float h = 28;
+    pt_bookmarks *rows = outline(t);
+    const float h = 28, bar = 38;
+    Rectangle list = {area.x, area.y, area.width, area.height - bar};
     float *scroll = &t->side_scroll[3];
-    if (ui_hover(area) && ui.wheel) *scroll -= ui.wheel * 60;
-    *scroll = fminf(fmaxf(*scroll, 0), fmaxf(0, rows.n * h + 8 - area.height));
+    if (ui_hover(list) && ui.wheel) *scroll -= ui.wheel * 60;
+    *scroll = fminf(fmaxf(*scroll, 0), fmaxf(0, rows->n * h + 8 - list.height));
+    if (t->outline_sel >= rows->n) t->outline_sel = -1;
     /* the current section: the last entry at or before the current page */
     int here = order_index(t, t->pno), current = -1;
-    for (int i = 0; i < rows.n; i++) {
-        int k = rows.v[i].page >= 0 ? order_index(t, rows.v[i].page) : -1;
+    for (int i = 0; i < rows->n; i++) {
+        int k = rows->v[i].page >= 0 ? order_index(t, rows->v[i].page) : -1;
         if (k >= 0 && k <= here) current = i;
     }
-    ui_scissor_begin(area);
-    float y = area.y + 4 - *scroll;
-    for (int i = 0; i < rows.n; i++, y += h) {
-        if (y + h < area.y || y > area.y + area.height) continue;
-        outline_row *r = &rows.v[i];
+    ui_scissor_begin(list);
+    float y = list.y + 4 - *scroll;
+    int drop = -1;
+    for (int i = 0; i < rows->n; i++, y += h) {
+        pt_bookmark *r = &rows->v[i];
+        Rectangle row = {list.x + 4, y, list.width - 16, h - 2};
+        if (t->outline_drag >= 0 && ui.mouse.y >= y && ui.mouse.y < y + h) drop = ui.mouse.y < y + h / 2 ? i : i + 1;
+        if (y + h < list.y || y > list.y + list.height) continue;
         int k = r->page >= 0 ? order_index(t, r->page) : -1;
-        Rectangle row = {area.x + 4, y, area.width - 16, h - 2};
         int hover = ui_hover(row);
-        if (i == current) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.highlight, 45));
+        if (i == t->outline_sel) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.highlight, 90));
+        else if (i == current) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.highlight, 45));
         else if (hover) DrawRectangleRounded(row, 0.2f, 4, with_alpha(pal.button, 200));
         char num[16] = "";
         if (k >= 0) snprintf(num, sizeof num, "%d", k + 1);
         float nw = text_width(num, FS_NORMAL, F_REGULAR);
         float indent = 8 + fminf(r->level, 6) * 14;
         Rectangle label = {row.x + indent, row.y, row.width - indent - nw - 16, row.height};
-        const char *title = r->o->title ? r->o->title : "";
+        const char *title = r->title ? r->title : "";
         char *shown = elide_right(title, label.width, FS_NORMAL, r->level ? F_REGULAR : F_BOLD);
         draw_text_in(shown, label, FS_NORMAL, r->level ? F_REGULAR : F_BOLD, k >= 0 ? pal.window_text : pal.disabled_text, -1);
         free(shown);
         draw_text_in(num, (Rectangle){row.x + row.width - nw - 8, row.y, nw, row.height}, FS_NORMAL, F_REGULAR, pal.disabled_text, 1);
         ui_tooltip(ui_id(t, 40000 + i), row, title);
-        if (hover && ui.released && k >= 0) {
-            link_info l = {fz_empty_rect, r->page, r->o->x, r->o->y, NULL};
+        if (hover && ui.pressed) {
+            t->outline_sel = i;
+            t->outline_drag = i;
+            t->outline_drag_y = ui.mouse.y;
+            if (ui.dclick) outline_action(t, O_RENAME);
+        }
+        if (hover && ui.rpressed) {
+            t->outline_sel = i;
+            ui_menu *m = menu_new();
+            menu_item(m, "Rename...", "text", NULL, outline_action, t, O_RENAME, 1, 0);
+            menu_item(m, "Add entry here", "add", NULL, outline_action, t, O_ADD, 1, 0);
+            menu_item(m, "Delete", "remove", NULL, outline_action, t, O_DELETE, 1, 0);
+            menu_open(m, ui.mouse);
+        }
+        if (hover && ui.released && t->outline_drag == i && fabsf(ui.mouse.y - t->outline_drag_y) < CLICK_SLOP_PX && k >= 0) {
+            fz_point at = src_to_disp(t, r->page, fz_make_point(0, r->y));
+            link_info l = {fz_empty_rect, r->page, 0, at.y, NULL};
             follow_link(t, &l);
         }
     }
+    if (t->outline_drag >= 0 && ui.down && fabsf(ui.mouse.y - t->outline_drag_y) >= CLICK_SLOP_PX) {
+        if (drop < 0) drop = ui.mouse.y < list.y + 4 - *scroll ? 0 : rows->n;
+        float ly = list.y + 4 - *scroll + drop * h - 1;
+        DrawRectangleRec((Rectangle){list.x + 8, ly, list.width - 24, 2}, pal.highlight);
+        set_cursor(CUR_CLOSED_HAND);
+    }
+    if (t->outline_drag >= 0 && !ui.down) {
+        int i = t->outline_drag;
+        t->outline_drag = -1;
+        if (fabsf(ui.mouse.y - t->outline_drag_y) >= CLICK_SLOP_PX && drop >= 0 && i < rows->n) {
+            int end = subtree_end(rows, i);
+            if (drop < i || drop > end) {
+                pt_state snap;
+                outline_begin(t, &snap);
+                pt_bookmarks *b = &t->st.outline;
+                /* it lands at the level of the entry it now follows (or the top) */
+                int lvl = drop > 0 ? b->v[drop - 1].level : 0, d = lvl - b->v[i].level;
+                for (int k = i; k < end; k++) b->v[k].level += d;
+                move_block(b, i, end, drop);
+                t->outline_sel = drop > i ? drop - (end - i) : drop;
+                push_undo(t, &snap);
+            }
+        }
+    }
+    if (!rows->n) draw_text_in("No outline. Add an entry for the current page.", list, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
     ui_scissor_end();
-    pt_vec_free(rows);
+    /* the edit bar */
+    ui_separator_h(area.x, area.x + area.width, list.y + list.height);
+    float bx = area.x + 4, by = list.y + list.height + 3;
+    int sel = t->outline_sel >= 0 ? 0 : B_DISABLED;
+    struct { const char *icon, *tip; int action, flags; } buttons[] = {
+        {"add", "Add an entry for the current page", O_ADD, 0}, {"text", "Rename", O_RENAME, sel},
+        {"remove", "Delete", O_DELETE, sel}, {"up", "Move up", O_UP, sel}, {"down", "Move down", O_DOWN, sel},
+        {"prev", "Move out a level", O_OUT, sel}, {"next", "Move in a level", O_IN, sel},
+    };
+    for (size_t k = 0; k < sizeof buttons / sizeof *buttons && bx + 32 <= area.x + area.width; k++, bx += 34)
+        if (ui_button(ui_id(t, 42000 + (int)k), (Rectangle){bx, by, 32, 32}, NULL, buttons[k].icon, B_FLAT | buttons[k].flags, buttons[k].tip))
+            outline_action(t, buttons[k].action);
 }
 
 void sidebar_frame(tab *t, Rectangle area)
 {
     DrawRectangleRec(area, pal.base);
     if (!t->doc) return;
-    /* tab strip; Outline only for documents that have one */
-    int has_outline = outline(t) != NULL;
-    if (t->side_tab == 3 && !has_outline) t->side_tab = 0;
     int counts[4] = {0, count_annotations(t), 0, 0};
     pt_entries *entries = current_entries(t);
     counts[2] = entries->n;
     static const char *names[4] = {"Pages", "Annotations", "Edits", "Outline"};
-    int order[4] = {0, 3, 1, 2}, n = has_outline ? 4 : 3;
-    if (!has_outline) order[1] = 1, order[2] = 2;
+    int order[4] = {0, 3, 1, 2}, n = 4;
     /* labels with their counts, or without them (counts in the tooltip) when that does not fit */
     char labels[4][48];
     float pad = 18;

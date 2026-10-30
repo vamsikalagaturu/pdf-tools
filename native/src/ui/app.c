@@ -342,38 +342,38 @@ static void m_recent(void *ctx, intptr_t i)
 ui_menu *app_build_menu(tab *t)
 {
     ui_menu *m = menu_new();
-    ui_menu *f = menu_sub(m, "File", NULL);
-    menu_item(f, "New window", NULL, "Ctrl+N", m_action, NULL, 0, 1, 0);
-    menu_item(f, "Home", NULL, NULL, m_action, NULL, 1, 1, 0);
+    ui_menu *f = menu_sub(m, "File", "file");
+    menu_item(f, "New window", "window", "Ctrl+N", m_action, NULL, 0, 1, 0);
+    menu_item(f, "Home", "home", NULL, m_action, NULL, 1, 1, 0);
     menu_item(f, "Open...", "open", "Ctrl+O", m_action, NULL, 2, 1, 0);
-    ui_menu *r = menu_sub(f, "Open recent", NULL);
+    ui_menu *r = menu_sub(f, "Open recent", "recent");
     const pt_strs *recent = pt_settings_list(&app.settings, "recent_files");
     for (int i = 0; recent && i < recent->n; i++)
-        if (pt_exists(recent->v[i])) menu_item(r, pt_basename(recent->v[i]), NULL, NULL, m_recent, NULL, i, 1, 0);
-    if (menu_empty(r)) menu_item(r, "No recent files", NULL, NULL, NULL, NULL, 0, 0, 0);
+        if (pt_exists(recent->v[i])) menu_item(r, pt_basename(recent->v[i]), "file", NULL, m_recent, NULL, i, 1, 0);
+    if (menu_empty(r)) menu_item(r, "No recent files", "file", NULL, NULL, NULL, 0, 0, 0);
     menu_item(f, "Close tab", "close", "Ctrl+W", m_action, NULL, 3, 1, 0);
-    menu_item(f, "Close window", NULL, "Ctrl+Shift+W", m_action, NULL, 4, 1, 0);
+    menu_item(f, "Close window", "close", "Ctrl+Shift+W", m_action, NULL, 4, 1, 0);
     ui_menu *e = NULL, *tools = NULL, *pages = NULL;
     if (t) tab_menu_items(t, f, NULL, NULL, NULL, NULL);
     menu_sep(f);
     menu_item(f, "Combine & split PDFs...", "merge", "Ctrl+M", m_action, NULL, 5, 1, 0);
     if (t) {
-        e = menu_sub(m, "Edit", NULL);
-        tools = menu_sub(m, "Tools", NULL);
-        pages = menu_sub(m, "Pages", NULL);
+        e = menu_sub(m, "Edit", "edit");
+        tools = menu_sub(m, "Tools", "tools");
+        pages = menu_sub(m, "Pages", "pages");
         tab_menu_items(t, NULL, e, tools, pages, NULL);
     }
     menu_sep(f);
-    menu_item(f, "Quit", NULL, "Ctrl+Q", m_action, NULL, 6, 1, 0);
-    ui_menu *v = menu_sub(m, "View", NULL);
+    menu_item(f, "Quit", "quit", "Ctrl+Q", m_action, NULL, 6, 1, 0);
+    ui_menu *v = menu_sub(m, "View", "eye");
     if (t) tab_menu_items(t, NULL, NULL, NULL, NULL, v);
-    menu_item(v, "Next tab", NULL, "Ctrl+Tab", m_action, NULL, 7, 1, 0);
-    menu_item(v, "Previous tab", NULL, "Ctrl+Shift+Tab", m_action, NULL, 8, 1, 0);
+    menu_item(v, "Next tab", "next", "Ctrl+Tab", m_action, NULL, 7, 1, 0);
+    menu_item(v, "Previous tab", "prev", "Ctrl+Shift+Tab", m_action, NULL, 8, 1, 0);
     menu_sep(v);
-    ui_menu *a = menu_sub(v, "Appearance", NULL);
+    ui_menu *a = menu_sub(v, "Appearance", "appearance");
     int dark = strcmp(pt_settings_str(&app.settings, "theme"), "light");
-    menu_item(a, "Dark", NULL, NULL, m_action, NULL, 9, 1, dark);
-    menu_item(a, "Light", NULL, NULL, m_action, NULL, 10, 1, !dark);
+    menu_item(a, "Dark", "dark", NULL, m_action, NULL, 9, 1, dark);
+    menu_item(a, "Light", "light", NULL, m_action, NULL, 10, 1, !dark);
     menu_sep(m);
     menu_item(m, "About " APP_NAME, "about", NULL, m_action, NULL, 11, 1, 0);
     return m;
@@ -425,8 +425,8 @@ static void tab_strip(Rectangle r)
         }
         if (hover && ui.rpressed && w->kind == TAB_DOC) {
             ui_menu *m = menu_new();
-            menu_item(m, "Move to new window", NULL, NULL, t_move, w->doc, 0, 1, 0);
-            menu_item(m, "Close", NULL, NULL, t_close, w->doc, 0, 1, 0);
+            menu_item(m, "Move to new window", "new-window", NULL, t_move, w->doc, 0, 1, 0);
+            menu_item(m, "Close", "close", NULL, t_close, w->doc, 0, 1, 0);
             menu_open(m, ui.mouse);
         }
         if (app.dragging_tab && ui.down && fabsf(ui.mouse.x - app.tab_drag_x) > 12 && i != app.current &&

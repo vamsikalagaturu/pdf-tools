@@ -505,8 +505,8 @@ static void handle_input(tab *t, Rectangle area)
         fz_point anchor = screen_to_scene(t, ui.double_tap_at);
         float old = t->zoom;
         t->zanim_t0 = 0;
-        if (t->fitted) set_zoom(t, t->zoom * 2);
-        else tab_fit_width(t);
+        if (t->fit) set_zoom(t, t->zoom * 2);
+        else tab_fit(t, FIT_WIDTH);
         t->want_scroll_page = -1;
         t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
         if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
@@ -706,8 +706,8 @@ void view_frame(tab *t, Rectangle area)
     if (!t->doc) return;
     ui_touch_zoom_area(area);
     if (t->fit_pending && area.width > 100) {
-        t->fit_pending = 0;
-        tab_fit_width(t);
+        tab_fit(t, t->fit_pending);
+        t->fit_pending = FIT_NONE;
         t->scroll_x = t->scroll_y = 0;
         t->want_scroll_page = -1;
     }
@@ -724,18 +724,26 @@ void view_frame(tab *t, Rectangle area)
         else t->scroll_x = 0;
         if (k >= 1) {
             t->zanim_t0 = 0;
-            if (t->zanim_fit) t->fitted = 1, t->fit_w = area.width;
+            if (t->zanim_fit) {
+                t->fit = t->zanim_fit, t->fit_w = area.width, t->fit_h = area.height;
+                if (t->fit == FIT_HEIGHT) t->want_scroll_page = t->pno;
+            }
         }
         ui.dirty = 1;
     }
-    /* fit width holds through rotation and resizing until the zoom is changed */
-    if (t->fitted && area.width > 100 && fabsf(area.width - t->fit_w) > 0.5f) {
+    /* a fit holds through rotation and resizing until the zoom is changed */
+    if (t->fit == FIT_WIDTH && area.width > 100 && fabsf(area.width - t->fit_w) > 0.5f) {
         /* the scene point at the top of the view stays there */
         fz_point anchor = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y});
         float old = t->zoom;
-        tab_fit_width(t);
+        tab_fit(t, FIT_WIDTH);
         t->want_scroll_page = -1;
         t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
+    }
+    /* not while a field has focus: a soft keyboard opening shortens the view */
+    if (t->fit == FIT_HEIGHT && !ui.focus && area.height > 100 && fabsf(area.height - t->fit_h) > 0.5f) {
+        tab_fit(t, FIT_HEIGHT);
+        t->want_scroll_page = t->pno;
     }
     layout_scene(t);
     if (t->restore_pending && t->off_y[t->pno] > -1e8f) {

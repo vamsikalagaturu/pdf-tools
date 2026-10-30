@@ -268,7 +268,6 @@ const char *tab_path(const tab *t);
 char *tab_title(const tab *t);
 int tab_edit_count(const tab *t);
 void tab_close(tab *t);                                     /* asks about unsaved edits, then removes the tab */
-void tab_fit_width(tab *t);
 void tab_forward_search(tab *t, const char *source, int line);
 void tab_poll(tab *t);
 fz_buffer *tab_edited(tab *t, const pt_ints *pages, pt_leaks *leaks);

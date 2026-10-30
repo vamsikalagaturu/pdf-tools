@@ -236,17 +236,17 @@ static void crop_menu(tab *t, int page, fz_rect rect)
     pt_ints ticked = {0};
     ticked_pages(t, &ticked);
     ui_menu *m = menu_new();
-    menu_item(m, "Crop this page", NULL, NULL, crop_this, NULL, 0, 1, 0);
+    menu_item(m, "Crop this page", "crop", NULL, crop_this, NULL, 0, 1, 0);
     char *all = pt_format("Crop all %d pages to this area", t->st.order.n);
-    menu_item(m, all, NULL, NULL, crop_this, NULL, 1, 1, 0);
+    menu_item(m, all, "crop", NULL, crop_this, NULL, 1, 1, 0);
     free(all);
     if (ticked.n) {
         char *tk = pt_format("Crop %d ticked pages to this area", ticked.n);
-        menu_item(m, tk, NULL, NULL, crop_this, NULL, 2, 1, 0);
+        menu_item(m, tk, "crop", NULL, crop_this, NULL, 2, 1, 0);
         free(tk);
     }
     menu_sep(m);
-    menu_item(m, "Crop this page to its content instead", NULL, NULL, crop_content_page, NULL, 0, 1, 0);
+    menu_item(m, "Crop this page to its content instead", "crop", NULL, crop_content_page, NULL, 0, 1, 0);
     menu_open(m, ui.mouse);
     pt_vec_free(ticked);
 }
@@ -677,7 +677,7 @@ void add_page_actions(tab *t, ui_menu *m, const pt_ints *pages)
     for (int i = 0; i < pages->n; i++) any |= pt_crop_of(&t->st, pages->v[i]) != NULL;
     if (any) {
         snprintf(buf, sizeof buf, "Remove crop from %s", label);
-        menu_item(m, buf, NULL, NULL, a_page_uncrop, NULL, 0, 1, 0);
+        menu_item(m, buf, "remove", NULL, a_page_uncrop, NULL, 0, 1, 0);
     }
     menu_sep(m);
     menu_item(m, "Insert pages from PDF after this...", "add", NULL, a_insert_after, NULL, 0, 1, 0);
@@ -696,50 +696,50 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
     if (kind == SEL_ITEM) {
         pt_item *it = &t->st.items.v[index];
         mc.kind = SEL_ITEM;
-        if (it->kind == PT_TEXT) menu_item(m, "Edit text", NULL, NULL, a_edit_text, NULL, 0, 1, 0);
-        else if (it->kind == PT_IMAGE) menu_item(m, "Replace image...", NULL, NULL, a_replace_image, NULL, 0, 1, 0);
+        if (it->kind == PT_TEXT) menu_item(m, "Edit text", "text", NULL, a_edit_text, NULL, 0, 1, 0);
+        else if (it->kind == PT_IMAGE) menu_item(m, "Replace image...", "image", NULL, a_replace_image, NULL, 0, 1, 0);
         else if (it->kind == PT_INK || it->kind == PT_SHAPE) {
-            ui_menu *c = menu_sub(m, "Colour", NULL);
+            ui_menu *c = menu_sub(m, "Colour", "custom-colour");
             for (int i = 0; i < 6; i++) menu_swatch_item(c, PEN_COLOURS[i].name, PEN_COLOURS[i].rgb, a_ink_colour, NULL, i, !memcmp(it->rgb, PEN_COLOURS[i].rgb, 3));
             favourite_items(c, it->rgb);
             menu_sep(c);
-            menu_item(c, "Custom...", NULL, NULL, a_pick_obj_colour, NULL, 0, 1, 0);
-            ui_menu *w = menu_sub(m, "Width", NULL);
-            for (int i = 0; i < 3; i++) menu_item(w, PEN_WIDTHS[i].name, NULL, NULL, a_ink_width, NULL, i, 1, it->pen_width == PEN_WIDTHS[i].width);
-        } else if (it->kind == PT_NOTE) menu_item(m, "Edit note...", NULL, NULL, a_item_clicked, NULL, 0, 1, 0);
+            menu_item(c, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
+            ui_menu *w = menu_sub(m, "Width", "draw");
+            for (int i = 0; i < 3; i++) menu_item(w, PEN_WIDTHS[i].name, "draw", NULL, a_ink_width, NULL, i, 1, it->pen_width == PEN_WIDTHS[i].width);
+        } else if (it->kind == PT_NOTE) menu_item(m, "Edit note...", "note", NULL, a_item_clicked, NULL, 0, 1, 0);
         else if (it->kind == PT_HIGHLIGHT) {
-            menu_item(m, "Comment...", NULL, NULL, a_item_clicked, NULL, 0, 1, 0);
-            ui_menu *s = menu_sub(m, "Style", NULL);
+            menu_item(m, "Comment...", "comment", NULL, a_item_clicked, NULL, 0, 1, 0);
+            ui_menu *s = menu_sub(m, "Style", "highlight");
             for (int i = 0; i < 5; i++) menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, a_restyle, NULL, i, 1, (int)it->style == i);
-            ui_menu *c = menu_sub(m, "Colour", NULL);
+            ui_menu *c = menu_sub(m, "Colour", "custom-colour");
             const preset *pal5 = palette_for(it->style);
             for (int i = 0; i < 5; i++) menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_recolour_preset, NULL, i, !memcmp(it->rgb, pal5[i].rgb, 3));
             favourite_items(c, it->rgb);
             menu_sep(c);
-            menu_item(c, "Custom...", NULL, NULL, a_pick_obj_colour, NULL, 0, 1, 0);
+            menu_item(c, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
         } else if (it->kind == PT_REDACT) {
-            ui_menu *f = menu_sub(m, "Fill colour", NULL);
+            ui_menu *f = menu_sub(m, "Fill colour", "fill");
             static const unsigned char black[3] = {0, 0, 0}, white[3] = {255, 255, 255};
-            menu_item(f, "Colour around it", NULL, NULL, a_fill_around, NULL, 0, 1, 0);
+            menu_item(f, "Colour around it", "fill", NULL, a_fill_around, NULL, 0, 1, 0);
             menu_swatch_item(f, "Black", black, a_fill, NULL, 0, 0);
             menu_swatch_item(f, "White", white, a_fill, NULL, 1, 0);
-            menu_item(f, "Custom...", NULL, NULL, a_pick_obj_colour, NULL, 0, 1, 0);
+            menu_item(f, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
         }
         menu_sep(m);
         menu_item(m, "Delete", "remove", NULL, a_delete_item, NULL, 0, 1, 0);
     } else if (kind == SEL_ANNOT) {
-        menu_item(m, "Comment...", NULL, NULL, a_item_clicked, NULL, 0, 1, 0);
+        menu_item(m, "Comment...", "comment", NULL, a_item_clicked, NULL, 0, 1, 0);
         menu_sep(m);
         menu_item(m, "Delete", "remove", NULL, a_delete_annot, NULL, 0, 1, 0);
     } else if (crop) {
-        menu_item(m, "Crop to content instead", NULL, NULL, a_crop_content, NULL, 0, 1, 0);
+        menu_item(m, "Crop to content instead", "crop", NULL, a_crop_content, NULL, 0, 1, 0);
         menu_sep(m);
         menu_item(m, "Remove crop", "remove", NULL, a_uncrop, NULL, 0, 1, 0);
     }
     menu_sep(m);
     pt_ints pages = {0};
     target_pages(t, page, &pages);
-    add_page_actions(t, menu_sub(m, "Page", NULL), &pages);
+    add_page_actions(t, menu_sub(m, "Page", "pages"), &pages);
     pt_vec_free(pages);
     mc_set(t, page, index, kind);
     menu_open(m, at);
@@ -787,24 +787,24 @@ void on_context(tab *t, fz_point scene, Vector2 at)
     free(mc.text);
     mc.text = pt_strdup(t->text_sel_text);
     ui_menu *m = menu_new();
-    menu_item(m, "Copy", NULL, NULL, a_copy, NULL, 0, 1, 0);
+    menu_item(m, "Copy", "copy", NULL, a_copy, NULL, 0, 1, 0);
     menu_sep(m);
     for (int i = 0; i < 5; i++) menu_item(m, MARK_LABELS[i], MARK_ICONS[i], NULL, a_mark_sel, NULL, i, 1, 0);
     char *title = pt_format("%s colour", MARK_LABELS[mark_style()]);
-    ui_menu *c = menu_sub(m, title, NULL);
+    ui_menu *c = menu_sub(m, title, "custom-colour");
     free(title);
     unsigned char current[3];
     mark_colour(mark_style(), current);
     const preset *pal5 = palette_for(mark_style());
     for (int i = 0; i < 5; i++) menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_mark_colour, NULL, i, !memcmp(current, pal5[i].rgb, 3));
-    menu_item(m, "Mark with comment...", NULL, NULL, a_mark_sel, NULL, -1, 1, 0);
+    menu_item(m, "Mark with comment...", "comment", NULL, a_mark_sel, NULL, -1, 1, 0);
     menu_sep(m);
-    menu_item(m, "Redact", NULL, NULL, a_redact_sel, NULL, 0, 1, 0);
+    menu_item(m, "Redact", "redact", NULL, a_redact_sel, NULL, 0, 1, 0);
     menu_sep(m);
     pt_ints pages = {0};
     target_pages(t, clicked >= 0 ? clicked : t->text_sel_page, &pages);
     int keep_page = mc.page;
-    add_page_actions(t, menu_sub(m, "Page", NULL), &pages);
+    add_page_actions(t, menu_sub(m, "Page", "pages"), &pages);
     mc.page = keep_page;
     pt_vec_free(pages);
     menu_open(m, at);

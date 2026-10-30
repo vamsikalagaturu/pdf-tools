@@ -6,6 +6,7 @@
 const char *pt_entry_names[] = {
     "redact", "text", "note", "sign", "image", "highlight", "ink", "shape",
     "form", "deleted", "comment", "rotate", "crop", "remove_page", "insert", "reorder",
+    "stamp", "properties", "outline", "certificate",
 };
 
 static void add(pt_entries *out, int page, pt_entry_kind kind, const char *name, const char *detail, pt_ref ref)
@@ -44,6 +45,22 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     pt_entries flat = {0};
     if (pt_is_reordered(s->order.v, s->order.n, own))
         add(&flat, PT_DOCUMENT, PT_E_REORDER, "", "", (pt_ref){PT_E_REORDER, PT_DOCUMENT, 0, {0, 0}});
+    for (int i = 0; i < s->stamps.n; i++) {
+        const pt_stamp *st = &s->stamps.v[i];
+        char *detail = st->kind == PT_STAMP_BATES ? pt_bates_label(st, 0) : pt_strdup(st->text ? st->text : "");
+        add(&flat, PT_DOCUMENT, PT_E_STAMP, st->kind == PT_STAMP_BATES ? "bates" : "watermark", detail,
+            (pt_ref){PT_E_STAMP, PT_DOCUMENT, i, {0, 0}});
+        free(detail);
+    }
+    if (s->meta.title || s->meta.author || s->meta.subject || s->meta.keywords)
+        add(&flat, PT_DOCUMENT, PT_E_META, "", s->meta.title ? s->meta.title : "", (pt_ref){PT_E_META, PT_DOCUMENT, 0, {0, 0}});
+    if (s->outline_set) {
+        char detail[32];
+        snprintf(detail, sizeof detail, "%d entries", s->outline.n);
+        add(&flat, PT_DOCUMENT, PT_E_OUTLINE, "", detail, (pt_ref){PT_E_OUTLINE, PT_DOCUMENT, 0, {0, 0}});
+    }
+    if (s->cert.cert)
+        add(&flat, s->cert.page, PT_E_CERT, "", pt_basename(s->cert.cert), (pt_ref){PT_E_CERT, s->cert.page, 0, {0, 0}});
     int pages = fz_count_pages(ctx, doc);
     for (int p = 0; p < pages; p++) {
         if (p < own && !in_order(s, p)) add(&flat, p, PT_E_REMOVE_PAGE, "", "", (pt_ref){PT_E_REMOVE_PAGE, p, 0, {0, 0}});
@@ -149,14 +166,16 @@ int pt_count_edits(const pt_state *s, int own, int pages)
     for (int p = 0; p < own; p++) removed += !in_order(s, p);
     for (int i = 0; i < s->order.n; i++) inserted += s->order.v[i] >= own;
     int structure = removed + inserted + s->rotation.n + s->crop.n + pt_is_reordered(s->order.v, s->order.n, own);
-    return s->items.n + s->forms.n + s->deleted.n + comments + structure;
+    int document = s->stamps.n + (s->meta.title || s->meta.author || s->meta.subject || s->meta.keywords) + s->outline_set +
+                   (s->cert.cert != NULL);
+    return s->items.n + s->forms.n + s->deleted.n + comments + structure + document;
 }
 
 void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
 {
-    /* placed items are dropped after the loop so the per-page indexes stay valid */
-    char *drop = calloc((size_t)s->items.n + 1, 1);
-    if (!drop) abort();
+    /* placed items and stamps are dropped after the loop so the indexes stay valid */
+    char *drop = calloc((size_t)s->items.n + 1, 1), *drop_stamp = calloc((size_t)s->stamps.n + 1, 1);
+    if (!drop || !drop_stamp) abort();
     for (int r = 0; r < n; r++) {
         pt_ref ref = refs[r];
         switch (ref.kind) {
@@ -207,6 +226,18 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
             }
             break;
         case PT_E_REORDER: pt_file_order(s->order.v, s->order.n, own); break;
+        case PT_E_STAMP:
+            if (ref.index >= 0 && ref.index < s->stamps.n) drop_stamp[ref.index] = 1;
+            break;
+        case PT_E_META: pt_meta_free(&s->meta); break;
+        case PT_E_OUTLINE:
+            pt_bookmarks_free(&s->outline);
+            s->outline_set = 0;
+            break;
+        case PT_E_CERT:
+            free(s->cert.cert);
+            s->cert.cert = NULL;
+            break;
         }
     }
     int k = 0;
@@ -215,5 +246,12 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
         else s->items.v[k++] = s->items.v[i];
     }
     s->items.n = k;
+    k = 0;
+    for (int i = 0; i < s->stamps.n; i++) {
+        if (drop_stamp[i]) pt_stamp_free(&s->stamps.v[i]);
+        else s->stamps.v[k++] = s->stamps.v[i];
+    }
+    s->stamps.n = k;
     free(drop);
+    free(drop_stamp);
 }

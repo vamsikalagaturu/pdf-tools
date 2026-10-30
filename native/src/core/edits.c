@@ -2,7 +2,7 @@
  * Opens the file as the display does (inserted pages appended), applies redactions, text, images, annotations,
  * form values, crops and rotations, scrubs hidden data when anything was redacted or cropped, and selects the
  * output pages. Also flattening, merging and password protection. */
-#include "pt_core.h"
+#include "content.h"
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
@@ -79,6 +79,41 @@ void pt_state_free(pt_state *s)
     pt_vec_free(s->crop);
     for (int i = 0; i < s->inserted.n; i++) free(s->inserted.v[i].path);
     pt_vec_free(s->inserted);
+    for (int i = 0; i < s->stamps.n; i++) pt_stamp_free(&s->stamps.v[i]);
+    pt_vec_free(s->stamps);
+    pt_meta_free(&s->meta);
+    pt_bookmarks_free(&s->outline);
+    free(s->cert.cert);
+    s->cert.cert = NULL;
+}
+
+pt_stamp pt_stamp_copy(const pt_stamp *src)
+{
+    pt_stamp s = *src;
+    s.text = pt_strdup(src->text);
+    s.suffix = pt_strdup(src->suffix);
+    s.pages = pt_strdup(src->pages);
+    return s;
+}
+
+void pt_stamp_free(pt_stamp *s)
+{
+    free(s->text);
+    free(s->suffix);
+    free(s->pages);
+    memset(s, 0, sizeof *s);
+}
+
+void pt_meta_free(pt_meta *m)
+{
+    free(m->title), free(m->author), free(m->subject), free(m->keywords);
+    memset(m, 0, sizeof *m);
+}
+
+void pt_bookmarks_free(pt_bookmarks *b)
+{
+    for (int i = 0; i < b->n; i++) free(b->v[i].title);
+    pt_vec_free(*b);
 }
 
 void pt_state_copy(pt_state *d, const pt_state *s)
@@ -98,6 +133,15 @@ void pt_state_copy(pt_state *d, const pt_state *s)
     for (int i = 0; i < s->crop.n; i++) pt_push(d->crop, s->crop.v[i]);
     for (int i = 0; i < s->inserted.n; i++)
         pt_push(d->inserted, (pt_inserted){pt_strdup(s->inserted.v[i].path), s->inserted.v[i].pages});
+    for (int i = 0; i < s->stamps.n; i++) pt_push(d->stamps, pt_stamp_copy(&s->stamps.v[i]));
+    d->meta = (pt_meta){pt_strdup(s->meta.title), pt_strdup(s->meta.author), pt_strdup(s->meta.subject), pt_strdup(s->meta.keywords)};
+    for (int i = 0; i < s->outline.n; i++) {
+        pt_bookmark b = s->outline.v[i];
+        b.title = pt_strdup(b.title);
+        pt_push(d->outline, b);
+    }
+    d->outline_set = s->outline_set;
+    d->cert = (pt_cert){s->cert.page, s->cert.rect, pt_strdup(s->cert.cert)};
 }
 
 void pt_leaks_free(pt_leaks *l)
@@ -278,7 +322,7 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
 
 /* ---- page content ---- */
 
-static fz_matrix page_to_pdf(fz_context *ctx, pdf_page *page)
+fz_matrix pt_page_to_pdf(fz_context *ctx, pdf_page *page)
 {
     fz_matrix ctm;
     pdf_page_transform(ctx, page, NULL, &ctm);
@@ -299,7 +343,7 @@ static pdf_obj *page_resources(fz_context *ctx, pdf_document *doc, pdf_page *pag
 }
 
 /* Register `ref` under `type` in the page resources with a fresh name like "PTF3"; returns the name. */
-static void add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_obj *type, const char *prefix,
+void pt_add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_obj *type, const char *prefix,
                          pdf_obj *ref, char name[32])
 {
     pdf_obj *res = page_resources(ctx, doc, page);
@@ -317,7 +361,7 @@ static void add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf
 }
 
 /* Append `ops` after the existing contents, which are wrapped in q/Q so their graphics state cannot leak. */
-static void append_content(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_buffer *ops)
+void pt_append_content(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_buffer *ops)
 {
     pdf_obj *contents = pdf_dict_get(ctx, page->obj, PDF_NAME(Contents));
     pdf_obj *arr = pdf_new_array(ctx, doc, 4);
@@ -343,20 +387,20 @@ static void append_content(fz_context *ctx, pdf_document *doc, pdf_page *page, f
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-static void append_matrix(fz_context *ctx, fz_buffer *b, fz_matrix m, const char *op)
+void pt_append_matrix(fz_context *ctx, fz_buffer *b, fz_matrix m, const char *op)
 {
     fz_append_printf(ctx, b, "%g %g %g %g %g %g %s\n", m.a, m.b, m.c, m.d, m.e, m.f, op);
 }
 
 void pt_fill_rect(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect r, const unsigned char rgb[3])
 {
-    fz_matrix m = fz_concat(fz_make_matrix(r.x1 - r.x0, 0, 0, r.y1 - r.y0, r.x0, r.y0), page_to_pdf(ctx, page));
+    fz_matrix m = fz_concat(fz_make_matrix(r.x1 - r.x0, 0, 0, r.y1 - r.y0, r.x0, r.y0), pt_page_to_pdf(ctx, page));
     fz_buffer *b = fz_new_buffer(ctx, 128);
     fz_try(ctx) {
         fz_append_printf(ctx, b, "q\n%g %g %g rg\n", rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
-        append_matrix(ctx, b, m, "cm");
+        pt_append_matrix(ctx, b, m, "cm");
         fz_append_string(ctx, b, "0 0 1 1 re\nf\nQ\n");
-        append_content(ctx, doc, page, b);
+        pt_append_content(ctx, doc, page, b);
     }
     fz_always(ctx) fz_drop_buffer(ctx, b);
     fz_catch(ctx) fz_rethrow(ctx);
@@ -377,13 +421,13 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
         float x0 = r.x0 + (bw - w) / 2, y0 = r.y0 + (bh - h) / 2;
         ref = pdf_add_image(ctx, doc, img);
         char name[32];
-        add_resource(ctx, doc, page, PDF_NAME(XObject), "PTI", ref, name);
-        fz_matrix m = fz_concat(fz_make_matrix(w, 0, 0, -h, x0, y0 + h), page_to_pdf(ctx, page));
+        pt_add_resource(ctx, doc, page, PDF_NAME(XObject), "PTI", ref, name);
+        fz_matrix m = fz_concat(fz_make_matrix(w, 0, 0, -h, x0, y0 + h), pt_page_to_pdf(ctx, page));
         b = fz_new_buffer(ctx, 128);
         fz_append_string(ctx, b, "q\n");
-        append_matrix(ctx, b, m, "cm");
+        pt_append_matrix(ctx, b, m, "cm");
         fz_append_printf(ctx, b, "/%s Do\nQ\n", name);
-        append_content(ctx, doc, page, b);
+        pt_append_content(ctx, doc, page, b);
     }
     fz_always(ctx) {
         fz_drop_buffer(ctx, b);
@@ -395,7 +439,7 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
 }
 
 /* Unicode to WinAnsiEncoding (standard fonts); '?' when the encoding has no such character. */
-static int winansi(int c)
+int pt_winansi(int c)
 {
     static const int high[32] = {
         0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017d, 0,
@@ -407,7 +451,7 @@ static int winansi(int c)
     return '?';
 }
 
-static pdf_obj *standard_font(fz_context *ctx, pdf_document *doc, const char *base14)
+pdf_obj *pt_standard_font(fz_context *ctx, pdf_document *doc, const char *base14)
 {
     pdf_obj *f = pdf_new_dict(ctx, doc, 4);
     pdf_dict_put(ctx, f, PDF_NAME(Type), PDF_NAME(Font));
@@ -429,29 +473,29 @@ void pt_draw_text(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_i
     pt_strs lines = {0};
     fz_try(ctx) {
         int simple = rf.base14[0] != 0;
-        ref = simple ? standard_font(ctx, doc, rf.base14) : pdf_add_cid_font(ctx, doc, rf.font);
+        ref = simple ? pt_standard_font(ctx, doc, rf.base14) : pdf_add_cid_font(ctx, doc, rf.font);
         char name[32];
-        add_resource(ctx, doc, page, PDF_NAME(Font), "PTF", ref, name);
+        pt_add_resource(ctx, doc, page, PDF_NAME(Font), "PTF", ref, name);
         float size = it->size > 0 ? it->size : 11;
         pt_wrap_lines(ctx, rf.font, it->text ? it->text : "", size, it->box_width, &lines);
         float x = it->rect.x0, y = it->rect.y0 + fz_font_ascender(ctx, rf.font) * size;
-        fz_matrix to_pdf = page_to_pdf(ctx, page);
+        fz_matrix to_pdf = pt_page_to_pdf(ctx, page);
         b = fz_new_buffer(ctx, 256);
         fz_append_printf(ctx, b, "q\n%g %g %g rg\nBT\n/%s 1 Tf\n", it->rgb[0] / 255.0, it->rgb[1] / 255.0,
                          it->rgb[2] / 255.0, name);
         for (int i = 0; i < lines.n; i++, y += size * PT_LINE_SPACING) {
-            append_matrix(ctx, b, fz_concat(fz_make_matrix(size, 0, 0, -size, x, y), to_pdf), "Tm");
+            pt_append_matrix(ctx, b, fz_concat(fz_make_matrix(size, 0, 0, -size, x, y), to_pdf), "Tm");
             fz_append_byte(ctx, b, '<');
             for (const char *s = lines.v[i]; *s;) {
                 int c;
                 s += fz_chartorune(&c, s);
-                if (simple) fz_append_printf(ctx, b, "%02x", winansi(c));
+                if (simple) fz_append_printf(ctx, b, "%02x", pt_winansi(c));
                 else fz_append_printf(ctx, b, "%04x", fz_encode_character(ctx, rf.font, c));
             }
             fz_append_string(ctx, b, "> Tj\n");
         }
         fz_append_string(ctx, b, "ET\nQ\n");
-        append_content(ctx, doc, page, b);
+        pt_append_content(ctx, doc, page, b);
     }
     fz_always(ctx) {
         pt_strs_free(&lines);
@@ -782,6 +826,8 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
         for (int i = 0; i < s->deleted.n; i++) pt_remove_annot(ctx, doc, s->deleted.v[i]);
         set_annot_texts(ctx, doc, s);
         set_forms(ctx, doc, s);
+        pt_set_meta(ctx, doc, &s->meta);
+        if (s->outline_set) pt_write_outline(ctx, doc, &s->outline);
         int any_redact = 0;
         for (int i = 0; i < s->items.n; i++) {
             int p = s->items.v[i].page, seen = 0;
@@ -798,6 +844,7 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
         }
         if (s->crop.n || any_redact) pt_scrub(ctx, doc);
         if (s->order.n) pdf_rearrange_pages(ctx, doc, s->order.n, s->order.v, PDF_CLEAN_STRUCTURE_DROP);
+        pt_apply_stamps(ctx, doc, &s->stamps, NULL, 0);
         out = pt_doc_bytes(ctx, doc, NULL);
     }
     fz_always(ctx) {
@@ -870,6 +917,20 @@ fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data)
 fz_pixmap *pt_render_page(fz_context *ctx, fz_page *page, float zoom, int alpha)
 {
     return fz_new_pixmap_from_page(ctx, page, fz_scale(zoom, zoom), fz_device_rgb(ctx), alpha);
+}
+
+fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg)
+{
+    fz_pixmap *pix = pt_render_page(ctx, page, dpi / 72.0f, 0);
+    fz_buffer *out = NULL;
+    fz_try(ctx) {
+        fz_set_pixmap_resolution(ctx, pix, dpi, dpi);
+        out = jpeg ? fz_new_buffer_from_pixmap_as_jpeg(ctx, pix, fz_default_color_params, JPEG_QUALITY, 0)
+                   : fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
+    }
+    fz_always(ctx) fz_drop_pixmap(ctx, pix);
+    fz_catch(ctx) fz_rethrow(ctx);
+    return out;
 }
 
 /* A new page of `size` showing image `img` over all of it. */

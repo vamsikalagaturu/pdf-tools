@@ -452,7 +452,7 @@ void workspace_toolbar(workspace *w, Rectangle area)
         Rectangle more = {area.x + area.width - 32, y, 32, h};
         if (ui_button(ui_id(w, 7), more, NULL, "more", B_FLAT, "More")) {
             ui_menu *m = menu_new();
-            menu_item(m, "Clear cuts", NULL, NULL, menu_clear, w, 0, 1, 0);
+            menu_item(m, "Clear cuts", "remove", NULL, menu_clear, w, 0, 1, 0);
             menu_item(m, "Clear all", "close", NULL, menu_clear, w, 1, 1, 0);
             menu_open_below(m, more);
         }

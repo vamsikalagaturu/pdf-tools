@@ -21,7 +21,7 @@ static const char *LUCIDE[][2] = {
     {"menu", "menu"}, {"back", "chevron-left"}, {"prev", "chevron-left"}, {"next", "chevron-right"}, {"close", "x"},
     {"undo", "undo-2"}, {"redo", "redo-2"}, {"view", "mouse-pointer-2"}, {"redact", "eraser"},
     {"highlight", "highlighter"}, {"note", "sticky-note"}, {"text", "type"}, {"sign", "signature"},
-    {"zoom-out", "zoom-out"}, {"zoom-in", "zoom-in"}, {"fit", "move-horizontal"}, {"continuous", "gallery-vertical"},
+    {"zoom-out", "zoom-out"}, {"zoom-in", "zoom-in"}, {"fit", "move-horizontal"}, {"fit-height", "move-vertical"},{"continuous", "gallery-vertical"},
     {"find", "search"}, {"save", "save"}, {"open", "folder-open"}, {"export", "file-output"}, {"merge", "files"},
     {"add", "plus"}, {"remove", "trash-2"}, {"sort", "arrow-down-a-z"}, {"underline", "underline"},
     {"strikeout", "strikethrough"}, {"squiggly", "spline"}, {"textcolour", "baseline"}, {"custom-colour", "palette"},
@@ -29,13 +29,19 @@ static const char *LUCIDE[][2] = {
     {"rotate", "rotate-cw"}, {"rotate-left", "rotate-ccw"}, {"crop", "crop"}, {"lock", "lock"}, {"unlock", "lock-open"},
     {"split", "scissors"}, {"bold", "bold"}, {"italic", "italic"}, {"image", "image"}, {"draw", "pencil"},
     {"more", "ellipsis-vertical"}, {"shapes", "shapes"}, {"shape-rect", "square"}, {"shape-ellipse", "circle"},
-    {"shape-line", "slash"}, {"shape-arrow", "arrow-up-right"},
+    {"shape-line", "slash"}, {"shape-arrow", "arrow-up-right"}, {"two-pages", "book-open"}, {"presentation", "presentation"},
+    {"compare", "git-compare"}, {"bates", "hash"}, {"stamp", "stamp"}, {"export-images", "file-image"}, {"ocr", "scan-text"},
+    {"pii", "scan-search"}, {"outline", "list-tree"}, {"up", "arrow-up"}, {"down", "arrow-down"}, {"certificate", "file-badge"},
+    {"window", "app-window"}, {"home", "house"}, {"quit", "log-out"}, {"light", "sun"}, {"dark", "moon"},
+    {"new-window", "external-link"}, {"snap", "magnet"}, {"fill", "paint-bucket"}, {"tick", "square-check"},
+    {"untick", "square"}, {"goto", "corner-down-right"}, {"comment", "message-square"}, {"tools", "wrench"},
+    {"pages", "layers"}, {"eye", "eye"}, {"appearance", "sun-moon"}, {"recent", "history"}, {"edit", "pencil-line"},
 };
 #define NLUCIDE (int)(sizeof LUCIDE / sizeof *LUCIDE)
 #define ICON_PX 48
 
 typedef struct { const char *name; Texture2D tex; int loaded; } icon_tex;
-static icon_tex cache[96];
+static icon_tex cache[192];
 static int ncache;
 static Texture2D logo;
 
@@ -143,7 +149,7 @@ static icon_tex *icon_for(const char *name)
 {
     for (int i = 0; i < ncache; i++)
         if (!strcmp(cache[i].name, name)) return &cache[i];
-    if (ncache >= 96) return NULL;
+    if (ncache >= (int)(sizeof cache / sizeof *cache)) return NULL;
     icon_tex *it = &cache[ncache++];
     it->name = name;
     const char *file = name;
@@ -177,7 +183,7 @@ static const cursor_spec SPECS[CUR_COUNT] = {
      * upright and the other edge lies at ~44 degrees, the classic pointer shape */
     [CUR_ARROW] = {"mouse-pointer-2", 4.3f, 4.3f, 1, 24.4f},
     [CUR_IBEAM] = {"text-cursor", 12, 12, 0, 0},
-    [CUR_CROSS] = {"crosshair", 12, 12, 0, 0},
+    [CUR_CROSS] = {"plus", 12, 12, 0, 0},
     [CUR_HAND] = {"pointer", 8, 2, 0, 0},
     [CUR_MOVE] = {"move", 12, 12, 0, 0},
     [CUR_SIZE_FDIAG] = {"move-diagonal-2", 12, 12, 0, 0},

@@ -38,7 +38,7 @@ pt_embed(${PT_GEN}/agents_md.c pt_asset_agents_md ${PT_REPO}/AGENTS.md)
 add_library(ptcore STATIC
   src/core/util.c src/core/ranges.c src/core/text.c src/core/forms.c src/core/fonts.c src/core/edits.c
   src/core/synctex.c src/core/selection.c src/core/edit_list.c src/core/config.c src/core/signatures.c
-  src/core/desktop.c ${PT_GEN}/logo_svg.c ${PT_GEN}/desktop.c)
+  src/core/desktop.c src/core/pii.c src/core/stamps.c ${PT_GEN}/logo_svg.c ${PT_GEN}/desktop.c)
 target_include_directories(ptcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${MUPDF_INCLUDE_DIR})
 target_link_libraries(ptcore PUBLIC ${MUPDF_LIBRARY} m)
 # a static MuPDF build (macOS, Android) keeps its third-party libraries in a second archive
@@ -118,7 +118,7 @@ if(PT_BUILD_GUI)
     configure_file(${PT_GEN}/icons.c.tmp ${PT_GEN}/icons.c COPYONLY)
     add_executable(pdf-tools-gui
       src/ui/app.c src/ui/theme.c src/ui/widgets.c src/ui/icons.c src/ui/page_view.c src/ui/document.c
-      src/ui/edit_tab.c src/ui/edit_tools.c src/ui/panels.c src/ui/dialogs.c src/ui/start_page.c src/ui/workspace.c
+      src/ui/edit_tab.c src/ui/edit_tools.c src/ui/panels.c src/ui/dialogs.c src/ui/doc_tools.c src/ui/start_page.c src/ui/workspace.c
       src/ui/form_fields.c src/ui/ipc.c src/ui/printing.c src/ui/file_dialog.c src/ui/macos.c
       ${PT_GEN}/ui_font.c ${PT_GEN}/ui_font_bold.c ${PT_GEN}/man.c ${PT_GEN}/icons.c ${PT_ICON_SOURCES})
     set_target_properties(pdf-tools-gui PROPERTIES OUTPUT_NAME pdf-tools)

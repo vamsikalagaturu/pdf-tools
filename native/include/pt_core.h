@@ -86,6 +86,14 @@ int pt_have_regex(void);
 char *pt_utf8(const int *runes, int n);
 int pt_utf8_decode(const char *s, pt_ints *out);
 
+/* ---- personal data (pii.c) ---- */
+typedef enum { PT_PII_IBAN, PT_PII_CARD, PT_PII_EMAIL, PT_PII_DATE, PT_PII_PHONE, PT_PII_ID, PT_PII_COUNT } pt_pii_kind;
+typedef struct { pt_pii_kind kind; char *text; pt_rects rects; } pt_pii;
+PT_VEC(pt_piis, pt_pii);
+extern const char *pt_pii_names[PT_PII_COUNT];
+void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out);   /* needs PCRE2 */
+void pt_piis_free(pt_piis *p);
+
 /* ---- forms.py ---- */
 const char *pt_field_type_string(fz_context *ctx, pdf_annot *widget);
 int pt_is_toggle(fz_context *ctx, pdf_annot *widget);
@@ -151,7 +159,32 @@ typedef struct { int page; fz_rect rect; } pt_crop;
 /* a PDF appended after the file's own pages; a path "blank:WxH" (PT_BLANK_PAGE) is one empty W x H pt page */
 typedef struct { char *path; int pages; } pt_inserted;
 #define PT_BLANK_PAGE "blank:"
+/* Bates numbers and watermarks, stamped on the output pages after every other edit (stamps.c). `pages` are ranges
+ * over the output pages ("" = all); Bates numbers count the stamped pages from `start`. */
+typedef enum { PT_STAMP_BATES, PT_STAMP_WATERMARK } pt_stamp_kind;
+typedef enum {
+    PT_AT_TOP_LEFT, PT_AT_TOP, PT_AT_TOP_RIGHT, PT_AT_BOTTOM_LEFT, PT_AT_BOTTOM, PT_AT_BOTTOM_RIGHT, PT_AT_CENTRE,
+    PT_AT_DIAGONAL, PT_AT_COUNT
+} pt_stamp_at;
+typedef struct {
+    pt_stamp_kind kind;
+    char *text;            /* watermark text; Bates prefix */
+    char *suffix;          /* Bates */
+    int start, digits;     /* Bates */
+    pt_stamp_at at;
+    float size, opacity;   /* font size in points; 0..1 */
+    unsigned char rgb[3];
+    char *pages;
+} pt_stamp;
+/* document properties; NULL leaves a field as the file has it */
+typedef struct { char *title, *author, *subject, *keywords; } pt_meta;
+/* an outline entry: level 0 at the top; page as built by pt_open_pdf, y its top in that page's space */
+typedef struct { int level; char *title; int page; float y; } pt_bookmark;
+PT_VEC(pt_bookmarks, pt_bookmark);
+/* a certificate signature, signed into the saved file (cert NULL: none); rect in the page's space */
+typedef struct { int page; fz_rect rect; char *cert; } pt_cert;
 PT_VEC(pt_items, pt_item);
+PT_VEC(pt_stamps, pt_stamp);
 PT_VEC(pt_keys, pt_key);
 PT_VEC(pt_forms, pt_form_value);
 PT_VEC(pt_annot_texts, pt_annot_text);
@@ -167,6 +200,11 @@ typedef struct {
     pt_rotations rotation;   /* degrees added */
     pt_crops crop;
     pt_inserts inserted;     /* PDFs appended after the file's own pages */
+    pt_stamps stamps;
+    pt_meta meta;
+    pt_bookmarks outline;    /* replaces the file's outline when outline_set */
+    int outline_set;
+    pt_cert cert;
 } pt_state;
 typedef struct { int page; char *text; } pt_leak;
 PT_VEC(pt_leaks, pt_leak);
@@ -184,6 +222,22 @@ void pt_set_rotation(pt_state *s, int page, int degrees);
 void pt_set_crop(pt_state *s, int page, fz_rect rect);
 void pt_set_form(pt_state *s, pt_key key, const char *text, int is_bool, int on, float size);
 void pt_set_annot_text(pt_state *s, pt_key key, const char *text);
+pt_stamp pt_stamp_copy(const pt_stamp *s);
+void pt_stamp_free(pt_stamp *s);
+void pt_meta_free(pt_meta *m);
+void pt_bookmarks_free(pt_bookmarks *b);
+
+/* ---- stamps.c: Bates numbers, watermarks, document properties, the outline ---- */
+extern const char *pt_stamp_at_names[PT_AT_COUNT];
+int pt_stamp_at_from_name(const char *name);
+char *pt_bates_label(const pt_stamp *s, int n);   /* the number on the n-th stamped page (0-based) */
+/* Stamp doc's pages; out_index[p] is page p's place among the out_count output pages (-1: not output), NULL when
+ * doc's pages are the output pages. */
+void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps, const int *out_index, int out_count);
+void pt_get_meta(fz_context *ctx, pdf_document *doc, pt_meta *out);
+void pt_set_meta(fz_context *ctx, pdf_document *doc, const pt_meta *m);
+void pt_read_outline(fz_context *ctx, fz_document *doc, pt_bookmarks *out);
+void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b);
 
 int pt_is_password_error(const char *message);
 pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *password, const pt_inserts *inserted);
@@ -207,6 +261,7 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
 pdf_document *pt_image_document(fz_context *ctx, const char *path);
 int pt_is_image_file(fz_context *ctx, const char *path);
 fz_pixmap *pt_render_page(fz_context *ctx, fz_page *page, float zoom, int alpha);
+fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg);   /* PNG, or JPEG quality 90 */
 
 /* ---- synctex.py ---- */
 typedef struct { char kind; int tag, line; fz_rect rect; } pt_sync_node;
@@ -241,7 +296,8 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
 #define PT_DOCUMENT (-1)
 typedef enum {
     PT_E_REDACT, PT_E_TEXT, PT_E_NOTE, PT_E_SIGN, PT_E_IMAGE, PT_E_HIGHLIGHT, PT_E_INK, PT_E_SHAPE,
-    PT_E_FORM, PT_E_DELETED, PT_E_COMMENT, PT_E_ROTATE, PT_E_CROP, PT_E_REMOVE_PAGE, PT_E_INSERT, PT_E_REORDER
+    PT_E_FORM, PT_E_DELETED, PT_E_COMMENT, PT_E_ROTATE, PT_E_CROP, PT_E_REMOVE_PAGE, PT_E_INSERT, PT_E_REORDER,
+    PT_E_STAMP, PT_E_META, PT_E_OUTLINE, PT_E_CERT
 } pt_entry_kind;
 extern const char *pt_entry_names[];
 typedef struct { pt_entry_kind kind; int page; int index; pt_key key; } pt_ref;
