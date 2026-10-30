@@ -43,7 +43,7 @@ would cover the window, and raylib cannot inset its framebuffer.
 | `file_dialog_android.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` for Android: the system document picker, copies of `content://` documents and writing them back (see below). |
 | `android_glue.h` | Declarations shared by the files above, including `pt_java()`, which calls a `String` method of the activity. |
 | `java/.../PdfToolsActivity.java` | `NativeActivity` subclass: keeps intents delivered while running (`onNewIntent` -> `setIntent`), runs the picker (`startActivityForResult`, result polled by the native side), takes persistable URI permissions, copies documents in and out through `ContentResolver`, maps documents to file paths, and asks for storage access. |
-| `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. Storage permissions: READ/WRITE_EXTERNAL_STORAGE up to API 32, MANAGE_EXTERNAL_STORAGE, `requestLegacyExternalStorage` for API 29. |
+| `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. Storage permission: MANAGE_EXTERNAL_STORAGE ("All files access"). |
 
 ### Substitutions in shared sources (keep in sync)
 

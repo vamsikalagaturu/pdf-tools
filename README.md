@@ -26,9 +26,17 @@ On a Mac the app is not notarized: open it the first time with right-click > Ope
 ## Build
 
 ```sh
-platform/linux/build.sh      # AppImage
-platform/macos/build.sh      # PDF Tools.app and .dmg
-platform/android/build.sh    # APK (details: platform/android/README.md)
+platform/linux/build.sh      # ~/.cache/pdf-tools/linux/out/PDF_Tools-<arch>.AppImage
+platform/macos/build.sh      # ~/Library/Caches/pdf-tools/macos/out/PDF-Tools.dmg
+platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.apk (details: platform/android/README.md)
+```
+
+On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
+dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it as the AppImage,
+which adds the English OCR data. To install the binary instead, with its man page, desktop entry and icon:
+
+```sh
+cmake --install ~/.cache/pdf-tools/linux/build --prefix ~/.local
 ```
 
 The scripts download and build the pinned dependencies ([MuPDF](https://mupdf.com) with
