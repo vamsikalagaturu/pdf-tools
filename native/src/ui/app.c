@@ -397,15 +397,19 @@ static void tab_strip(Rectangle r)
         float tw = fminf(each, text_width(title, FS_NORMAL, F_REGULAR) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0));
         Rectangle tr = {x, r.y, tw, r.height};
         int hover = ui_hover(tr), current = i == app.current;
-        if (current || hover) DrawRectangleRec(tr, pal.button);
-        if (current) DrawRectangleRec((Rectangle){tr.x, tr.y + tr.height - 2, tr.width, 2}, pal.highlight);
-        float tx = tr.x + 12;
-        if (w->kind == TAB_HOME) draw_logo((Rectangle){tx, tr.y + (tr.height - 16) / 2, 16, 16}), tx += 20;
-        else if (w->kind == TAB_WORKSPACE) draw_icon("merge", (Rectangle){tx, tr.y + (tr.height - 16) / 2, 16, 16}, pal.window_text), tx += 20;
-        char *el = elide_middle(title, tr.x + tr.width - 28 - tx, FS_NORMAL, F_REGULAR);
-        draw_text_in(el, (Rectangle){tx, tr.y, tr.width, tr.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+        /* the current tab is an accent pill with light text; the others are plain, dimmer text */
+        Rectangle pill = {tr.x + 2, tr.y + 6, tr.width - 4, tr.height - 12};
+        if (current) DrawRectangleRounded(pill, 1, 12, pal.highlight);
+        else if (hover) DrawRectangleRounded(pill, 1, 12, with_alpha(pal.light, 160));
+        Color fg = current ? pal.highlighted_text : hover ? pal.window_text : with_alpha(pal.window_text, 170);
+        font_kind fk = current ? F_BOLD : F_REGULAR;
+        float tx = tr.x + 12, cy = tr.y;
+        if (w->kind == TAB_HOME) draw_logo((Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}), tx += 20;
+        else if (w->kind == TAB_WORKSPACE) draw_icon("merge", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
+        char *el = elide_middle(title, tr.x + tr.width - 28 - tx, FS_NORMAL, fk);
+        draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, FS_NORMAL, fk, fg, -1);
         free(el);
-        Rectangle close = {tr.x + tr.width - 24, tr.y + (tr.height - 20) / 2, 20, 20};
+        Rectangle close = {tr.x + tr.width - 26, tr.y + (tr.height - 20) / 2, 20, 20};
         int on_close = ui_hover(close);
         if (ui_button(ui_id(w->doc ? (void *)w->doc : (void *)&app.tabs, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
             free(title);
@@ -592,6 +596,12 @@ static char *build_message(int argc, char **argv, int *new_window)
     return msg;
 }
 
+static void log_to_raylib(pt_log_level level, const char *message)
+{
+    static const int RAYLIB_LEVEL[] = {LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR};
+    TraceLog(RAYLIB_LEVEL[level], "%s", message);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && (!strcmp(argv[1], "--install-desktop") || !strcmp(argv[1], "--uninstall-desktop"))) {
@@ -635,7 +645,10 @@ int main(int argc, char **argv)
     pt_settings_load(&app.settings, NULL);
     theme_apply(pt_settings_str(&app.settings, "theme"));
 
-    SetTraceLogLevel(LOG_WARNING);
+    static const int RAYLIB_LEVEL[] = {LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR};
+    SetTraceLogLevel(RAYLIB_LEVEL[pt_log_threshold()]);
+    pt_log_set_sink(log_to_raylib);
+    pt_log_mupdf(app.ctx);
 #ifdef __APPLE__
     /* a Retina framebuffer: layout stays in points, text and pages render at ui.density */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);

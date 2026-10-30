@@ -127,6 +127,7 @@ void ui_panel(Rectangle r, Color fill, Color border, float radius);
 int ui_spin(unsigned id, Rectangle r, int *value, int lo, int hi, int step, const char *prefix, const char *suffix);
 int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float step, const char *suffix);
 float ui_scrollbar(unsigned id, Rectangle track, float content, float view, float *offset);
+void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot);
 void ui_separator_v(float x, float y0, float y1);
 /* toolbars: 32 px buttons on a 34 px step; a separator takes UI_SEP_W after a button's 2 px gap and returns
  * where the next button starts */

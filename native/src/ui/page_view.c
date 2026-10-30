@@ -879,7 +879,7 @@ void view_frame(tab *t, Rectangle area)
         unsigned id = ui_id(t, 71);
         if (ui_hover(thumb) && ui.pressed) ui.active = id, grab = ui.mouse.x - thumb.x;
         if (ui.active == id && ui.down) t->scroll_x = fminf(fmaxf((ui.mouse.x - grab - track.x) / fmaxf(1, track.width - w), 0), 1) * max;
-        DrawRectangleRounded(thumb, 1, 6, with_alpha(pal.disabled_text, 160));
+        ui_scroll_draw(track, thumb, ui.active == id || ui_hover(track));
     }
     popover_frame(t);
 }

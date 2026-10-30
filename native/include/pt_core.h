@@ -22,6 +22,14 @@ char *pt_strdup(const char *s);
 char *pt_format(const char *fmt, ...);
 void pt_strs_free(pt_strs *s);
 
+/* ---- log.c ---- */
+typedef enum { PT_LOG_DEBUG, PT_LOG_INFO, PT_LOG_WARN, PT_LOG_ERROR } pt_log_level;
+typedef void (*pt_log_sink)(pt_log_level level, const char *message);
+void pt_log(pt_log_level level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void pt_log_set_sink(pt_log_sink sink);   /* NULL: stderr */
+pt_log_level pt_log_threshold(void);      /* from PDF_TOOLS_LOG; default warn */
+void pt_log_mupdf(fz_context *ctx);       /* MuPDF's warnings and errors through pt_log */
+
 /* ---- byte buffers and files ---- */
 typedef struct { unsigned char *data; size_t len; } pt_bytes;
 int pt_read_file(const char *path, pt_bytes *out);

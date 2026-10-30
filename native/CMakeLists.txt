@@ -38,7 +38,7 @@ pt_embed(${PT_GEN}/agents_md.c pt_asset_agents_md ${PT_REPO}/AGENTS.md)
 add_library(ptcore STATIC
   src/core/util.c src/core/ranges.c src/core/text.c src/core/forms.c src/core/fonts.c src/core/edits.c
   src/core/synctex.c src/core/selection.c src/core/edit_list.c src/core/config.c src/core/signatures.c
-  src/core/desktop.c src/core/pii.c src/core/stamps.c ${PT_GEN}/logo_svg.c ${PT_GEN}/desktop.c)
+  src/core/desktop.c src/core/pii.c src/core/stamps.c src/core/log.c ${PT_GEN}/logo_svg.c ${PT_GEN}/desktop.c)
 target_include_directories(ptcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${MUPDF_INCLUDE_DIR})
 target_link_libraries(ptcore PUBLIC ${MUPDF_LIBRARY} m)
 # a static MuPDF build (macOS, Android) keeps its third-party libraries in a second archive

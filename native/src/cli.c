@@ -1360,10 +1360,6 @@ void pt_cli_usage(FILE *out)
 }
 
 /* MuPDF prints its warnings and errors to stderr; the commands report errors in their JSON instead. */
-static void quiet(void *user, const char *message)
-{
-    (void)user, (void)message;
-}
 
 int pt_cli_main(int argc, char **argv)
 {
@@ -1390,8 +1386,7 @@ int pt_cli_main(int argc, char **argv)
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     if (!ctx) fail("cannot create MuPDF context");
     fz_register_document_handlers(ctx);
-    fz_set_warning_callback(ctx, quiet, NULL);
-    fz_set_error_callback(ctx, quiet, NULL);
+    pt_log_mupdf(ctx);
     args a;
     parse(c, argc - 2, argv + 2, &a);
     int code = c->run(&a);

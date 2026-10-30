@@ -675,6 +675,7 @@ static void outline_action(void *ctx, intptr_t action)
     }
     if (changed) push_undo(t, &snap);
     else pt_state_free(&snap);
+    if (action == O_ADD) input_box("New outline entry", "Title:", "New entry", 0, outline_renamed, t);
 }
 
 static void outline_panel(tab *t, Rectangle area)

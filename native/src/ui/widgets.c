@@ -724,9 +724,18 @@ float ui_scrollbar(unsigned id, Rectangle track, float content, float view, floa
         float t = (ui.mouse.y - grab - track.y) / fmaxf(1, track.height - h);
         *offset = fminf(fmaxf(t, 0), 1) * max;
     }
-    Color c = ui.active == id || ui_hover(track) ? pal.disabled_text : with_alpha(pal.disabled_text, 140);
-    DrawRectangleRounded(thumb, 1, 6, c);
+    ui_scroll_draw(track, thumb, ui.active == id || ui_hover(track));
     return max;
+}
+
+/* a solid track the full length and a solid thumb, lighter while hovered or dragged */
+void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot)
+{
+    Color lane = pal.dark_mode ? (Color){38, 38, 38, 255} : (Color){224, 224, 224, 255};
+    Color bar = pal.dark_mode ? (hot ? (Color){150, 150, 150, 255} : (Color){110, 110, 110, 255})
+                              : (hot ? (Color){120, 120, 120, 255} : (Color){160, 160, 160, 255});
+    DrawRectangleRec(track, lane);
+    DrawRectangleRounded(thumb, 0.5f, 6, bar);
 }
 
 /* ---- text fields ---- */
@@ -1564,6 +1573,7 @@ static void push_message(int kind, const char *title, const char *text, const ch
 
 void message_box(int kind, const char *title, const char *text, ui_answer done, void *ctx)
 {
+    if (kind == MSG_ERROR || kind == MSG_WARNING) pt_log(kind == MSG_ERROR ? PT_LOG_ERROR : PT_LOG_WARN, "%s: %s", title, text);
     push_message(kind, title, text, "OK", NULL, done, ctx);
 }
 
