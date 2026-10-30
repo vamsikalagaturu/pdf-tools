@@ -23,8 +23,8 @@ char *pt_android_open_uri(const char *uri);   /* a local path for a content:// d
 /* Replacements the build substitutes into the shared sources with -D (see CMakeLists.txt):
  * app.c:         main, InitWindow, file_dialogs_poll, run_detached
  * widgets.c:     GetCharPressed, GetMouseWheelMoveV
- * file_dialog.c: file_dialog, file_dialogs_poll, file_dialog_busy, move_to_trash get a pt_desktop_ prefix;
- *                file_dialog_android.c provides them */
+ * dialogs.c renames its own desktop file_dialog, file_dialogs_poll, file_dialog_busy and move_to_trash with a
+ * pt_desktop_ prefix on Android; file_dialog_android.c provides them */
 int pt_app_main(int argc, char **argv);
 void pt_android_init_window(int width, int height, const char *title);
 void pt_android_frame(void);

@@ -1,31 +1,34 @@
 # PDF Tools for Android (arm64-v8a, Android 11+)
 
-The native window (`native/src/ui`, raylib + raygui + MuPDF) packaged as a debug-signed APK, without Gradle.
+The window (`src/ui`, raylib + raygui + MuPDF) packaged as a debug-signed APK, without Gradle.
 
 ```sh
-native/android/build.sh          # -> ~/.cache/pdf-tools-native/android/out/pdf-tools.apk
+platform/android/build.sh        # -> ~/.cache/pdf-tools-native/android/out/pdf-tools.apk
 adb install -r ~/.cache/pdf-tools-native/android/out/pdf-tools.apk
 ```
 
 Requirements: Android SDK at `~/Android/Sdk` (`ANDROID_HOME` overrides) with build-tools 36.1.0, platform
 android-36.1 and NDK 28.2.13676358 (`ANDROID_NDK` overrides); JDK (`javac`, `keytool`), CMake, Ninja, GNU make,
-zip, curl. Optional: the repo's `.venv` with PyMuPDF, used only to render the launcher icon from `logo.svg`.
-All output goes to `~/.cache/pdf-tools-native/android/` (`PT_ANDROID_OUT` overrides); nothing is written into
-the repo. Re-runs are incremental.
+zip, curl. All output goes to `~/.cache/pdf-tools-native/android/` (`PT_ANDROID_OUT` overrides), including the
+debug signing key; nothing is written into the repo. Re-runs are incremental.
 
 ## What build.sh does
 
-1. Downloads `mupdf-1.28.5-source.tar.gz` (checked against a pinned SHA-256), builds `libmupdf.a` and
-   `libmupdf-third.a` with the NDK clang (API 30). A dummy `pkg-config` keeps host libraries out.
-2. Downloads `pcre2-10.45.tar.bz2` (pinned SHA-256) and builds a static `libpcre2-8.a` (no JIT) for regex
-   search and redaction.
-3. Configures `native/android/CMakeLists.txt` with the NDK toolchain. It pulls in `native/CMakeLists.txt`
-   (for `ptcore`, `ptcli` and `pt_embed`; GUI and fontconfig off, PCRE2 from step 2), builds raylib 6.2 from
-   `native/thirdparty/raylib` for `PLATFORM_ANDROID` with `raylib_core.c` in place of `rcore.c`, and links every
-   `native/src/ui/*.c` (globbed, unmodified) plus the Android files below into `libpdf-tools.so`.
-4. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest and icon with `aapt2`
-   (minSdk 30, targetSdk 34, `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16`
-   and signs with `apksigner` using a debug keystore created in the cache folder.
+The versions and checksums are in `platform/versions.sh`.
+
+1. Downloads MuPDF's source and builds `libmupdf.a` and `libmupdf-third.a` (with Tesseract) with the NDK clang
+   (API 30). A dummy `pkg-config` keeps host libraries out.
+2. Builds static PCRE2 (`libpcre2-8.a`, no JIT) and OpenSSL (`libcrypto.a`) for arm64.
+3. Downloads Tesseract's English data (`eng.traineddata`), packed into the APK as an asset; `android_main.c` copies
+   it to `$XDG_DATA_HOME/pdf-tools/tessdata` on first start, where OCR finds it.
+4. Configures `platform/android/CMakeLists.txt` with the NDK toolchain. It pulls in the root `CMakeLists.txt`
+   (for `ptcore`, `ptcli` and `pt_embed`; programs and fontconfig off, the libraries above by path), builds
+   raylib 6.2 from `thirdparty/raylib` for `PLATFORM_ANDROID` with `raylib_core.c` in place of `rcore.c`, and links
+   every `src/ui/*.c` (globbed, unmodified) plus the Android files below into `libpdf-tools.so`.
+5. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest, the launcher icons in `res/`
+   (`assets/logo.svg` drawn at each density) and the assets with `aapt2` (minSdk 30, targetSdk 34,
+   `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16` and signs with `apksigner`
+   using a debug keystore created in the cache folder.
 
 targetSdk is 34 because apps targeting 35+ are always drawn edge-to-edge: the system bars and display cutout
 would cover the window, and raylib cannot inset its framebuffer.
@@ -54,9 +57,12 @@ The shared files are compiled unmodified; `CMakeLists.txt` renames a few calls p
 | `app.c` | `run_detached` | `pt_android_run_detached` | There is no second window. "Move to new window" reopens the tab in this window instead of losing it. |
 | `widgets.c` | `GetCharPressed` | `pt_android_char_pressed` | raylib on Android queues no characters. |
 | `widgets.c` | `GetMouseWheelMoveV` | `pt_android_wheel` | raylib on Android reports no wheel; this carries two-finger scroll and mouse wheel. |
-| `file_dialog.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy`, `move_to_trash` | `pt_desktop_*` | `file_dialog_android.c` provides the real ones; its `move_to_trash` still uses `pt_desktop_move_to_trash` for the app's own files. `run_detached` and `split_command` stay as they are. |
 
-If one of these names changes or moves to another file in `native/src/ui`, update `CMakeLists.txt`. New UI
+`dialogs.c` renames its own desktop `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` to
+`pt_desktop_*` when built for Android: `file_dialog_android.c` provides the real ones, and its `move_to_trash`
+still uses `pt_desktop_move_to_trash` for the app's own files. `run_detached` and `split_command` stay as they are.
+
+If one of these names changes or moves to another file in `src/ui`, update `CMakeLists.txt`. New UI
 files are picked up automatically; new GLFW calls need a stub in `glfw_stubs.c` (the link uses
 `--no-undefined`, so a missing one fails the build).
 

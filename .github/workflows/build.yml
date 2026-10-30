@@ -1,0 +1,31 @@
+name: Build
+on:
+  push:
+  pull_request:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libfontconfig-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols
+      - name: Build, test and pack the AppImage (platform/linux/build.sh)
+        run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Tools-Linux
+          path: ${{ runner.temp }}/pdf-tools-linux/out/PDF_Tools-*.AppImage
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test and pack PDF Tools.app and PDF-Tools.dmg (platform/macos/build.sh)
+        run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" platform/macos/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Tools-macOS
+          path: ${{ runner.temp }}/pdf-tools-macos/out/PDF-Tools.dmg

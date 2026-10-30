@@ -82,7 +82,7 @@ extern ui_state ui;
 
 float ui_detect_scale(void);
 #ifdef __APPLE__
-void mac_install_open_handler(void);   /* macos.c: documents opened from Finder */
+void mac_install_open_handler(void);   /* app.c: documents opened from Finder */
 void mac_take_opened(pt_strs *out);
 #endif
 /* framebuffer pixels per logical unit: the size to rasterise text and pages at */

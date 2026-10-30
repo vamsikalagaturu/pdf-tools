@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: pdf-tools
+Description: @PROJECT_DESCRIPTION@ (the core library, pt_core.h)
+Version: @PROJECT_VERSION@
+Requires.private:@PT_PC_REQUIRES@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lptcore
+Libs.private: -lm

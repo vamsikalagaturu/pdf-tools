@@ -65,9 +65,6 @@ set_source_files_properties(${PT_ROOT}/src/ui/app.c PROPERTIES COMPILE_DEFINITIO
   "main=pt_app_main;InitWindow=pt_android_init_window;file_dialogs_poll=pt_android_frame;run_detached=pt_android_run_detached")
 set_source_files_properties(${PT_ROOT}/src/ui/widgets.c PROPERTIES COMPILE_DEFINITIONS
   "GetCharPressed=pt_android_char_pressed;GetMouseWheelMoveV=pt_android_wheel")
-# the system document picker (file_dialog_android.c) instead of zenity/kdialog/the built-in browser
-set_source_files_properties(${PT_ROOT}/src/ui/file_dialog.c PROPERTIES COMPILE_DEFINITIONS
-  "file_dialog=pt_desktop_file_dialog;file_dialogs_poll=pt_desktop_file_dialogs_poll;file_dialog_busy=pt_desktop_file_dialog_busy;move_to_trash=pt_desktop_move_to_trash")
 # C++ link for MuPDF's HarfBuzz (libc++ is static: ANDROID_STL defaults to c++_static)
 set_target_properties(pdf-tools PROPERTIES LINKER_LANGUAGE CXX)
 # -u keeps the glue's entry point, which nothing in the library references

@@ -1,7 +1,7 @@
 #ifndef PT_TAB_H
 #define PT_TAB_H
 /* One open PDF: the document tab's state, shared by document.c (model, undo, saving), page_view.c (canvas),
- * edit_tools.c (tools and their popovers), form_fields.c, panels.c (sidebar) and edit_tab.c (toolbar, find bar).
+ * edit_tools.c (tools and their popovers), panels.c (sidebar) and edit_tab.c (toolbar, find bar).
  *
  * Edits (pt_state) hold rects in the page space of the file's page as built by pt_open_pdf, before the rotation
  * the tab adds; the display copy (`doc`) has that rotation applied, so src_to_disp / disp_to_src convert.
@@ -349,7 +349,7 @@ void show_find(tab *t);
 void hide_find(tab *t);
 void edit_text_item(tab *t, int index);
 
-/* form_fields.c */
+/* page_view.c: form fields */
 extern pt_key coalesce_key;   /* the field being typed in; its keystrokes are one undo step */
 void fields_frame(tab *t, int page);
 void fields_reset(tab *t);

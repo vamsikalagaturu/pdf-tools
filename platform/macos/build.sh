@@ -1,43 +1,29 @@
 #!/usr/bin/env bash
 # Builds "PDF Tools.app" and PDF-Tools.dmg on a Mac, for that Mac's architecture (Apple Silicon or Intel), macOS 11+.
-# MuPDF, PCRE2 and raylib are built from source and linked statically: the app needs nothing installed.
-# Needs the Xcode command line tools (xcode-select --install) and CMake. Output: $PT_MACOS_OUT/out (default
-# ~/Library/Caches/pdf-tools-native/macos/out). Re-runs are incremental. The app is not signed with a Developer ID:
-# open it the first time with right-click > Open.
+# MuPDF (with Tesseract), PCRE2, OpenSSL and raylib are built from the sources pinned in platform/versions.sh and
+# linked statically: the app needs nothing installed. Needs the Xcode command line tools (xcode-select --install)
+# and CMake. Output: $PT_MACOS_OUT/out (default ~/Library/Caches/pdf-tools/macos/out). Re-runs are incremental.
+# The app is not signed with a Developer ID: open it the first time with right-click > Open.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-ROOT=${PT_MACOS_OUT:-$HOME/Library/Caches/pdf-tools-native/macos}
+. "$REPO/platform/versions.sh"
+ROOT=${PT_MACOS_OUT:-$HOME/Library/Caches/pdf-tools/macos}
 JOBS=$(sysctl -n hw.ncpu)
 export MACOSX_DEPLOYMENT_TARGET=11.0
-
-MUPDF_VERSION=1.28.5
-MUPDF_SHA256=98a5c10cda20c3992cdf76ff6b2a1149c32bd79cc796d3f703230b1185b7e934
-PCRE2_VERSION=10.45
-PCRE2_SHA256=21547f3516120c75597e5b30a992e27a592a31950b5140e7b8bfde3f192033c4
-RAYLIB_TAG=6.2
-RAYGUI_TAG=5.0
-OPENSSL_VERSION=3.5.4
-OPENSSL_SHA256=967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99
-# Tesseract's English data, the small "fast" model (tessdata_fast 4.1.0), for text recognition
-TESSDATA_SHA256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
 
 for tool in cc make cmake curl git shasum hdiutil codesign iconutil sips; do
     command -v $tool >/dev/null || { echo "missing: $tool" >&2; exit 1; }
 done
 
 step() { printf '\n== %s\n' "$*"; }
-fetch() {   # url file sha256
-    [ -f "$2" ] || { curl -fL -o "$2.part" "$1" && mv "$2.part" "$2"; }
-    echo "$3  $2" | shasum -a 256 -c --quiet
-}
 mkdir -p "$ROOT/dl" "$ROOT/src" "$ROOT/out"
 
 step "MuPDF $MUPDF_VERSION"
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
 MUPDF_OUT=$ROOT/mupdf-build-tesseract
-fetch "https://mupdf.com/downloads/archive/mupdf-$MUPDF_VERSION-source.tar.gz" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
+fetch "$MUPDF_URL" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
 [ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src"
 # libs for the app; mutool (apps) only to draw the icon from logo.svg
 make -C "$MUPDF_SRC" -j"$JOBS" libs apps build=release tesseract=yes OUT="$MUPDF_OUT" HAVE_X11=no HAVE_GLUT=no USE_SYSTEM_LIBS=no \
@@ -48,8 +34,7 @@ ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"
 step "PCRE2 $PCRE2_VERSION"
 PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
 PCRE2_OUT=$ROOT/pcre2-install
-fetch "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VERSION/pcre2-$PCRE2_VERSION.tar.bz2" \
-    "$ROOT/dl/pcre2.tar.bz2" "$PCRE2_SHA256"
+fetch "$PCRE2_URL" "$ROOT/dl/pcre2.tar.bz2" "$PCRE2_SHA256"
 [ -d "$PCRE2_SRC" ] || tar xjf "$ROOT/dl/pcre2.tar.bz2" -C "$ROOT/src"
 if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
     cmake -S "$PCRE2_SRC" -B "$ROOT/pcre2-build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PCRE2_OUT" \
@@ -60,8 +45,7 @@ fi
 step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
 OPENSSL_OUT=$ROOT/openssl-install
-fetch "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" \
-    "$ROOT/dl/openssl.tar.gz" "$OPENSSL_SHA256"
+fetch "$OPENSSL_URL" "$ROOT/dl/openssl.tar.gz" "$OPENSSL_SHA256"
 [ -d "$OPENSSL_SRC" ] || tar xzf "$ROOT/dl/openssl.tar.gz" -C "$ROOT/src"
 if [ ! -f "$OPENSSL_OUT/lib/libcrypto.a" ]; then
     (cd "$OPENSSL_SRC" && ./Configure "darwin64-$(uname -m)-cc" no-shared no-tests no-apps no-docs --prefix="$OPENSSL_OUT" \
@@ -70,11 +54,11 @@ if [ ! -f "$OPENSSL_OUT/lib/libcrypto.a" ]; then
 fi
 
 step "Tesseract English data"
-fetch "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata" "$ROOT/dl/eng.traineddata" "$TESSDATA_SHA256"
+fetch "$TESSDATA_URL" "$ROOT/dl/eng.traineddata" "$TESSDATA_SHA256"
 
 step "raylib $RAYLIB_TAG, raygui $RAYGUI_TAG"
-[ -d "$REPO/thirdparty/raylib" ] || git clone --depth 1 --branch "$RAYLIB_TAG" https://github.com/raysan5/raylib.git "$REPO/thirdparty/raylib"
-[ -d "$REPO/thirdparty/raygui" ] || git clone --depth 1 --branch "$RAYGUI_TAG" https://github.com/raysan5/raygui.git "$REPO/thirdparty/raygui"
+[ -d "$REPO/thirdparty/raylib" ] || git clone --depth 1 --branch "$RAYLIB_TAG" "$RAYLIB_URL" "$REPO/thirdparty/raylib"
+[ -d "$REPO/thirdparty/raygui" ] || git clone --depth 1 --branch "$RAYGUI_TAG" "$RAYGUI_URL" "$REPO/thirdparty/raygui"
 RAYLIB_OUT=$ROOT/raylib-install
 if [ ! -f "$RAYLIB_OUT/lib/libraylib.a" ]; then
     cmake -S "$REPO/thirdparty/raylib" -B "$ROOT/raylib-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=OFF \

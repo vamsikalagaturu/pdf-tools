@@ -22,7 +22,7 @@ char *pt_strdup(const char *s);
 char *pt_format(const char *fmt, ...);
 void pt_strs_free(pt_strs *s);
 
-/* ---- log.c ---- */
+/* ---- util.c: the log ---- */
 typedef enum { PT_LOG_DEBUG, PT_LOG_INFO, PT_LOG_WARN, PT_LOG_ERROR } pt_log_level;
 typedef void (*pt_log_sink)(pt_log_level level, const char *message);
 void pt_log(pt_log_level level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -66,12 +66,12 @@ void pt_json_null(pt_json *j);
 void pt_json_rect(pt_json *j, fz_rect r);
 void pt_json_finish(pt_json *j);
 
-/* ---- ranges.c: page range strings ('1-3,7', 1-based) ---- */
+/* ---- util.c: page range strings ('1-3,7', 1-based) ---- */
 int pt_parse_ranges(const char *text, int n, pt_ints *out);   /* sorted unique; -1 on bad input */
 int pt_ordered_ranges(const char *text, int n, pt_ints *out); /* in order, descending counts down */
 char *pt_format_ranges(const int *pages, int count);
 
-/* ---- ranges.c: page order helpers (pages numbered as pt_open_pdf builds the document) ---- */
+/* ---- util.c: page order helpers (pages numbered as pt_open_pdf builds the document) ---- */
 int pt_is_reordered(const int *order, int n, int own);
 void pt_file_order(int *order, int n, int own);
 void pt_put_back(pt_ints *order, int page);
@@ -95,7 +95,7 @@ int pt_have_regex(void);
 char *pt_utf8(const int *runes, int n);
 int pt_utf8_decode(const char *s, pt_ints *out);
 
-/* ---- personal data (pii.c) ---- */
+/* ---- text.c: personal data ---- */
 typedef enum { PT_PII_IBAN, PT_PII_CARD, PT_PII_EMAIL, PT_PII_DATE, PT_PII_PHONE, PT_PII_ID, PT_PII_COUNT } pt_pii_kind;
 typedef struct { pt_pii_kind kind; char *text; pt_rects rects; } pt_pii;
 PT_VEC(pt_piis, pt_pii);
@@ -103,7 +103,7 @@ extern const char *pt_pii_names[PT_PII_COUNT];
 void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out);   /* needs PCRE2 */
 void pt_piis_free(pt_piis *p);
 
-/* ---- forms.c ---- */
+/* ---- stamps.c: form fields ---- */
 const char *pt_field_type_string(fz_context *ctx, pdf_annot *widget);
 int pt_is_toggle(fz_context *ctx, pdf_annot *widget);
 int pt_is_on(const char *value);
@@ -272,19 +272,19 @@ int pt_is_image_file(fz_context *ctx, const char *path);
 fz_pixmap *pt_render_page(fz_context *ctx, fz_page *page, float zoom, int alpha);
 fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg);   /* PNG, or JPEG quality 90 */
 
-/* ---- ocr.c: text recognition (Tesseract through MuPDF) ---- */
+/* ---- extra.c: text recognition (Tesseract through MuPDF) ---- */
 /* the first folder holding <lang>.traineddata for every part of `language` ("deu+eng"), or NULL */
 char *pt_tessdata_dir(const char *language, const char *exe_dir);
 int pt_ocr_page(fz_context *ctx, pdf_document *doc, int page, const char *language, const char *datadir); /* characters added */
 
-/* ---- sign.c: certificate signatures (OpenSSL) ---- */
+/* ---- extra.c: certificate signatures (OpenSSL) ---- */
 int pt_have_signing(void);
 char *pt_certificate_name(fz_context *ctx, const char *p12, const char *password);   /* throws on a wrong password */
 /* `pdf` signed on `page` in a field at user_rect (PDF user space), as an incremental update */
 fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, int page, fz_rect user_rect, const char *p12,
                        const char *p12_password, const char *reason);
 
-/* ---- compare.c: what changed between two pages' words ---- */
+/* ---- extra.c: what changed between two pages' words ---- */
 void pt_compare_pages(fz_context *ctx, fz_page *a, fz_page *b, pt_rects *only_a, pt_rects *only_b);   /* a or b may be NULL */
 
 /* ---- synctex.c ---- */
@@ -308,7 +308,7 @@ int pt_synctex_stale(const pt_synctex *s);
 int pt_synctex_inverse(const pt_synctex *s, int page, float x, float y, const char **source, int *line);
 void pt_synctex_forward(const pt_synctex *s, const char *source, int line, pt_sync_hits *out);
 
-/* ---- selection.c: reading-order text selection ---- */
+/* ---- text.c: reading-order text selection ---- */
 typedef struct { fz_rect rect; char *text; int line; pt_chars chars; } pt_word;
 PT_VEC(pt_words, pt_word);
 void pt_page_words(fz_stext_page *st, pt_words *out);
@@ -316,7 +316,7 @@ void pt_reading_order_words(fz_stext_page *st, pt_words *out);
 void pt_words_free(pt_words *w);
 char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rects *rects);
 
-/* ---- edit_list.c: the Edits list and discarding entries ---- */
+/* ---- edits.c: the Edits list and discarding entries ---- */
 #define PT_DOCUMENT (-1)
 typedef enum {
     PT_E_REDACT, PT_E_TEXT, PT_E_NOTE, PT_E_SIGN, PT_E_IMAGE, PT_E_HIGHLIGHT, PT_E_INK, PT_E_SHAPE,

@@ -2,7 +2,6 @@
  * watching and SyncTeX. */
 #include "tab.h"
 #include "dialogs.h"
-#include "doc_tools.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
