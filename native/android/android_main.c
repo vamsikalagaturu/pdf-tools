@@ -4,6 +4,7 @@
  * native_text(), which the soft keyboard calls on the UI thread. */
 #include "android_glue.h"
 #include "ui.h"
+#include <android/asset_manager.h>
 #include <android/input.h>
 #include <android/keycodes.h>
 #include <android/log.h>
@@ -118,6 +119,27 @@ const char *pt_android_get_clipboard(void)
 
 /* ---- environment ---- */
 
+/* Tesseract reads its language data from a file: the APK's copy goes to $XDG_DATA_HOME/pdf-tools/tessdata once. */
+static void copy_tessdata(ANativeActivity *act, const char *data)
+{
+    char *dir = pt_format("%s/pdf-tools/tessdata", data), *path = pt_format("%s/eng.traineddata", dir);
+    AAsset *asset = pt_exists(path) ? NULL : AAssetManager_open(act->assetManager, "tessdata/eng.traineddata", AASSET_MODE_STREAMING);
+    if (asset) {
+        pt_mkdirs(dir);
+        char *part = pt_format("%s.part", path);
+        FILE *f = fopen(part, "wb");
+        char buf[65536];
+        int n, ok = f != NULL;
+        while (ok && (n = AAsset_read(asset, buf, sizeof buf)) > 0) ok = fwrite(buf, 1, (size_t)n, f) == (size_t)n;
+        if (f && fclose(f)) ok = 0;
+        if (ok) rename(part, path);
+        else LOG("could not copy the Tesseract data to %s", path);
+        free(part);
+        AAsset_close(asset);
+    }
+    free(dir), free(path);
+}
+
 static void setup_environment(void)
 {
     ANativeActivity *act = GetAndroidApp()->activity;
@@ -151,6 +173,7 @@ static void setup_environment(void)
         free(link);
     }
     if (chdir(files)) LOG("chdir %s failed", files);
+    copy_tessdata(act, data);
     free(config), free(data), free(run), free(external);
 }
 

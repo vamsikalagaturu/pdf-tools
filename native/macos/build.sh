@@ -19,6 +19,10 @@ PCRE2_VERSION=10.45
 PCRE2_SHA256=21547f3516120c75597e5b30a992e27a592a31950b5140e7b8bfde3f192033c4
 RAYLIB_TAG=6.2
 RAYGUI_TAG=5.0
+OPENSSL_VERSION=3.5.4
+OPENSSL_SHA256=967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99
+# Tesseract's English data, the small "fast" model (tessdata_fast 4.1.0), for text recognition
+TESSDATA_SHA256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
 
 for tool in cc make cmake curl git shasum hdiutil codesign iconutil sips; do
     command -v $tool >/dev/null || { echo "missing: $tool" >&2; exit 1; }
@@ -54,6 +58,21 @@ if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
     cmake --build "$ROOT/pcre2-build" --target install -j"$JOBS" >/dev/null
 fi
 
+step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
+OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
+OPENSSL_OUT=$ROOT/openssl-install
+fetch "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" \
+    "$ROOT/dl/openssl.tar.gz" "$OPENSSL_SHA256"
+[ -d "$OPENSSL_SRC" ] || tar xzf "$ROOT/dl/openssl.tar.gz" -C "$ROOT/src"
+if [ ! -f "$OPENSSL_OUT/lib/libcrypto.a" ]; then
+    (cd "$OPENSSL_SRC" && ./Configure "darwin64-$(uname -m)-cc" no-shared no-tests no-apps no-docs --prefix="$OPENSSL_OUT" \
+        --libdir=lib "-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" && make -j"$JOBS" build_libs && make install_dev) \
+        >"$ROOT/openssl-build.log" 2>&1 || { tail -40 "$ROOT/openssl-build.log" >&2; exit 1; }
+fi
+
+step "Tesseract English data"
+fetch "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata" "$ROOT/dl/eng.traineddata" "$TESSDATA_SHA256"
+
 step "raylib $RAYLIB_TAG, raygui $RAYGUI_TAG"
 [ -d "$NATIVE/thirdparty/raylib" ] || git clone --depth 1 --branch "$RAYLIB_TAG" https://github.com/raysan5/raylib.git "$NATIVE/thirdparty/raylib"
 [ -d "$NATIVE/thirdparty/raygui" ] || git clone --depth 1 --branch "$RAYGUI_TAG" https://github.com/raysan5/raygui.git "$NATIVE/thirdparty/raygui"
@@ -69,6 +88,7 @@ cmake -S "$NATIVE" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
     -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON \
     -DPT_USE_FONTCONFIG=OFF -Draylib_DIR="$RAYLIB_OUT/lib/cmake/raylib" >/dev/null
 cmake --build "$ROOT/build" -j"$JOBS"
 ctest --test-dir "$ROOT/build" --output-on-failure
@@ -80,6 +100,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/build/pdf-tools" "$APP/Contents/MacOS/pdf-tools"
 VERSION=$(git -C "$REPO" describe --tags --always 2>/dev/null || echo 0.1.0)
 sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/tessdata"
+cp "$ROOT/dl/eng.traineddata" "$APP/Contents/Resources/tessdata/"
 # the icon: logo.svg drawn by mutool at 1024 px, then the iconset sizes
 ICONSET=$ROOT/pdf-tools.iconset
 rm -rf "$ICONSET" && mkdir -p "$ICONSET"

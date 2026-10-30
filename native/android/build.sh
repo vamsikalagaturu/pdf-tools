@@ -28,6 +28,15 @@ PCRE2_TAR=$ROOT/dl/pcre2-$PCRE2_VERSION.tar.bz2
 PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
 PCRE2_OUT=$ROOT/pcre2-install
 
+OPENSSL_VERSION=3.5.4
+OPENSSL_SHA256=967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99
+OPENSSL_TAR=$ROOT/dl/openssl-$OPENSSL_VERSION.tar.gz
+OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
+OPENSSL_OUT=$ROOT/openssl-install
+# Tesseract's English data, the small "fast" model (tessdata_fast 4.1.0), packed into the APK as an asset
+TESSDATA_SHA256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
+TESSDATA=$ROOT/dl/eng.traineddata
+
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 for tool in "$TC/clang" "$BT/aapt2" "$BT/d8" "$BT/zipalign" "$BT/apksigner" "$ANDROID_JAR"; do
     [ -e "$tool" ] || { echo "missing: $tool" >&2; exit 1; }
@@ -78,13 +87,36 @@ if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
 fi
 ls -l "$PCRE2_OUT/lib/libpcre2-8.a"
 
+step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
+if [ ! -f "$OPENSSL_TAR" ]; then
+    curl -fL -o "$OPENSSL_TAR.part" "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+    mv "$OPENSSL_TAR.part" "$OPENSSL_TAR"
+fi
+echo "$OPENSSL_SHA256  $OPENSSL_TAR" | sha256sum -c --quiet
+[ -d "$OPENSSL_SRC" ] || tar xzf "$OPENSSL_TAR" -C "$ROOT/src"
+if [ ! -f "$OPENSSL_OUT/lib/libcrypto.a" ]; then
+    (cd "$OPENSSL_SRC" && PATH="$TC:$PATH" ANDROID_NDK_ROOT="$NDK" ./Configure android-arm64 -D__ANDROID_API__=$MIN_API \
+        no-shared no-tests no-apps no-docs --prefix="$OPENSSL_OUT" --libdir=lib \
+        && PATH="$TC:$PATH" ANDROID_NDK_ROOT="$NDK" make -j"$JOBS" build_libs && make install_dev) \
+        >"$ROOT/openssl-build.log" 2>&1 || { tail -40 "$ROOT/openssl-build.log" >&2; exit 1; }
+fi
+ls -l "$OPENSSL_OUT/lib/libcrypto.a"
+
+step "Tesseract English data"
+if [ ! -f "$TESSDATA" ]; then
+    curl -fL -o "$TESSDATA.part" "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata"
+    mv "$TESSDATA.part" "$TESSDATA"
+fi
+echo "$TESSDATA_SHA256  $TESSDATA" | sha256sum -c --quiet
+
 step "libpdf-tools.so (raylib, core, window)"
 cmake -S "$HERE" -B "$ROOT/build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-$MIN_API -DCMAKE_BUILD_TYPE=Release \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
-    -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" >/dev/null
+    -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON -DCMAKE_FIND_ROOT_PATH="$OPENSSL_OUT" >/dev/null
 cmake --build "$ROOT/build" --target pdf-tools -j"$JOBS"
 
 step "dex"
@@ -115,7 +147,9 @@ else
     sed '/android:icon=/d' "$HERE/AndroidManifest.xml" > "$APK/AndroidManifest.xml"
     MANIFEST=$APK/AndroidManifest.xml
 fi
-"$BT/aapt2" link -o "$APK/unsigned.apk" -I "$ANDROID_JAR" --manifest "$MANIFEST" "${RES_FLAGS[@]}" \
+mkdir -p "$APK/assets/tessdata"
+cp "$TESSDATA" "$APK/assets/tessdata/eng.traineddata"
+"$BT/aapt2" link -o "$APK/unsigned.apk" -I "$ANDROID_JAR" --manifest "$MANIFEST" "${RES_FLAGS[@]}" -A "$APK/assets" \
     --min-sdk-version $MIN_API --target-sdk-version $TARGET_API --debug-mode --auto-add-overlay
 
 step "package"

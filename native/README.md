@@ -15,15 +15,17 @@ sources build for Linux desktops, macOS 11+ (`macos/`) and, through `android/`, 
 
 ## Build
 
-Requirements: C11, CMake 3.20+, MuPDF 1.28 headers and library, PCRE2 (regex search and redaction) and
-fontconfig (installed fonts for text boxes), both optional. The window needs raylib 6.2 and raygui 5.0 in
-`thirdparty/` (not tracked):
+Requirements: C11, CMake 3.20+, MuPDF 1.28 headers and library (with Tesseract for OCR, as PyMuPDF's is),
+and, all optional: PCRE2 (regex search, redaction, finding personal data), fontconfig (installed fonts for text
+boxes) and OpenSSL libcrypto (certificate signatures). The window needs raylib 6.2 and raygui 5.0 in
+`thirdparty/` (not tracked); build raylib with both of GLFW's Linux backends, so the window runs natively on
+Wayland and on X11 (it picks Wayland when `WAYLAND_DISPLAY` is set):
 
 ```sh
 git clone --depth 1 --branch 6.2 https://github.com/raysan5/raylib.git native/thirdparty/raylib
 git clone --depth 1 --branch 5.0 https://github.com/raysan5/raygui.git native/thirdparty/raygui
 cmake -S native/thirdparty/raylib -B ~/.cache/pdf-tools-native/raylib-build -DBUILD_EXAMPLES=OFF \
-  -DCMAKE_INSTALL_PREFIX=$PWD/native/thirdparty/raylib-install
+  -DGLFW_BUILD_WAYLAND=ON -DGLFW_BUILD_X11=ON -DCMAKE_INSTALL_PREFIX=$PWD/native/thirdparty/raylib-install
 cmake --build ~/.cache/pdf-tools-native/raylib-build --target install -j
 ```
 
@@ -41,8 +43,8 @@ Keep the build folder outside the repo. `-DPT_BUILD_GUI=OFF` builds the core and
 
 ### macOS
 
-On a Mac with the Xcode command line tools and CMake, `native/macos/build.sh` builds MuPDF, PCRE2 and raylib from
-source, links them statically and makes `PDF Tools.app` and `PDF-Tools.dmg` (macOS 11+, the Mac's own
+On a Mac with the Xcode command line tools and CMake, `native/macos/build.sh` builds MuPDF (with Tesseract), PCRE2, OpenSSL
+and raylib from source, links them statically, bundles the English OCR data and makes `PDF Tools.app` and `PDF-Tools.dmg` (macOS 11+, the Mac's own
 architecture) in `~/Library/Caches/pdf-tools-native/macos/out`. Every push also builds it on GitHub Actions; the
 `.dmg` is the run's `PDF-Tools-macOS` artifact. The app is ad-hoc signed, not notarized: open it the first time
 with right-click > Open. Platform pieces: Retina rendering (`ui.density`), the system file chooser through
@@ -64,16 +66,25 @@ PDF_TOOLS_BIN=~/.cache/pdf-tools-native/build/pdf-tools-c .venv/bin/python -m py
 `pdf-tools COMMAND` (the window binary) and `pdf-tools-c COMMAND` run the commands documented in `AGENTS.md`
 (`info`, `redact`, `fill`, `pages`, `merge`, `split`, `protect`, `unprotect`, `flatten`, `synctex`) with the
 same options, JSON output and exit codes. C-only extras: `search`, `render`, `annotate`, `edit-annotation`,
-`draw`, `insert-text`, `insert-image`, `sign`, `prepare-signature`, `scrub`, `inspect`, `redact-text` and
-`redact --rect`; `pdf-tools-c COMMAND --help` lists their options.
+`draw`, `insert-text`, `insert-image`, `sign` (an image, or `--cert` for a digital signature), `prepare-signature`,
+`scrub`, `inspect`, `bates`, `watermark`, `ocr`, `compare`, `export-images`, `redact-text` and `redact --rect`;
+`pdf-tools-c COMMAND --help` lists their options.
+
+OCR needs Tesseract's language data: `LANG.traineddata` in `$TESSDATA_PREFIX`, `~/.local/share/pdf-tools/tessdata`,
+next to the program, or the system's `tessdata` folder (on Debian/Ubuntu `tesseract-ocr-eng`). The macOS app and
+the APK carry English (tessdata_fast). Logging: set `PDF_TOOLS_LOG` to `error`, `warn` (default), `info` or `debug`.
 
 ## Window
 
 Opening a PDF: `pdf-tools file.pdf` (tabs go to the window used last), `--new-window`, `--forward FILE LINE
-SOURCE` for SyncTeX. Features: View (links, forms, text selection), Redact, Highlight and other marks, Note,
-Text, Sign, Image, Draw, Shape (rectangle, ellipse, line, arrow), Crop; a sidebar with Pages, Outline,
-Annotations and Edits; find with regex; undo/redo; save, save as, export pages, save optimized copy, protect,
-print; Combine & split. Colours: presets, favourites (`favourite_colours` in settings.toml) and a colour chooser.
+SOURCE` for SyncTeX. Features: View (links, forms, text selection), Redact (with Find personal data: e-mails,
+phone numbers, IBANs, card numbers, dates, ID numbers), Highlight and other marks, Note, Text, Sign (an image,
+or a digital signature from a .p12/.pfx certificate, made when saving), Image, Draw, Shape (rectangle, ellipse,
+line, arrow), Crop; Bates numbers, watermarks, document properties, OCR (a recognized copy), Compare with
+another PDF; a sidebar with Pages, Outline (editable), Annotations and Edits; find with regex; undo/redo;
+fit width or height, two pages side by side, presentation (F5); save, save as, export pages (as PDF or images),
+save optimized copy, protect, print; Combine & split. Colours: presets, favourites (`favourite_colours` in
+settings.toml), a colour chooser, and an accent colour per theme (View > Appearance).
 Each file reopens where it was left (`$XDG_DATA_HOME/pdf-tools/positions.tsv`). Narrow windows (phones) get a
 compact toolbar and an overlay sidebar.
 
