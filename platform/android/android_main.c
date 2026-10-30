@@ -243,7 +243,6 @@ static int nsamples;
 /* momentum after a scroll is let go: the velocity decays exponentially, as Android's own lists fling */
 static struct {
     float vx, vy;
-    double t;
 } fling;
 static int mouse_left, mouse_buttons;
 static int back_pressed; /* Back (button or gesture) since the last frame */
@@ -396,7 +395,7 @@ static void on_touch(const AInputEvent *e, int action)
         float vx, vy;
         if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP &&
             release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) && hypotf(vx, vy) > 100 * dp())
-            fling.vx = vx, fling.vy = vy, fling.t = GetTime();
+            fling.vx = vx, fling.vy = vy;
         touch.pending = touch.pressed = touch.scrolling = 0;
         touch.lifted = 1;
         break;
@@ -587,9 +586,12 @@ void pt_android_frame(void)
     if (a->destroyRequested) app.quit = 1;
     pt_raylib_follow_window();
     file_dialogs_poll();
+    /* the fling steps by the frame interval: timed from the release event instead, the first frame after it
+     * barely moved and the page hitched as the finger left */
+    static double last_frame;
+    double now = GetTime(), dt = fmin(now - last_frame, 0.05);
+    last_frame = now;
     if (fling.vx || fling.vy) {
-        double now = GetTime(), dt = fmin(now - fling.t, 0.05);
-        fling.t = now;
         wheel_acc.x += (float)(fling.vx * dt) / (60 * dp());
         wheel_acc.y += (float)(fling.vy * dt) / (60 * dp());
         float k = expf(-1.6f * (float)dt);
