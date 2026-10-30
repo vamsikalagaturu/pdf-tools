@@ -19,6 +19,23 @@ jobs:
         with:
           name: PDF-Tools-Linux
           path: ${{ runner.temp }}/pdf-tools-linux/out/PDF_Tools-*.AppImage
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ninja, Android build-tools, platform and NDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36.1" \
+            "ndk;28.2.13676358" >/dev/null
+      - name: Build the APK (platform/android/build.sh)
+        run: PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" platform/android/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Tools-Android
+          path: ${{ runner.temp }}/pdf-tools-android/out/pdf-tools.apk
   macos:
     runs-on: macos-latest
     steps:
