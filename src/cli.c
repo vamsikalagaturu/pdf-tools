@@ -1122,6 +1122,9 @@ static int cmd_draw(args *a)
     colour_arg(a, "#c62828", it.rgb);
     const char *w = get(a, "--width");
     it.pen_width = w ? strtof(w, NULL) : 2;
+    int pen = pt_pen_from_name(get(a, "--style"));
+    if (pen < 0) usage_error(a->c, "argument --style: invalid choice: '%s'", get(a, "--style"));
+    it.pen = (pt_pen)pen;
     pt_points pts = {0};
     char *spec = pt_strdup(get(a, "--points"));
     for (char *tok = strtok(spec, ";"); tok; tok = strtok(NULL, ";")) {
@@ -1683,6 +1686,7 @@ static const cmd COMMANDS[] = {
       PAGE,
       {"--points", NULL, VALUE, 1, "x,y;x,y;...", "the stroke's points", NULL},
       {"--width", NULL, VALUE, 0, "WIDTH", "line width in points (default 2)", NULL},
+      {"--style", NULL, VALUE, 0, "STYLE", "pen | highlighter | marker | dashed", "pen"},
       COLOR},
      {0}},
     {"insert-text",

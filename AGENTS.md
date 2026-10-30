@@ -53,7 +53,7 @@ pdf-tools compare a.pdf b.pdf [--password2 PW]               # -> per page: boxe
 pdf-tools bates in.pdf -o out.pdf [--prefix ABC] [--suffix X] [--start 1] [--digits 6] [--position bottom-right] [--pages 1-3]
 pdf-tools watermark in.pdf -o out.pdf --text CONFIDENTIAL [--position diagonal] [--opacity 0.3] [--pages 1-3]
 pdf-tools annotate in.pdf -o out.pdf --page 1 --type highlight --rect x0,y0,x1,y1 [--text "comment"] [--color '#ffd400']
-pdf-tools draw in.pdf -o out.pdf --page 1 --points '10,10;50,60;90,20' [--width 2]
+pdf-tools draw in.pdf -o out.pdf --page 1 --points '10,10;50,60;90,20' [--width 2] [--style pen|highlighter|marker|dashed]
 pdf-tools insert-text in.pdf -o out.pdf --page 1 --at 72,72 --text "Hello" [--size 11] [--font Helvetica] [--width 300]
 pdf-tools insert-image in.pdf -o out.pdf --page 1 --image logo.png --rect x0,y0,x1,y1
 pdf-tools sign in.pdf -o out.pdf --page 1 --rect x0,y0,x1,y1 --image signature.png
