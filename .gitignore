@@ -7,3 +7,4 @@
 *.png
 !platform/android/res/**/*.png
 /compile_commands.json
+*.apk
