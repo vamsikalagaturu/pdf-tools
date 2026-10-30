@@ -568,6 +568,18 @@ static int moved_far(tab *t)
     return fabsf(ui.mouse.x - t->press_screen.x) + fabsf(ui.mouse.y - t->press_screen.y) > CLICK_SLOP_PX;
 }
 
+/* one wheel notch scrolls the view's extent^(2/3), as GTK does (gtkrange.c); on Android a wheel unit is 60 px of
+ * finger travel (android_main.c), so the page stays under the finger */
+static float wheel_step(float extent)
+{
+#ifdef __ANDROID__
+    (void)extent;
+    return 60;
+#else
+    return powf(extent, 2.0f / 3);
+#endif
+}
+
 static void handle_input(tab *t, Rectangle area)
 {
     int over = ui_hover(area);
@@ -582,10 +594,10 @@ static void handle_input(tab *t, Rectangle area)
             /* keep the point under the pointer in place */
             t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
             if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
-        } else if (ui.shift) t->scroll_x -= ui.wheel * 60;
+        } else if (ui.shift) t->scroll_x -= ui.wheel * wheel_step(area.width);
         else {
-            t->scroll_y -= ui.wheel * 60;
-            t->scroll_x -= ui.wheel_x * 60;
+            t->scroll_y -= ui.wheel * wheel_step(area.height);
+            t->scroll_x -= ui.wheel_x * wheel_step(area.width);
         }
         close_popover(t, 1);
     }

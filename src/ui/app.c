@@ -1062,8 +1062,9 @@ int pt_app_main(int argc, char **argv)
         BeginDrawing();
         frame();
         EndDrawing();
-        /* idle: sleep until input (or a short timeout for file watching and messages) */
-        if (!ui.dirty && !ui.down && !ui_events_pending() && !file_dialog_busy() &&
+        /* idle: sleep until input (or a short timeout for file watching and messages); input that arrived while
+         * drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now */
+        if (!ui.dirty && !ui.down && !ui_input_since_frame() && !file_dialog_busy() &&
             !(*app.status && ui.now < app.status_until)) {
             glfwWaitEventsTimeout(0.3);
             timer_wake = 1;
