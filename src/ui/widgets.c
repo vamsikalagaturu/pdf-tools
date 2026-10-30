@@ -239,6 +239,7 @@ static struct {
 static int nkeys, nframe_keys;
 static int frame_mods; /* modifiers held when this frame's keys were pressed (they may be up by now) */
 static int left_down;
+static Vector2 drawn_mouse; /* the pointer when the last frame began */
 
 static void on_mouse(void *window, int button, int action, int mods)
 {
@@ -262,6 +263,9 @@ void ui_input_init(void)
 static void take_events(void)
 {
     ui.pressed = ui.released = ui.rpressed = ui.rreleased = ui.mpressed = 0;
+    /* input is handled while the frame is drawn (shortcuts last), so what it changed shows in the next frame */
+    if (nmouse || nkeys) ui.dirty = 1;
+    drawn_mouse = GetMousePosition();
     if (nmouse) {
         int b = mouse_events[0].button, a = mouse_events[0].action;
         memmove(mouse_events, mouse_events + 1, sizeof mouse_events[0] * (size_t)(nmouse - 1));
@@ -284,6 +288,13 @@ static void take_events(void)
 }
 
 int ui_events_pending(void) { return nmouse > 0 || nkeys > 0; }
+
+/* any input since the last frame: clicks and keys, pointer movement, the wheel */
+int ui_input_since_frame(void)
+{
+    Vector2 m = GetMousePosition(), w = GetMouseWheelMoveV();
+    return ui_events_pending() || m.x != drawn_mouse.x || m.y != drawn_mouse.y || w.x || w.y;
+}
 
 /* the key was pressed (or repeats) this frame, whatever has focus */
 int key_pressed(int key)

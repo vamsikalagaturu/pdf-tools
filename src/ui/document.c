@@ -767,6 +767,8 @@ static Texture2D texture_from_pixmap(fz_pixmap *pix)
 typedef struct render_job {
     unsigned gen;
     int page, tile;
+    int thumb, words;  /* a sidebar thumbnail; the page's words (text selection) instead of pixels */
+    pt_words found;    /* words: the result */
     float scale, prio; /* prio: distance from the middle of the view; nearest first */
     int visible;       /* else prefetched: stored only in free room */
     fz_irect box;      /* a tile's device pixels */
@@ -826,6 +828,7 @@ static void job_free(fz_context *ctx, render_job *j)
 {
     fz_drop_buffer(ctx, j->bytes);
     fz_drop_pixmap(ctx, j->pix);
+    pt_words_free(&j->found);
     free(j->path), free(j->password);
     free(j);
 }
@@ -907,14 +910,23 @@ static void *render_worker(void *arg)
         fz_try(ctx)
         {
             fz_display_list *list = worker_list(w, j);
-            fz_matrix ctm = fz_scale(j->scale, j->scale);
-            fz_irect box = j->tile ? j->box : fz_round_rect(fz_transform_rect(fz_bound_display_list(ctx, list), ctm));
-            /* RGBA (opaque white under the page), the format GL textures take without conversion */
-            j->pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), box, NULL, 1);
-            fz_clear_pixmap_with_value(ctx, j->pix, 255);
-            dev = fz_new_draw_device(ctx, fz_identity, j->pix);
-            fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(box), NULL);
-            fz_close_device(ctx, dev);
+            if (j->words) {
+                fz_stext_options opts = {.flags = PT_TEXT_FLAGS};
+                fz_stext_page *st = fz_new_stext_page_from_display_list(ctx, list, &opts);
+                fz_try(ctx) pt_reading_order_words(st, &j->found);
+                fz_always(ctx) fz_drop_stext_page(ctx, st);
+                fz_catch(ctx) fz_rethrow(ctx);
+            } else {
+                fz_matrix ctm = fz_scale(j->scale, j->scale);
+                fz_irect box =
+                    j->tile ? j->box : fz_round_rect(fz_transform_rect(fz_bound_display_list(ctx, list), ctm));
+                /* RGBA (opaque white under the page), the format GL textures take without conversion */
+                j->pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), box, NULL, 1);
+                fz_clear_pixmap_with_value(ctx, j->pix, 255);
+                dev = fz_new_draw_device(ctx, fz_identity, j->pix);
+                fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(box), NULL);
+                fz_close_device(ctx, dev);
+            }
         }
         fz_always(ctx) fz_drop_device(ctx, dev);
         fz_catch(ctx) fz_drop_pixmap(ctx, j->pix), j->pix = NULL;
@@ -979,8 +991,9 @@ static void render_forget(unsigned gen)
 
 static int same_job(const render_job *a, const render_job *b)
 {
-    return a->gen == b->gen && a->page == b->page && a->tile == b->tile && fabsf(a->scale - b->scale) < 0.001f &&
-           a->box.x0 == b->box.x0 && a->box.y0 == b->box.y0;
+    return a->gen == b->gen && a->page == b->page && a->tile == b->tile && a->thumb == b->thumb &&
+           a->words == b->words && fabsf(a->scale - b->scale) < 0.001f && a->box.x0 == b->box.x0 &&
+           a->box.y0 == b->box.y0;
 }
 
 /* queued, being drawn or drawn but not yet taken: the caller holds R.lock */
@@ -1053,8 +1066,8 @@ static void render_request(tab *t, render_job want)
     int n = 0;
     for (render_job **q = &R.queue; *q;) {
         render_job *k = *q;
-        int other_zoom =
-            k->gen == j->gen && k->page == j->page && k->tile == j->tile && fabsf(k->scale - j->scale) >= 0.001f;
+        int other_zoom = k->gen == j->gen && k->page == j->page && k->tile == j->tile && k->thumb == j->thumb &&
+                         !k->words && !j->words && fabsf(k->scale - j->scale) >= 0.001f;
         if (k != j && other_zoom) *q = k->next, k->next = dropped, dropped = k;
         else q = &k->next, n++;
     }
@@ -1167,7 +1180,13 @@ static void render_collect(tab *t)
         if (!mine) return;
         double t0 = GetTime();
         /* a failed render is kept as an empty texture, so it is not asked for again in every frame */
-        if (mine->tile) tile_insert(t, mine);
+        int page = mine->page, known = page >= 0 && page < t->npages;
+        if (mine->words) {
+            if (known && !t->words_ok[page]) t->words[page] = mine->found, mine->found = (pt_words){0};
+            if (known) t->words_ok[page] = 1;
+        } else if (mine->thumb) {
+            if (known && !t->thumb_ok[page]) t->thumbs[page] = texture_from_pixmap(mine->pix), t->thumb_ok[page] = 1;
+        } else if (mine->tile) tile_insert(t, mine);
         else cache_insert(t, mine);
         spent += GetTime() - t0;
         mine->next = NULL;
@@ -1229,24 +1248,22 @@ Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible)
     return t->thumb_ok && t->thumb_ok[page] ? &t->thumbs[page] : NULL;
 }
 
+/* NULL until the render thread has made it */
 Texture2D *thumb_texture(tab *t, int page)
 {
     if (t->thumb_ok[page]) return &t->thumbs[page];
     fz_rect b = page_bounds(t, page);
     float zoom = fminf(THUMB_W / b.x1, THUMB_H / b.y1) * UI_PX;
-    fz_pixmap *pix = NULL;
-    fz_try(CTX)
-    {
-        fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
-        fz_try(CTX) pix = pt_render_page(CTX, p, zoom, 0);
-        fz_always(CTX) fz_drop_page(CTX, p);
-        fz_catch(CTX) fz_rethrow(CTX);
-    }
-    fz_catch(CTX) return NULL;
-    t->thumbs[page] = texture_from_pixmap(pix);
-    t->thumb_ok[page] = 1;
-    fz_drop_pixmap(CTX, pix);
-    return &t->thumbs[page];
+    ui.dirty = 1;
+    render_request(t, (render_job){.page = page, .thumb = 1, .scale = zoom, .prio = 1e6f, .visible = 1});
+    return NULL;
+}
+
+/* the words of a page, made by the render thread ahead of use (words_prefetch); made here if still missing */
+void words_prefetch(tab *t, int page)
+{
+    if (t->words_ok && !t->words_ok[page])
+        render_request(t, (render_job){.page = page, .words = 1, .prio = 2e6f, .visible = 1});
 }
 
 pt_words *page_words(tab *t, int page)

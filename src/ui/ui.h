@@ -119,6 +119,7 @@ void ui_touch_zoom_area(Rectangle r); /* a double tap here zooms instead of clic
 int ui_touch_zooms_at(float screen_x, float screen_y);
 void ui_input_init(void);
 int ui_events_pending(void);
+int ui_input_since_frame(void);
 int key_pressed(int key);
 unsigned ui_id(const void *p, int k);
 unsigned ui_id_str(const char *s, int k);

@@ -358,6 +358,7 @@ fz_locks_context *render_locks(void);
 void render_stop(void);
 Texture2D *thumb_texture(tab *t, int page);
 pt_words *page_words(tab *t, int page);
+void words_prefetch(tab *t, int page);
 field_infos *page_fields(tab *t, int page);
 annot_infos *page_annots(tab *t, int page);
 link_infos *page_links(tab *t, int page);

@@ -980,7 +980,7 @@ int pt_app_main(int argc, char **argv)
         }
         was_focused = focused;
         /* woken by the timer alone: watch the files, and draw only if that changed something */
-        if (timer_wake && !ui_events_pending() && !IsWindowResized() && !IsFileDropped() && !*app.status) {
+        if (timer_wake && !ui_input_since_frame() && !IsWindowResized() && !IsFileDropped() && !*app.status) {
             ui.now = GetTime();
             ui.dirty = 0;
             for (int i = 0; i < app.tabs.n; i++)

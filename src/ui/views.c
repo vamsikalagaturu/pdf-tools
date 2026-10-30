@@ -833,6 +833,7 @@ static void draw_page(tab *t, int p)
     fz_rect sr = page_scene_rect(t, p);
     Rectangle r = scene_rect_to_screen(t, sr);
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
+    if (t->tool == T_VIEW || t->tool == T_HIGHLIGHT || t->tool == T_REDACT) words_prefetch(t, p);
     DrawRectangleRec(r, pal.paper);
     float px = UI_PX, base = base_scale(t, p);
     Texture2D *tex = page_texture(t, p, base, view_distance(t, r), 1);
