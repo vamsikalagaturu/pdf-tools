@@ -31,6 +31,8 @@ APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/$APP
 # download $1 to $2 once and check it against SHA-256 $3
 fetch() {
     [ -f "$2" ] || { curl -fL -o "$2.part" "$1" && mv "$2.part" "$2"; }
-    if command -v sha256sum >/dev/null; then echo "$3  $2" | sha256sum -c --quiet
-    else echo "$3  $2" | shasum -a 256 -c --quiet; fi
+    # macOS 15 ships a BSD sha256sum without GNU's -c options
+    local sum
+    sum=$( (sha256sum "$2" 2>/dev/null || shasum -a 256 "$2") | cut -d' ' -f1)
+    [ "$sum" = "$3" ] || { echo "checksum mismatch for $2: $sum" >&2; return 1; }
 }

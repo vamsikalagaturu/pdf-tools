@@ -1,6 +1,7 @@
 /* Fonts for text boxes: picking the font to draw with, measuring text, bold/italic variants.
  * A font name resolves to a standard base-14 font, else a font embedded in the PDF, else the closest installed
- * font (fontconfig, Android's font matcher or Core Text), else Helvetica; each step only counts if it has glyphs for the text. */
+ * font (fontconfig, Android's font matcher or Core Text), else Helvetica; each step only counts if it has glyphs for
+ * the text. */
 #include "pt_core.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -18,11 +19,15 @@
 
 const char *pt_default_fonts[5] = {"Helvetica", "Helvetica-Bold", "Times-Roman", "Times-Bold", "Courier"};
 
-static const struct { const char *name, *code; } BASE14[] = {
-    {"Helvetica", "helv"}, {"Helvetica-Bold", "hebo"}, {"Helvetica-Oblique", "heit"},
-    {"Helvetica-BoldOblique", "hebi"}, {"Times-Roman", "tiro"}, {"Times-Bold", "tibo"},
-    {"Times-Italic", "tiit"}, {"Times-BoldItalic", "tibi"}, {"Courier", "cour"},
-    {"Courier-Bold", "cobo"}, {"Courier-Oblique", "coit"}, {"Courier-BoldOblique", "cobi"},
+static const struct {
+    const char *name, *code;
+} BASE14[] = {
+    {"Helvetica", "helv"},         {"Helvetica-Bold", "hebo"},
+    {"Helvetica-Oblique", "heit"}, {"Helvetica-BoldOblique", "hebi"},
+    {"Times-Roman", "tiro"},       {"Times-Bold", "tibo"},
+    {"Times-Italic", "tiit"},      {"Times-BoldItalic", "tibi"},
+    {"Courier", "cour"},           {"Courier-Bold", "cobo"},
+    {"Courier-Oblique", "coit"},   {"Courier-BoldOblique", "cobi"},
 };
 #define NBASE14 (int)(sizeof BASE14 / sizeof *BASE14)
 
@@ -33,8 +38,8 @@ static const char *FAMILIES[3][4] = {
 };
 
 static const char *STYLE_WORDS[] = {
-    "regular", "roman", "book", "bold", "italic", "oblique", "bolditalic", "boldoblique",
-    "light", "medium", "semibold", "demibold", "black", "condensed", NULL,
+    "regular", "roman",  "book",     "bold",     "italic", "oblique",   "bolditalic", "boldoblique",
+    "light",   "medium", "semibold", "demibold", "black",  "condensed", NULL,
 };
 
 const char *pt_base_font_name(const char *name)
@@ -69,7 +74,10 @@ static void name_tokens(const char *name, pt_strs *out)
         static const char *suffixes[] = {"PSMT", "MT", "PS"};
         for (int k = 0; k < 3; k++) {
             size_t m = strlen(suffixes[k]);
-            if (n >= m && !strcmp(t + n - m, suffixes[k])) { t[n - m] = 0; break; }
+            if (n >= m && !strcmp(t + n - m, suffixes[k])) {
+                t[n - m] = 0;
+                break;
+            }
         }
         if (*t) pt_push(*out, t);
         else free(t);
@@ -139,7 +147,11 @@ static int only_style(const char *t)
         int hit = 0;
         for (int i = 0; i < 6; i++) {
             size_t n = strlen(words[i]);
-            if (!strncasecmp(t, words[i], n)) { t += n; hit = 1; break; }
+            if (!strncasecmp(t, words[i], n)) {
+                t += n;
+                hit = 1;
+                break;
+            }
         }
         if (!hit) return 0;
     }
@@ -162,7 +174,10 @@ char *pt_font_family(const char *name)
         strcat(out, tokens.v[i]);
     }
     pt_strs_free(&tokens);
-    if (!*out) { free(out); return pt_strdup(base); }
+    if (!*out) {
+        free(out);
+        return pt_strdup(base);
+    }
     return out;
 }
 
@@ -175,12 +190,18 @@ char *pt_styled_font(const char *name, int bold, int italic, const pt_strs *cand
         pt_font_style(candidates->v[i], &b, &it);
         int same = !strcmp(f, family) && b == bold && it == italic;
         free(f);
-        if (same) { free(family); return pt_strdup(candidates->v[i]); }
+        if (same) {
+            free(family);
+            return pt_strdup(candidates->v[i]);
+        }
     }
     for (int f = 0; f < 3; f++)
-        if (!strcmp(family, FAMILIES[f][0])) { free(family); return pt_strdup(FAMILIES[f][bold + 2 * italic]); }
-    char *out = bold || italic ? pt_format("%s-%s%s", family, bold ? "Bold" : "", italic ? "Italic" : "")
-                               : pt_strdup(family);
+        if (!strcmp(family, FAMILIES[f][0])) {
+            free(family);
+            return pt_strdup(FAMILIES[f][bold + 2 * italic]);
+        }
+    char *out =
+        bold || italic ? pt_format("%s-%s%s", family, bold ? "Bold" : "", italic ? "Italic" : "") : pt_strdup(family);
     free(family);
     return out;
 }
@@ -247,9 +268,11 @@ static char *mac_font_file(const char *family, int bold, int italic)
     if (!name) return NULL;
     uint32_t sym = (bold ? kCTFontBoldTrait : 0) | (italic ? kCTFontItalicTrait : 0);
     CFNumberRef symbolic = CFNumberCreate(NULL, kCFNumberSInt32Type, &sym);
-    CFMutableDictionaryRef traits = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFMutableDictionaryRef traits =
+        CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFDictionarySetValue(traits, kCTFontSymbolicTrait, symbolic);
-    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFMutableDictionaryRef attrs =
+        CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFDictionarySetValue(attrs, kCTFontFamilyNameAttribute, name);
     CFDictionarySetValue(attrs, kCTFontTraitsAttribute, traits);
     CTFontDescriptorRef want = CTFontDescriptorCreateWithAttributes(attrs);
@@ -260,7 +283,8 @@ static char *mac_font_file(const char *family, int bold, int italic)
     if (got) {
         CFURLRef url = CTFontDescriptorCopyAttribute(got, kCTFontURLAttribute);
         char path[4096];
-        if (url && CFURLGetFileSystemRepresentation(url, true, (UInt8 *)path, sizeof path) && font_file_ok(path)) out = pt_strdup(path);
+        if (url && CFURLGetFileSystemRepresentation(url, true, (UInt8 *)path, sizeof path) && font_file_ok(path))
+            out = pt_strdup(path);
         if (url) CFRelease(url);
         CFRelease(got);
     }
@@ -274,7 +298,10 @@ static char *mac_matched_font(const char *family, int bold, int italic)
     char *file = mac_font_file(family, bold, italic);
     if (file) return file;
     const char *generic = generic_family(family);
-    return mac_font_file(!strcmp(generic, "serif") ? "Times New Roman" : !strcmp(generic, "monospace") ? "Courier New" : "Arial", bold, italic);
+    return mac_font_file(!strcmp(generic, "serif")       ? "Times New Roman"
+                         : !strcmp(generic, "monospace") ? "Courier New"
+                                                         : "Arial",
+                         bold, italic);
 }
 #endif
 
@@ -375,12 +402,17 @@ static fz_font *embedded_font(fz_context *ctx, pdf_document *doc, const char *ba
             if (!file) continue;
             fz_buffer *buf = NULL;
             fz_font *font = NULL;
-            fz_try(ctx) {
+            fz_try(ctx)
+            {
                 buf = pdf_load_stream(ctx, file);
                 font = fz_new_font_from_buffer(ctx, base, buf, 0, 0);
             }
             fz_always(ctx) fz_drop_buffer(ctx, buf);
-            fz_catch(ctx) { fz_ignore_error(ctx); continue; }
+            fz_catch(ctx)
+            {
+                fz_ignore_error(ctx);
+                continue;
+            }
             if (covers(ctx, font, text)) {
                 *xref = pdf_to_num(ctx, dict);
                 return font;
@@ -470,7 +502,7 @@ void pt_wrap_lines(fz_context *ctx, fz_font *font, const char *text, float size,
         else {
             char *line = pt_strdup("");
             char *save = p;
-            for (char *word = p;; ) {
+            for (char *word = p;;) {
                 char *sp = strchr(word, ' ');
                 if (sp) *sp = 0;
                 char *candidate = *line ? pt_format("%s %s", line, word) : pt_strdup(word);
@@ -503,7 +535,8 @@ void pt_text_size(fz_context *ctx, fz_font *font, const char *text, float size, 
         if (l > widest) widest = l;
     }
     if (width > 0) widest = width;
-    float height = size * (PT_LINE_SPACING * (float)(lines.n - 1) + fz_font_ascender(ctx, font) - fz_font_descender(ctx, font));
+    float height =
+        size * (PT_LINE_SPACING * (float)(lines.n - 1) + fz_font_ascender(ctx, font) - fz_font_descender(ctx, font));
     *w = widest > 1 ? widest : 1;
     *h = height > 1 ? height : 1;
     pt_strs_free(&lines);

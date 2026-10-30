@@ -17,14 +17,14 @@ static fz_context *ctx;
 static const char *bin, *data_dir;
 static char tmpdir[] = "/tmp/pt-cli-test-XXXXXX";
 static int failures;
-static char out[1 << 16];   /* the last command's compact JSON */
+static char out[1 << 16]; /* the last command's compact JSON */
 
-#define CHECK(cond)                                                                                                  \
-    do {                                                                                                             \
-        if (!(cond)) {                                                                                               \
-            fprintf(stderr, "%s:%d: %s: check failed: %s\n  output: %s\n", __FILE__, __LINE__, __func__, #cond, out);   \
-            failures++;                                                                                              \
-        }                                                                                                            \
+#define CHECK(cond)                                                                                                   \
+    do {                                                                                                              \
+        if (!(cond)) {                                                                                                \
+            fprintf(stderr, "%s:%d: %s: check failed: %s\n  output: %s\n", __FILE__, __LINE__, __func__, #cond, out); \
+            failures++;                                                                                               \
+        }                                                                                                             \
     } while (0)
 
 static char *tmp(const char *name) { return pt_format("%s/%s", tmpdir, name); }
@@ -36,7 +36,8 @@ static int run(const char *first, ...)
     int n = snprintf(cmd, sizeof cmd, "'%s'", bin);
     va_list ap;
     va_start(ap, first);
-    for (const char *a = first; a; a = va_arg(ap, const char *)) n += snprintf(cmd + n, sizeof cmd - (size_t)n, " '%s'", a);
+    for (const char *a = first; a; a = va_arg(ap, const char *))
+        n += snprintf(cmd + n, sizeof cmd - (size_t)n, " '%s'", a);
     va_end(ap);
     snprintf(cmd + n, sizeof cmd - (size_t)n, " 2>/dev/null");
     FILE *p = popen(cmd, "r");
@@ -64,13 +65,15 @@ static char *page_text(const char *path, int page, const char *password)
     char *text = NULL;
     fz_document *doc = NULL;
     fz_page *p = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         doc = fz_open_document(ctx, path);
         if (password) fz_authenticate_password(ctx, doc, password);
         p = fz_load_page(ctx, doc, page);
         text = pt_page_text(ctx, p);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_page(ctx, p);
         fz_drop_document(ctx, doc);
     }
@@ -89,7 +92,8 @@ static int text_has(const char *path, int page, const char *needle)
 static int needs_password(const char *path)
 {
     int needs = -1;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_document *doc = fz_open_document(ctx, path);
         needs = fz_needs_password(ctx, doc);
         fz_drop_document(ctx, doc);
@@ -111,7 +115,8 @@ static char *statement_pdf(void)
         pdf_obj *res = pdf_new_dict(ctx, doc, 1);
         pdf_dict_puts(ctx, pdf_dict_put_dict(ctx, res, PDF_NAME(Font), 1), "F1", f);
         fz_buffer *contents = fz_new_buffer(ctx, 256);
-        fz_append_printf(ctx, contents, "BT /F1 11 Tf 50 762 Td (Page %d John Smith IBAN DE07100110012628836361) Tj ET\n", n);
+        fz_append_printf(ctx, contents,
+                         "BT /F1 11 Tf 50 762 Td (Page %d John Smith IBAN DE07100110012628836361) Tj ET\n", n);
         fz_append_printf(ctx, contents, "BT /F1 11 Tf 50 722 Td (Rossmann 159 -2.18 page %d) Tj ET\n", n);
         pdf_obj *page = pdf_add_page(ctx, doc, fz_make_rect(0, 0, 595, 842), 0, res, contents);
         pdf_insert_page(ctx, doc, -1, page);
@@ -135,8 +140,10 @@ static char *form_pdf(void)
         "/DR <</Font <</Helv 8 0 R>>>>>>>> endobj\n"
         "2 0 obj <</Type/Pages/Kids[3 0 R]/Count 1>> endobj\n"
         "3 0 obj <</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Annots[4 0 R 5 0 R 6 0 R 7 0 R]>> endobj\n"
-        "4 0 obj <</Type/Annot/Subtype/Widget/FT/Tx/T(name)/Rect[50 734 300 752]/DA(/Helv 11 Tf 0 g)/V()/P 3 0 R>> endobj\n"
-        "5 0 obj <</Type/Annot/Subtype/Widget/FT/Tx/T(notes)/Ff 4096/Rect[50 672 300 722]/DA(/Helv 10 Tf 0 g)/P 3 0 R>> endobj\n"
+        "4 0 obj <</Type/Annot/Subtype/Widget/FT/Tx/T(name)/Rect[50 734 300 752]/DA(/Helv 11 Tf 0 g)/V()/P 3 0 R>> "
+        "endobj\n"
+        "5 0 obj <</Type/Annot/Subtype/Widget/FT/Tx/T(notes)/Ff 4096/Rect[50 672 300 722]/DA(/Helv 10 Tf 0 g)/P 3 0 "
+        "R>> endobj\n"
         "6 0 obj <</Type/Annot/Subtype/Widget/FT/Btn/T(agree)/Rect[50 645 62 657]/V/Off/AS/Off"
         "/AP <</N <</Yes 9 0 R/Off 10 0 R>>>>/P 3 0 R>> endobj\n"
         "7 0 obj <</Type/Annot/Subtype/Widget/FT/Ch/Ff 131072/T(country)/Rect[50 586 200 602]/Opt[(Germany)(India)]"
@@ -156,13 +163,15 @@ static void test_info(const char *form)
 {
     CHECK(run("info", form, NULL) == OK);
     CHECK(has("\"pages\":1") && has("\"encrypted\":false"));
-    CHECK(has("\"name\":\"name\"") && has("\"name\":\"notes\"") && has("\"name\":\"agree\"") && has("\"name\":\"country\""));
+    CHECK(has("\"name\":\"name\"") && has("\"name\":\"notes\"") && has("\"name\":\"agree\"") &&
+          has("\"name\":\"country\""));
 }
 
 static void test_redact_text_and_regex(const char *statement)
 {
     char *o = tmp("redacted.pdf");
-    CHECK(run("redact", statement, "-o", o, "--text", "page 1", "--case-sensitive", "--regex", "DE\\d{20}", "--pages", "1", NULL) == OK);
+    CHECK(run("redact", statement, "-o", o, "--text", "page 1", "--case-sensitive", "--regex", "DE\\d{20}", "--pages",
+              "1", NULL) == OK);
     CHECK(has("\"redactions\":2") && has("\"text_left_under_redactions\":[]"));
     CHECK(!text_has(o, 0, "page 1") && !text_has(o, 0, "DE07100110012628836361"));
     CHECK(text_has(o, 0, "Page 1 John Smith") && text_has(o, 1, "DE07100110012628836361"));
@@ -201,7 +210,8 @@ static void test_fill(const char *form)
 static void test_pages(const char *statement)
 {
     char *o = tmp("pages.pdf");
-    CHECK(run("pages", statement, "-o", o, "--order", "2-1", "--rotate", "1:90", "--crop", "2:0,0,300,100", NULL) == OK);
+    CHECK(run("pages", statement, "-o", o, "--order", "2-1", "--rotate", "1:90", "--crop", "2:0,0,300,100", NULL) ==
+          OK);
     CHECK(has("\"pages\":[2,1]"));
     CHECK(text_has(o, 0, "Page 2"));
     pdf_document *doc = pdf_open_document(ctx, o);
@@ -266,7 +276,8 @@ static void test_synctex(void)
     float r[4] = {0};
     const char *rects = strstr(out, "\"rects\":[[");
     CHECK(rects && sscanf(rects, "\"rects\":[[%f,%f,%f,%f", &r[0], &r[1], &r[2], &r[3]) == 4);
-    CHECK(fabsf(r[0] - 133.77f) < 0.01f && fabsf(r[1] - 127.85f) < 0.01f && fabsf(r[2] - 477.48f) < 0.01f && fabsf(r[3] - 136.7f) < 0.01f);
+    CHECK(fabsf(r[0] - 133.77f) < 0.01f && fabsf(r[1] - 127.85f) < 0.01f && fabsf(r[2] - 477.48f) < 0.01f &&
+          fabsf(r[3] - 136.7f) < 0.01f);
     free(src), free(dst), free(pdf);
 }
 

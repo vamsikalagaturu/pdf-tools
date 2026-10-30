@@ -28,46 +28,100 @@
 #define PATH_WIDTH 360.0f
 #define PREVIEW_SCALE 4.0f
 
-typedef enum { T_VIEW, T_REDACT, T_HIGHLIGHT, T_NOTE, T_TEXT, T_SIGN, T_IMAGE, T_DRAW, T_SHAPE, T_CROP, T_COUNT } tool_id;
-typedef struct { const char *key, *label, *icon; int shortcut; const char *tip; } tool_def;
+typedef enum {
+    T_VIEW,
+    T_REDACT,
+    T_HIGHLIGHT,
+    T_NOTE,
+    T_TEXT,
+    T_SIGN,
+    T_IMAGE,
+    T_DRAW,
+    T_SHAPE,
+    T_CROP,
+    T_COUNT
+} tool_id;
+typedef struct {
+    const char *key, *label, *icon;
+    int shortcut;
+    const char *tip;
+} tool_def;
 extern const tool_def TOOLS[T_COUNT];
 
-typedef struct { const char *name; unsigned char rgb[3]; } preset;
+typedef struct {
+    const char *name;
+    unsigned char rgb[3];
+} preset;
 extern const preset HIGHLIGHT_PRESETS[5], INK_PRESETS[5], PEN_COLOURS[6];
-extern const struct pen_width { const char *name; float width; } PEN_WIDTHS[3];
+extern const struct pen_width {
+    const char *name;
+    float width;
+} PEN_WIDTHS[3];
 extern const char *MARK_LABELS[5];
 extern const char *MARK_ICONS[5];
 
 typedef enum { FIT_NONE, FIT_WIDTH, FIT_HEIGHT } fit_mode;
 
-typedef struct { int page; float scale; Texture2D tex; int ok; } page_tex;
-typedef struct { int page; fz_rect rect; } hit;
+typedef struct {
+    int page;
+    float scale;
+    Texture2D tex;
+    int ok;
+} page_tex;
+typedef struct {
+    int page;
+    fz_rect rect;
+} hit;
 PT_VEC(hits, hit);
 
 /* an AcroForm widget of a display page */
 typedef struct {
     pt_key key;
     enum pdf_widget_type type;
-    fz_rect rect;          /* display page space */
+    fz_rect rect; /* display page space */
     char *name, *label, *value;
     int multiline, editable_choice;
     pt_strs choices;
     float fontsize;
 } field_info;
 PT_VEC(field_infos, field_info);
-typedef struct { pt_key key; char *value; int known; } field_orig;
+typedef struct {
+    pt_key key;
+    char *value;
+    int known;
+} field_orig;
 PT_VEC(field_origs, field_orig);
-typedef struct { pt_key key; ui_text text; int fit_px; int choice; } field_editor;
+typedef struct {
+    pt_key key;
+    ui_text text;
+    int fit_px;
+    int choice;
+} field_editor;
 PT_VEC(field_editors, field_editor);
 
 /* an existing annotation of a display page */
-typedef struct { int xref; enum pdf_annot_type type; fz_rect rect; char *content; unsigned char rgb[3]; char *quote; } annot_info;
+typedef struct {
+    int xref;
+    enum pdf_annot_type type;
+    fz_rect rect;
+    char *content;
+    unsigned char rgb[3];
+    char *quote;
+} annot_info;
 PT_VEC(annot_infos, annot_info);
 /* a link of a display page: to a page of this document (page >= 0, target point in its display coordinates), or
  * an external uri */
-typedef struct { fz_rect rect; int page; float x, y; char *uri; } link_info;
+typedef struct {
+    fz_rect rect;
+    int page;
+    float x, y;
+    char *uri;
+} link_info;
 PT_VEC(link_infos, link_info);
-typedef struct { pt_key key; char *type; } annot_type;
+typedef struct {
+    pt_key key;
+    char *type;
+} annot_type;
 PT_VEC(annot_types, annot_type);
 
 typedef enum { SEL_NONE, SEL_ITEM, SEL_ANNOT, SEL_CROP } sel_kind;
@@ -78,9 +132,9 @@ typedef enum { G_NONE, G_BAND, G_FLOW, G_STROKE, G_SHAPE, G_MOVE, G_RESIZE, G_FI
 typedef enum { POP_NONE, POP_NEW_NOTE, POP_NOTE, POP_MARK, POP_ANNOT } pop_kind;
 typedef struct {
     pop_kind kind;
-    int page, index;       /* item index, or annot xref for POP_ANNOT */
-    fz_rect anchor;        /* scene */
-    fz_rect note_rect;     /* POP_NEW_NOTE: where the note goes (source space) */
+    int page, index;   /* item index, or annot xref for POP_ANNOT */
+    fz_rect anchor;    /* scene */
+    fz_rect note_rect; /* POP_NEW_NOTE: where the note goes (source space) */
     char *title, *original;
     ui_text edit;
     int first;
@@ -88,8 +142,8 @@ typedef struct {
 
 /* the text box being typed on the page */
 typedef struct {
-    int active, page, index;   /* index -1: a new box, not placed yet */
-    pt_item obj;               /* working copy */
+    int active, page, index; /* index -1: a new box, not placed yet */
+    pt_item obj;             /* working copy */
     ui_text text;
     pt_state snap;
     int families_n, family, bold, italic;
@@ -111,15 +165,15 @@ struct tab {
     int nhist, caphist, nfut, capfut;
     int pno;
     float zoom;
-    fit_mode fit;     /* the zoom fits the pages to a view fit_w x fit_h */
+    fit_mode fit; /* the zoom fits the pages to a view fit_w x fit_h */
     float fit_w, fit_h;
-    double zoom_t;    /* when the zoom last changed */
-    float zanim_from, zanim_to;   /* a zoom gliding from one value to another since zanim_t0 (0: none) */
+    double zoom_t;              /* when the zoom last changed */
+    float zanim_from, zanim_to; /* a zoom gliding from one value to another since zanim_t0 (0: none) */
     fit_mode zanim_fit;
     double zanim_t0;
     float last_view_h;
     void *last_focus;
-    double reveal_until;   /* keep the focused field above the bottom of the view until then */
+    double reveal_until; /* keep the focused field above the bottom of the view until then */
     /* reading position (positions.tsv): one to restore once laid out, and the last one saved */
     int restore_pending;
     float restore_top;
@@ -129,7 +183,7 @@ struct tab {
     tool_id tool;
     unsigned char manual_rgb[3], pen_rgb[3];
     float pen_width;
-    pt_shape shape;        /* what the Shape tool draws */
+    pt_shape shape; /* what the Shape tool draws */
     int ink_page, ink_index;
     double ink_time;
     int snap_text, auto_fill;
@@ -137,15 +191,15 @@ struct tab {
     /* layout of the scene */
     Rectangle view;
     float scroll_x, scroll_y;
-    int npages;               /* pages in the display document */
-    float *off_x, *off_y;     /* per display page; off_y < -1e8 when not laid out */
+    int npages;           /* pages in the display document */
+    float *off_x, *off_y; /* per display page; off_y < -1e8 when not laid out */
     float scene_w, scene_h;
-    int want_scroll_page;     /* scroll to this page once laid out, -1 none */
+    int want_scroll_page; /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
     int want_center;
     fit_mode fit_pending;
-    int two_pages, cover_alone;   /* pages side by side in pairs; the first page on its own */
-    char *cert_path, *cert_password;   /* a certificate chosen to sign with; the password only in memory */
+    int two_pages, cover_alone;      /* pages side by side in pairs; the first page on its own */
+    char *cert_path, *cert_password; /* a certificate chosen to sign with; the password only in memory */
     int cert_placing;
 
     page_tex pix[PIX_CACHE];
@@ -153,7 +207,7 @@ struct tab {
     char *thumb_ok;
     pt_words *words;
     char *words_ok;
-    field_infos *fields;      /* per display page */
+    field_infos *fields; /* per display page */
     char *fields_ok;
     annot_infos *annots;
     char *annots_ok;
@@ -171,7 +225,7 @@ struct tab {
     fz_point press_scene;
     fz_rect band;
     pt_points stroke;
-    fz_rect drag_start;        /* scene rect of the item being moved or resized */
+    fz_rect drag_start; /* scene rect of the item being moved or resized */
     int drag_kind;
     pt_state pending;
     int has_pending;
@@ -187,20 +241,20 @@ struct tab {
 
     /* find bar */
     int find_open, find_case, find_first;
-    int find_regex, find_bad;   /* the query is a regular expression; it did not compile */
+    int find_regex, find_bad; /* the query is a regular expression; it did not compile */
     ui_text find;
     hits matches;
     int match_idx;
     double find_due;
 
     /* pages panel */
-    char *ticked;             /* per display page */
-    int side_tab;                 /* 0 Pages, 1 Annotations, 2 Edits, 3 Outline */
+    char *ticked; /* per display page */
+    int side_tab; /* 0 Pages, 1 Annotations, 2 Edits, 3 Outline */
     float side_scroll[4];
-    pt_bookmarks file_outline;    /* the file's bookmarks (source space), loaded once per document */
+    pt_bookmarks file_outline; /* the file's bookmarks (source space), loaded once per document */
     int outline_ok;
-    int outline_sel;              /* selected entry of the Outline tab, -1 none */
-    int outline_drag;             /* entry being dragged, -1 none */
+    int outline_sel;  /* selected entry of the Outline tab, -1 none */
+    int outline_drag; /* entry being dragged, -1 none */
     float outline_drag_y;
     float side_w, side_shown_w;
     double side_anim_t0;
@@ -231,13 +285,13 @@ struct tab {
 void tab_reset(tab *t);
 void reload_display(tab *t);
 void tab_invalidate_pages(tab *t);
-fz_rect page_bounds(tab *t, int page);        /* display page size, origin 0,0 */
-int page_rotation(tab *t, int page);         /* degrees the tab adds */
+fz_rect page_bounds(tab *t, int page); /* display page size, origin 0,0 */
+int page_rotation(tab *t, int page);   /* degrees the tab adds */
 fz_point src_to_disp(tab *t, int page, fz_point p);
 fz_point disp_to_src(tab *t, int page, fz_point p);
 fz_rect rect_src_to_disp(tab *t, int page, fz_rect r);
 fz_rect rect_disp_to_src(tab *t, int page, fz_rect r);
-fz_rect to_scene(tab *t, int page, fz_rect src);         /* source-space rect to scene */
+fz_rect to_scene(tab *t, int page, fz_rect src); /* source-space rect to scene */
 fz_rect disp_to_scene(tab *t, int page, fz_rect disp);
 fz_rect scene_to_src(tab *t, int page, fz_rect scene);
 fz_point scene_to_src_point(tab *t, int page, fz_point scene);
@@ -248,15 +302,15 @@ fz_point screen_to_scene(tab *t, Vector2 p);
 Rectangle scene_rect_to_screen(tab *t, fz_rect r);
 int order_index(const tab *t, int page);
 void snapshot(tab *t, pt_state *out);
-void push_undo(tab *t, pt_state *snap);   /* takes ownership */
-void restore(tab *t, pt_state *snap);     /* takes ownership */
+void push_undo(tab *t, pt_state *snap); /* takes ownership */
+void restore(tab *t, pt_state *snap);   /* takes ownership */
 void tab_undo(tab *t);
 void tab_redo(tab *t);
 int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
 void tab_step_page(tab *t, int delta);
 void set_zoom(tab *t, float z);
-void zoom_to(tab *t, float target, fit_mode fit);   /* animated; with a fit mode the target is ignored */
+void zoom_to(tab *t, float target, fit_mode fit); /* animated; with a fit mode the target is ignored */
 void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
 int continuous(void);
@@ -267,7 +321,7 @@ pt_words *page_words(tab *t, int page);
 field_infos *page_fields(tab *t, int page);
 annot_infos *page_annots(tab *t, int page);
 link_infos *page_links(tab *t, int page);
-const link_info *link_at(tab *t, fz_point scene);   /* the link under a scene point, or NULL */
+const link_info *link_at(tab *t, fz_point scene); /* the link under a scene point, or NULL */
 void follow_link(tab *t, const link_info *l);
 const char *annot_comment(tab *t, int page, const annot_info *a);
 void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3]);
@@ -295,7 +349,7 @@ void tick_all(tab *t, int value);
 pt_synctex *tab_synctex(tab *t);
 void inverse_search(tab *t, fz_point scene);
 void tab_copy_path(tab *t);
-void tab_share(tab *t);   /* Android: the edited PDF to the system share sheet */
+void tab_share(tab *t); /* Android: the edited PDF to the system share sheet */
 void tab_save_position(tab *t);
 char *mark_colour_hex(int style);
 void mark_colour(int style, unsigned char rgb[3]);
@@ -304,7 +358,7 @@ int mark_style(void);
 /* page_view.c */
 void view_frame(tab *t, Rectangle area);
 void layout_scene(tab *t);
-int spread_start(tab *t, int i);    /* rows of pages: positions in page order */
+int spread_start(tab *t, int i); /* rows of pages: positions in page order */
 int spread_len(tab *t, int start);
 float spread_width(tab *t, int start);
 void scroll_to_page(tab *t, int page);
@@ -317,7 +371,7 @@ void on_band(tab *t, fz_rect scene);
 void on_flow(tab *t, fz_point a, fz_point b, int done);
 void on_click(tab *t, fz_point scene);
 void on_stroke(tab *t);
-void on_shape(tab *t);   /* the Shape tool's drag, t->stroke = {start, end} */
+void on_shape(tab *t); /* the Shape tool's drag, t->stroke = {start, end} */
 void on_context(tab *t, fz_point scene, Vector2 at);
 void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at);
 void item_clicked(tab *t, sel_kind kind, int page, int index);
@@ -350,7 +404,7 @@ void hide_find(tab *t);
 void edit_text_item(tab *t, int index);
 
 /* page_view.c: form fields */
-extern pt_key coalesce_key;   /* the field being typed in; its keystrokes are one undo step */
+extern pt_key coalesce_key; /* the field being typed in; its keystrokes are one undo step */
 void fields_frame(tab *t, int page);
 void fields_reset(tab *t);
 const char *field_name(tab *t, pt_key key);
@@ -362,6 +416,6 @@ float sidebar_width(tab *t);
 void show_page_edits(tab *t, int page);
 
 /* item helpers */
-int item_index_on_page(const tab *t, int index);   /* index among the items of its page */
+int item_index_on_page(const tab *t, int index); /* index among the items of its page */
 fz_rect ink_bounds(const pt_item *it);
 #endif

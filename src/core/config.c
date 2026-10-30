@@ -16,12 +16,14 @@ const pt_setting_def pt_settings_defs[] = {
     {"show_sidebar", PT_SET_BOOL, NULL, 1, "Show the Pages / Annotations / Edits panel"},
     {"export_flatten", PT_SET_BOOL, NULL, 0, "Export pages as images without selectable text"},
     {"export_dpi", PT_SET_INT, NULL, 200, "Resolution of flattened exports"},
-    {"redact_snap_to_text", PT_SET_BOOL, NULL, 1, "Redact whole lines of the words dragged over instead of a free rectangle"},
+    {"redact_snap_to_text", PT_SET_BOOL, NULL, 1,
+     "Redact whole lines of the words dragged over instead of a free rectangle"},
     {"redact_auto_fill", PT_SET_BOOL, NULL, 1, "Fill redactions with the colour sampled around them"},
     {"highlight_colour", PT_SET_STR, "#ffe45c", 0, "Colour of new background highlights"},
     {"ink_colour", PT_SET_STR, "#c62828", 0, "Colour of new underline / strikethrough / squiggly / text-colour marks"},
     {"highlight_style", PT_SET_STR, "highlight", 0, "highlight | underline | strikeout | squiggly | textcolour"},
-    {"editor_command", PT_SET_STR, "", 0, "SyncTeX Ctrl+click opens the source with this; %f = file, %l = line (e.g. code -g %f:%l)"},
+    {"editor_command", PT_SET_STR, "", 0,
+     "SyncTeX Ctrl+click opens the source with this; %f = file, %l = line (e.g. code -g %f:%l)"},
     {"last_folder", PT_SET_STR, "", 0, "Folder the Open dialog starts in"},
     {"last_signature", PT_SET_STR, "", 0, "Signature preselected in the Sign dialog"},
     {"recent_files", PT_SET_LIST, NULL, 0, "Recently opened PDFs, newest first"},
@@ -29,7 +31,8 @@ const pt_setting_def pt_settings_defs[] = {
     {"accent_colour_dark", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the dark theme; empty: the default blue"},
     {"accent_colour_light", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the light theme; empty: the default blue"},
     {"ocr_language", PT_SET_STR, "eng", 0, "Tesseract language(s) for text recognition, e.g. eng or deu+eng"},
-    {"signing_certificate", PT_SET_STR, "", 0, "The .p12/.pfx certificate used last to sign (its password is never stored)"},
+    {"signing_certificate", PT_SET_STR, "", 0,
+     "The .p12/.pfx certificate used last to sign (its password is never stored)"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 
@@ -59,7 +62,13 @@ static void set_default(pt_setting_value *v, const pt_setting_def *d)
 /* ---- a small TOML reader: key = value lines with strings, booleans, integers and string arrays ---- */
 
 typedef enum { V_NONE, V_STR, V_BOOL, V_INT, V_FLOAT, V_LIST, V_OTHER } vtype;
-typedef struct { vtype type; char *str; long num; pt_strs list; int list_all_strings; } tvalue;
+typedef struct {
+    vtype type;
+    char *str;
+    long num;
+    pt_strs list;
+    int list_all_strings;
+} tvalue;
 
 static const char *skip_ws(const char *s)
 {
@@ -73,7 +82,8 @@ static const char *skip_space(const char *s)
     for (;;) {
         s = skip_ws(s);
         if (*s == '\n' || *s == '\r') s++;
-        else if (*s == '#') while (*s && *s != '\n') s++;
+        else if (*s == '#')
+            while (*s && *s != '\n') s++;
         else return s;
     }
 }
@@ -85,7 +95,10 @@ static const char *parse_string(const char *s, char **out)
     char *buf = malloc(cap);
     if (!buf) abort();
     while (*s && *s != quote) {
-        if (*s == '\n') { free(buf); return NULL; }
+        if (*s == '\n') {
+            free(buf);
+            return NULL;
+        }
         char tmp[8];
         int len = 1;
         tmp[0] = *s;
@@ -99,11 +112,15 @@ static const char *parse_string(const char *s, char **out)
             case 'r': tmp[0] = '\r'; break;
             case 'b': tmp[0] = '\b'; break;
             case 'f': tmp[0] = '\f'; break;
-            case 'u': case 'U': {
+            case 'u':
+            case 'U': {
                 int digits = *s == 'u' ? 4 : 8;
                 char hex[9] = {0};
                 for (int i = 0; i < digits; i++) {
-                    if (!isxdigit((unsigned char)s[1 + i])) { free(buf); return NULL; }
+                    if (!isxdigit((unsigned char)s[1 + i])) {
+                        free(buf);
+                        return NULL;
+                    }
                     hex[i] = s[1 + i];
                 }
                 len = fz_runetochar(tmp, (int)strtol(hex, NULL, 16));
@@ -122,7 +139,10 @@ static const char *parse_string(const char *s, char **out)
         n += (size_t)len;
         s++;
     }
-    if (*s != quote) { free(buf); return NULL; }
+    if (*s != quote) {
+        free(buf);
+        return NULL;
+    }
     buf[n] = 0;
     *out = buf;
     return s + 1;
@@ -182,8 +202,14 @@ static int parse_toml(const char *text, void (*on)(void *, const char *, tvalue 
     int in_table = 0;
     while (*s) {
         s = skip_ws(s);
-        if (*s == '\n' || *s == '\r') { s++; continue; }
-        if (*s == '#') { while (*s && *s != '\n') s++; continue; }
+        if (*s == '\n' || *s == '\r') {
+            s++;
+            continue;
+        }
+        if (*s == '#') {
+            while (*s && *s != '\n') s++;
+            continue;
+        }
         if (*s == '[') {
             const char *end = strchr(s, ']');
             const char *nl = strchr(s, '\n');
@@ -208,7 +234,8 @@ static int parse_toml(const char *text, void (*on)(void *, const char *, tvalue 
             pt_strs_free(&v.list);
         }
         s = skip_ws(s);
-        if (*s == '#') while (*s && *s != '\n') s++;
+        if (*s == '#')
+            while (*s && *s != '\n') s++;
         if (*s && *s != '\n' && *s != '\r') return -1;
     }
     return 0;

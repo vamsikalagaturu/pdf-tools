@@ -19,12 +19,19 @@ static fz_context *ctx;
 /* ---- argument parsing, after argparse ---- */
 
 enum { FLAG, VALUE, APPEND, OPTIONAL };
-typedef struct { const char *flag, *alias; int kind, required; const char *metavar, *help, *def; } opt;
+typedef struct {
+    const char *flag, *alias;
+    int kind, required;
+    const char *metavar, *help, *def;
+} opt;
 typedef struct cmd cmd;
 typedef struct {
     const cmd *c;
     pt_strs positional;
-    struct { int set; pt_strs vals; } v[20];
+    struct {
+        int set;
+        pt_strs vals;
+    } v[20];
 } args;
 struct cmd {
     const char *name, *help;
@@ -32,7 +39,7 @@ struct cmd {
     int many;                                 /* nargs="+" */
     int (*run)(args *);
     const opt opts[20];
-    const char *exclusive[3];                 /* one of these is required */
+    const char *exclusive[3]; /* one of these is required */
 };
 
 static const char *prog = "pdf-tools";
@@ -73,7 +80,9 @@ static void print_help(const cmd *c)
         const opt *o = &c->opts[i];
         const char *mv = o->metavar ? o->metavar : "VALUE";
         printf(o->required ? " %s%s%s" : " [%s%s%s]", o->alias ? o->alias : o->flag, o->kind == FLAG ? "" : " ",
-               o->kind == FLAG ? "" : o->kind == OPTIONAL ? "[PAGES]" : mv);
+               o->kind == FLAG       ? ""
+               : o->kind == OPTIONAL ? "[PAGES]"
+                                     : mv);
     }
     if (c->positional) printf(c->many ? " %s [%s ...]" : " %s", c->positional, c->positional);
     printf("\n\n%s\n", c->help);
@@ -107,7 +116,10 @@ static void parse(const cmd *c, int argc, char **argv, args *a)
     int only_positional = 0;
     for (int i = 0; i < argc; i++) {
         char *w = argv[i];
-        if (!only_positional && !strcmp(w, "--")) { only_positional = 1; continue; }
+        if (!only_positional && !strcmp(w, "--")) {
+            only_positional = 1;
+            continue;
+        }
         if (!only_positional && (!strcmp(w, "-h") || !strcmp(w, "--help"))) {
             print_help(c);
             exit(OK);
@@ -122,10 +134,14 @@ static void parse(const cmd *c, int argc, char **argv, args *a)
             a->v[k].set = 1;
             if (o->kind == FLAG) continue;
             const char *val = eq ? eq + 1 : NULL;
-            if (!val && i + 1 < argc && (argv[i + 1][0] != '-' || isdigit((unsigned char)argv[i + 1][1]) || !argv[i + 1][1]))
+            if (!val && i + 1 < argc &&
+                (argv[i + 1][0] != '-' || isdigit((unsigned char)argv[i + 1][1]) || !argv[i + 1][1]))
                 val = argv[++i];
             if (!val) {
-                if (o->kind == OPTIONAL) { pt_push(a->v[k].vals, pt_strdup("")); continue; }
+                if (o->kind == OPTIONAL) {
+                    pt_push(a->v[k].vals, pt_strdup(""));
+                    continue;
+                }
                 usage_error(c, "argument %s: expected one argument", o->flag);
             }
             if (o->kind != APPEND) pt_strs_free(&a->v[k].vals);
@@ -138,7 +154,8 @@ static void parse(const cmd *c, int argc, char **argv, args *a)
     if (c->positional && !a->positional.n) usage_error(c, "the following arguments are required: %s", c->positional);
     for (int i = 0; c->opts[i].flag; i++)
         if (c->opts[i].required && !a->v[i].set)
-            usage_error(c, "the following arguments are required: %s", c->opts[i].alias ? c->opts[i].alias : c->opts[i].flag);
+            usage_error(c, "the following arguments are required: %s",
+                        c->opts[i].alias ? c->opts[i].alias : c->opts[i].flag);
     if (c->exclusive[0]) {
         int given = 0;
         for (int e = 0; c->exclusive[e]; e++) {
@@ -184,7 +201,8 @@ static int int_arg(const args *a, const char *flag, int fallback)
 static pdf_document *opened(const char *path, const char *password)
 {
     pdf_document *doc = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         doc = pdf_open_document(ctx, path);
         if (pdf_needs_password(ctx, doc) && !pdf_authenticate_password(ctx, doc, password ? password : "")) {
             pdf_drop_document(ctx, doc);
@@ -229,7 +247,8 @@ static fz_buffer *apply(const char *path, const char *password, const pt_state *
 {
     fz_buffer *data = NULL;
     fz_try(ctx) data = pt_apply_edits(ctx, path, password, s, leaks);
-    fz_catch(ctx) {
+    fz_catch(ctx)
+    {
         const char *m = fz_caught_message(ctx);
         if (pt_is_password_error(m)) fail("%s is password protected: pass the right --password", path);
         fail("%s", m);
@@ -333,11 +352,20 @@ static int cmd_info(args *a)
     pt_json_int(&j, n);
     pt_json_key(&j, "encrypted");
     pt_json_bool(&j, pdf_needs_password(ctx, doc));
-    static const struct { const char *key, *meta; } META[] = {
-        {"format", FZ_META_FORMAT}, {"title", FZ_META_INFO_TITLE}, {"author", FZ_META_INFO_AUTHOR},
-        {"subject", FZ_META_INFO_SUBJECT}, {"keywords", FZ_META_INFO_KEYWORDS}, {"creator", FZ_META_INFO_CREATOR},
-        {"producer", FZ_META_INFO_PRODUCER}, {"creationDate", FZ_META_INFO_CREATIONDATE},
-        {"modDate", FZ_META_INFO_MODIFICATIONDATE}, {"trapped", "info:Trapped"}, {"encryption", FZ_META_ENCRYPTION},
+    static const struct {
+        const char *key, *meta;
+    } META[] = {
+        {"format", FZ_META_FORMAT},
+        {"title", FZ_META_INFO_TITLE},
+        {"author", FZ_META_INFO_AUTHOR},
+        {"subject", FZ_META_INFO_SUBJECT},
+        {"keywords", FZ_META_INFO_KEYWORDS},
+        {"creator", FZ_META_INFO_CREATOR},
+        {"producer", FZ_META_INFO_PRODUCER},
+        {"creationDate", FZ_META_INFO_CREATIONDATE},
+        {"modDate", FZ_META_INFO_MODIFICATIONDATE},
+        {"trapped", "info:Trapped"},
+        {"encryption", FZ_META_ENCRYPTION},
     };
     pt_json_key(&j, "metadata");
     pt_json_begin_object(&j);
@@ -419,7 +447,11 @@ static int cmd_info(args *a)
     return emit_end(&j, OK);
 }
 
-typedef struct { int page; fz_rect rect; char *text; } match;
+typedef struct {
+    int page;
+    fz_rect rect;
+    char *text;
+} match;
 PT_VEC(matches, match);
 
 /* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`. */
@@ -474,12 +506,14 @@ static int cmd_redact(args *a)
     pt_ints pages = {0};
     page_list(get(a, "--pages"), n, &pages);
     matches found = {0};
-    for (int i = 0; i < pages.n; i++) find_matches(doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
+    for (int i = 0; i < pages.n; i++)
+        find_matches(doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
     for (int i = 0; i < areas->n; i++) {
         const char *box;
         int p = page_and_value(areas->v[i], "--rect", &box);
         float v[4];
-        if (!parse_floats(box, v, 4) || p < 0 || p >= n) fail("--rect wants PAGE:x0,y0,x1,y1 in points, got '%s'", areas->v[i]);
+        if (!parse_floats(box, v, 4) || p < 0 || p >= n)
+            fail("--rect wants PAGE:x0,y0,x1,y1 in points, got '%s'", areas->v[i]);
         fz_page *page = fz_load_page(ctx, (fz_document *)doc, p);
         fz_stext_page *st = pt_stext(ctx, page);
         fz_rect r = fz_make_rect(v[0], v[1], v[2], v[3]);
@@ -556,7 +590,10 @@ static int cmd_fill(args *a)
 {
     const char *path = input(a), *pw = get(a, "--password");
     pdf_document *doc = opened(path, pw);
-    typedef struct { char *name; pt_key key; } named;
+    typedef struct {
+        char *name;
+        pt_key key;
+    } named;
     PT_VEC(nameds, named);
     nameds fields = {0};
     int n = pdf_count_pages(ctx, doc);
@@ -770,7 +807,8 @@ static int cmd_merge(args *a)
     }
     fz_buffer *data = NULL;
     int pages = 0;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         data = pt_merge(ctx, &parts);
         pdf_document *out = pt_open_pdf_bytes(ctx, data->data, data->len, NULL);
         pages = pdf_count_pages(ctx, out);
@@ -913,7 +951,8 @@ static int cmd_synctex(args *a)
     if (get(a, "--at")) {
         if (!get(a, "--page")) fail("--at needs --page");
         float xy[2];
-        if (!parse_floats(get(a, "--at"), xy, 2)) fail("--at wants X,Y in points from the top-left, got '%s'", get(a, "--at"));
+        if (!parse_floats(get(a, "--at"), xy, 2))
+            fail("--at wants X,Y in points from the top-left, got '%s'", get(a, "--at"));
         int page = int_arg(a, "--page", 0);
         const char *source;
         int line;
@@ -1003,7 +1042,8 @@ static int cmd_search(args *a)
     pt_strs texts = {0}, none = {0};
     pt_push(texts, pt_strdup(get(a, "--text")));
     matches found = {0};
-    for (int i = 0; i < pages.n; i++) find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
+    for (int i = 0; i < pages.n; i++)
+        find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
     pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "matches");
@@ -1030,7 +1070,8 @@ static int cmd_render(args *a)
     int p = one_page(a, doc), dpi = int_arg(a, "--dpi", 144);
     const char *out = get(a, "--output");
     if (pt_same_file(out, input(a))) fail("refusing to overwrite the input; write to another file");
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_page *page = fz_load_page(ctx, (fz_document *)doc, p);
         fz_pixmap *pix = pt_render_page(ctx, page, dpi / 72.0f, 0);
         fz_save_pixmap_as_png(ctx, pix, out);
@@ -1061,7 +1102,8 @@ static int cmd_annotate(args *a)
         it.text = pt_strdup(get(a, "--text") ? get(a, "--text") : "");
     } else {
         int style = pt_mark_from_name(type);
-        if (style < 0) fail("--type wants highlight, underline, strikeout, squiggly, textcolour or note, got '%s'", type);
+        if (style < 0)
+            fail("--type wants highlight, underline, strikeout, squiggly, textcolour or note, got '%s'", type);
         it.kind = PT_HIGHLIGHT;
         it.style = (pt_mark)style;
         it.text = pt_strdup(get(a, "--text") ? get(a, "--text") : "");
@@ -1090,7 +1132,9 @@ static int cmd_draw(args *a)
     if (pts.n < 2) fail("--points needs at least two points");
     pt_push(it.strokes, pts);
     it.rect = fz_empty_rect;
-    for (int i = 0; i < pts.n; i++) it.rect = fz_include_point_in_rect(i ? it.rect : fz_make_rect(pts.v[0].x, pts.v[0].y, pts.v[0].x, pts.v[0].y), pts.v[i]);
+    for (int i = 0; i < pts.n; i++)
+        it.rect = fz_include_point_in_rect(i ? it.rect : fz_make_rect(pts.v[0].x, pts.v[0].y, pts.v[0].x, pts.v[0].y),
+                                           pts.v[i]);
     return write_item(a, it);
 }
 
@@ -1166,8 +1210,16 @@ static int write_stamp(args *a, pt_stamp st)
 
 static int cmd_bates(args *a)
 {
-    pt_stamp st = {PT_STAMP_BATES, pt_strdup(get(a, "--prefix")), pt_strdup(get(a, "--suffix")), int_arg(a, "--start", 1),
-                   int_arg(a, "--digits", 6), PT_AT_BOTTOM_RIGHT, strtof(get(a, "--size"), NULL), 1, {0, 0, 0}, NULL};
+    pt_stamp st = {PT_STAMP_BATES,
+                   pt_strdup(get(a, "--prefix")),
+                   pt_strdup(get(a, "--suffix")),
+                   int_arg(a, "--start", 1),
+                   int_arg(a, "--digits", 6),
+                   PT_AT_BOTTOM_RIGHT,
+                   strtof(get(a, "--size"), NULL),
+                   1,
+                   {0, 0, 0},
+                   NULL};
     if (st.digits < 1 || st.digits > 12) fail("--digits wants 1 to 12");
     colour_arg(a, "#000000", st.rgb);
     return write_stamp(a, st);
@@ -1175,8 +1227,16 @@ static int cmd_bates(args *a)
 
 static int cmd_watermark(args *a)
 {
-    pt_stamp st = {PT_STAMP_WATERMARK, pt_strdup(get(a, "--text")), NULL, 0, 0, PT_AT_DIAGONAL, strtof(get(a, "--size"), NULL),
-                   strtof(get(a, "--opacity"), NULL), {0, 0, 0}, NULL};
+    pt_stamp st = {PT_STAMP_WATERMARK,
+                   pt_strdup(get(a, "--text")),
+                   NULL,
+                   0,
+                   0,
+                   PT_AT_DIAGONAL,
+                   strtof(get(a, "--size"), NULL),
+                   strtof(get(a, "--opacity"), NULL),
+                   {0, 0, 0},
+                   NULL};
     if (st.opacity <= 0 || st.opacity > 1) fail("--opacity wants a number in (0, 1]");
     colour_arg(a, "#c81e1e", st.rgb);
     return write_stamp(a, st);
@@ -1190,12 +1250,15 @@ static int cmd_ocr(args *a)
     char *exe_dir = pt_exe_dir();
     char *datadir = get(a, "--tessdata") ? pt_strdup(get(a, "--tessdata")) : pt_tessdata_dir(language, exe_dir);
     free(exe_dir);
-    if (!datadir) fail("no Tesseract data for '%s': put %s.traineddata in ~/.local/share/pdf-tools/tessdata or pass --tessdata", language, language);
+    if (!datadir)
+        fail("no Tesseract data for '%s': put %s.traineddata in ~/.local/share/pdf-tools/tessdata or pass --tessdata",
+             language, language);
     pdf_document *doc = NULL;
     fz_buffer *data = NULL;
     pt_ints pages = {0};
     int chars = 0;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         doc = pt_open_pdf(ctx, path, pw, NULL);
         page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
         for (int i = 0; i < pages.n; i++) chars += pt_ocr_page(ctx, doc, pages.v[i], language, datadir);
@@ -1219,7 +1282,8 @@ static int cmd_compare(args *a)
     if (a->positional.n != 2) usage_error(a->c, "compare wants exactly two PDFs");
     pdf_document *doc[2];
     for (int k = 0; k < 2; k++) doc[k] = opened(a->positional.v[k], k ? get(a, "--password2") : get(a, "--password"));
-    int n[2] = {pdf_count_pages(ctx, doc[0]), pdf_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1], changed = 0;
+    int n[2] = {pdf_count_pages(ctx, doc[0]), pdf_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1],
+        changed = 0;
     pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "pages");
@@ -1227,7 +1291,8 @@ static int cmd_compare(args *a)
     for (int p = 0; p < pages; p++) {
         pt_rects only[2] = {{0}, {0}};
         fz_page *pg[2] = {NULL, NULL};
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             for (int k = 0; k < 2; k++) pg[k] = p < n[k] ? fz_load_page(ctx, (fz_document *)doc[k], p) : NULL;
             pt_compare_pages(ctx, pg[0], pg[1], &only[0], &only[1]);
         }
@@ -1279,7 +1344,8 @@ static int cmd_export_images(args *a)
         char *name = pt_format("%s-page%d.%s", stem, pages.v[i] + 1, jpeg ? "jpg" : "png"), *out = pt_join(dir, name);
         fz_buffer *img = NULL;
         fz_page *p = NULL;
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             p = fz_load_page(ctx, (fz_document *)doc, pages.v[i]);
             img = pt_page_image(ctx, p, dpi, jpeg);
         }
@@ -1311,7 +1377,8 @@ static int cmd_sign(args *a)
     fz_rect r = rect_arg(a, "--rect");
     fz_buffer *data = NULL, *signed_pdf = NULL;
     char *name = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         name = pt_certificate_name(ctx, get(a, "--cert"), get(a, "--cert-password"));
         pdf_page *pg = pdf_load_page(ctx, doc, page);
         fz_matrix ctm;
@@ -1357,7 +1424,8 @@ static int cmd_scrub(args *a)
     const char *path = input(a), *pw = get(a, "--password");
     pdf_document *doc = opened(path, pw);
     fz_buffer *data = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         pdf_document *work = pt_open_pdf(ctx, path, pw, NULL);
         pt_scrub(ctx, work);
         data = pt_doc_bytes(ctx, work, NULL);
@@ -1459,122 +1527,307 @@ static int cmd_edit_annotation(args *a)
 }
 
 #define INPUT "input", "input PDF"
-#define OUTPUT {"--output", "-o", VALUE, 1, "OUTPUT", "output PDF", NULL}
-#define PASSWORD {"--password", NULL, VALUE, 0, "PASSWORD", "password of an encrypted input (kept on the output)", NULL}
-#define PAGE {"--page", NULL, VALUE, 1, "PAGE", "1-based page", NULL}
-#define COLOR {"--color", NULL, VALUE, 0, "#RRGGBB", "colour, #rrggbb", NULL}
+#define OUTPUT                                                   \
+    {                                                            \
+        "--output", "-o", VALUE, 1, "OUTPUT", "output PDF", NULL \
+    }
+#define PASSWORD                                                                                              \
+    {                                                                                                         \
+        "--password", NULL, VALUE, 0, "PASSWORD", "password of an encrypted input (kept on the output)", NULL \
+    }
+#define PAGE                                                   \
+    {                                                          \
+        "--page", NULL, VALUE, 1, "PAGE", "1-based page", NULL \
+    }
+#define COLOR                                                         \
+    {                                                                 \
+        "--color", NULL, VALUE, 0, "#RRGGBB", "colour, #rrggbb", NULL \
+    }
 
 static const cmd COMMANDS[] = {
-    {"info", "Pages, sizes, fonts, form fields, annotations, metadata, encryption", INPUT, 0, cmd_info,
-     {PASSWORD, {"--json", NULL, FLAG, 0, NULL, "(output is always JSON)", NULL}}, {0}},
-    {"redact", "Remove matching text for good (and scrub hidden data)", INPUT, 0, cmd_redact,
-     {OUTPUT, PASSWORD,
+    {"info",
+     "Pages, sizes, fonts, form fields, annotations, metadata, encryption",
+     INPUT,
+     0,
+     cmd_info,
+     {PASSWORD, {"--json", NULL, FLAG, 0, NULL, "(output is always JSON)", NULL}},
+     {0}},
+    {"redact",
+     "Remove matching text for good (and scrub hidden data)",
+     INPUT,
+     0,
+     cmd_redact,
+     {OUTPUT,
+      PASSWORD,
       {"--text", NULL, APPEND, 0, "TEXT", "literal text to redact (repeatable)", NULL},
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", "#000000"},
-      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)", NULL}}, {0}},
-    {"fill", "Fill form fields", INPUT, 0, cmd_fill,
-     {OUTPUT, PASSWORD, {"--field", NULL, APPEND, 1, "FIELD", "name=value; true/false for checkboxes", NULL}}, {0}},
-    {"pages", "Rotate, remove, reorder and crop pages", INPUT, 0, cmd_pages,
-     {OUTPUT, PASSWORD,
+      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)",
+       NULL}},
+     {0}},
+    {"fill",
+     "Fill form fields",
+     INPUT,
+     0,
+     cmd_fill,
+     {OUTPUT, PASSWORD, {"--field", NULL, APPEND, 1, "FIELD", "name=value; true/false for checkboxes", NULL}},
+     {0}},
+    {"pages",
+     "Rotate, remove, reorder and crop pages",
+     INPUT,
+     0,
+     cmd_pages,
+     {OUTPUT,
+      PASSWORD,
       {"--rotate", NULL, APPEND, 0, "ROTATE", "PAGE:DEGREES, e.g. 2:90 (repeatable)", NULL},
       {"--remove", NULL, APPEND, 0, "REMOVE", "pages to remove, e.g. 4 or 4-6", NULL},
-      {"--order", NULL, VALUE, 0, "ORDER", "new page order, e.g. 3,1,2 or 5-1 (reversed); pages left out are dropped", NULL},
+      {"--order", NULL, VALUE, 0, "ORDER", "new page order, e.g. 3,1,2 or 5-1 (reversed); pages left out are dropped",
+       NULL},
       {"--crop", NULL, APPEND, 0, "CROP", "PAGE:x0,y0,x1,y1 in points (repeatable)", NULL},
-      {"--crop-content", NULL, OPTIONAL, 0, "CROP_CONTENT", "crop pages (default all) to their content", NULL}}, {0}},
-    {"merge", "Join PDFs and images, optionally page ranges: a.pdf b.pdf:1-3 photo.jpg", "inputs",
-     "PDF, PDF:PAGES or an image file", 1, cmd_merge, {OUTPUT}, {0}},
-    {"split", "Split into PART files", INPUT, 0, cmd_split,
+      {"--crop-content", NULL, OPTIONAL, 0, "CROP_CONTENT", "crop pages (default all) to their content", NULL}},
+     {0}},
+    {"merge",
+     "Join PDFs and images, optionally page ranges: a.pdf b.pdf:1-3 photo.jpg",
+     "inputs",
+     "PDF, PDF:PAGES or an image file",
+     1,
+     cmd_merge,
+     {OUTPUT},
+     {0}},
+    {"split",
+     "Split into PART files",
+     INPUT,
+     0,
+     cmd_split,
      {PASSWORD,
       {"--every", NULL, VALUE, 0, "EVERY", "pages per part", NULL},
       {"--at", NULL, VALUE, 0, "AT", "pages that start a new part, e.g. 3,7", NULL},
-      {"--directory", "-d", VALUE, 1, "DIRECTORY", "folder for NAME-partK.pdf", NULL}}, {"--every", "--at", NULL}},
-    {"protect", "Write an AES-256 encrypted copy", INPUT, 0, cmd_protect,
-     {OUTPUT, {"--password", NULL, VALUE, 1, "PASSWORD", "new password", NULL},
-      {"--current-password", NULL, VALUE, 0, "CURRENT_PASSWORD", "password of an already encrypted input", NULL}}, {0}},
-    {"unprotect", "Write a copy without the password", INPUT, 0, cmd_unprotect,
-     {OUTPUT, {"--password", NULL, VALUE, 1, "PASSWORD", "current password", NULL}}, {0}},
-    {"flatten", "Turn pages into images (no selectable text)", INPUT, 0, cmd_flatten,
-     {OUTPUT, PASSWORD, {"--dpi", NULL, VALUE, 0, "DPI", NULL, "200"}}, {0}},
-    {"synctex", "SyncTeX lookups", INPUT, 0, cmd_synctex,
+      {"--directory", "-d", VALUE, 1, "DIRECTORY", "folder for NAME-partK.pdf", NULL}},
+     {"--every", "--at", NULL}},
+    {"protect",
+     "Write an AES-256 encrypted copy",
+     INPUT,
+     0,
+     cmd_protect,
+     {OUTPUT,
+      {"--password", NULL, VALUE, 1, "PASSWORD", "new password", NULL},
+      {"--current-password", NULL, VALUE, 0, "CURRENT_PASSWORD", "password of an already encrypted input", NULL}},
+     {0}},
+    {"unprotect",
+     "Write a copy without the password",
+     INPUT,
+     0,
+     cmd_unprotect,
+     {OUTPUT, {"--password", NULL, VALUE, 1, "PASSWORD", "current password", NULL}},
+     {0}},
+    {"flatten",
+     "Turn pages into images (no selectable text)",
+     INPUT,
+     0,
+     cmd_flatten,
+     {OUTPUT, PASSWORD, {"--dpi", NULL, VALUE, 0, "DPI", NULL, "200"}},
+     {0}},
+    {"synctex",
+     "SyncTeX lookups",
+     INPUT,
+     0,
+     cmd_synctex,
      {{"--page", NULL, VALUE, 0, "PAGE", "1-based page, with --at", NULL},
       {"--at", NULL, VALUE, 0, "AT", "X,Y on that page: prints the source file and line", NULL},
       {"--source", NULL, VALUE, 0, "SOURCE", "TeX file, with --line: prints the page and boxes", NULL},
-      {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}}, {0}},
+      {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}},
+     {0}},
     /* additions of this port */
-    {"search", "Find text: pages and boxes of each match", INPUT, 0, cmd_search,
-     {PASSWORD, {"--text", NULL, VALUE, 1, "TEXT", "text to find (case is ignored unless --case-sensitive)", NULL},
+    {"search",
+     "Find text: pages and boxes of each match",
+     INPUT,
+     0,
+     cmd_search,
+     {PASSWORD,
+      {"--text", NULL, VALUE, 1, "TEXT", "text to find (case is ignored unless --case-sensitive)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
-      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL}}, {0}},
-    {"render", "Render one page to PNG", INPUT, 0, cmd_render,
-     {{"--output", "-o", VALUE, 1, "OUTPUT", "output PNG", NULL}, PASSWORD,
-      {"--page", NULL, VALUE, 0, "PAGE", "1-based page (default 1)", "1"}, {"--dpi", NULL, VALUE, 0, "DPI", NULL, "144"}}, {0}},
-    {"annotate", "Add a text mark or a sticky note", INPUT, 0, cmd_annotate,
-     {OUTPUT, PASSWORD, PAGE,
+      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL}},
+     {0}},
+    {"render",
+     "Render one page to PNG",
+     INPUT,
+     0,
+     cmd_render,
+     {{"--output", "-o", VALUE, 1, "OUTPUT", "output PNG", NULL},
+      PASSWORD,
+      {"--page", NULL, VALUE, 0, "PAGE", "1-based page (default 1)", "1"},
+      {"--dpi", NULL, VALUE, 0, "DPI", NULL, "144"}},
+     {0}},
+    {"annotate",
+     "Add a text mark or a sticky note",
+     INPUT,
+     0,
+     cmd_annotate,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
       {"--type", NULL, VALUE, 1, "TYPE", "highlight | underline | strikeout | squiggly | textcolour | note", NULL},
       {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL},
-      {"--text", NULL, VALUE, 0, "TEXT", "comment or note text", NULL}, COLOR}, {0}},
-    {"draw", "Add a freehand (ink) drawing", INPUT, 0, cmd_draw,
-     {OUTPUT, PASSWORD, PAGE, {"--points", NULL, VALUE, 1, "x,y;x,y;...", "the stroke's points", NULL},
-      {"--width", NULL, VALUE, 0, "WIDTH", "line width in points (default 2)", NULL}, COLOR}, {0}},
-    {"insert-text", "Write text into the page content", INPUT, 0, cmd_insert_text,
-     {OUTPUT, PASSWORD, PAGE, {"--at", NULL, VALUE, 1, "X,Y", "top-left of the text", NULL},
+      {"--text", NULL, VALUE, 0, "TEXT", "comment or note text", NULL},
+      COLOR},
+     {0}},
+    {"draw",
+     "Add a freehand (ink) drawing",
+     INPUT,
+     0,
+     cmd_draw,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--points", NULL, VALUE, 1, "x,y;x,y;...", "the stroke's points", NULL},
+      {"--width", NULL, VALUE, 0, "WIDTH", "line width in points (default 2)", NULL},
+      COLOR},
+     {0}},
+    {"insert-text",
+     "Write text into the page content",
+     INPUT,
+     0,
+     cmd_insert_text,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--at", NULL, VALUE, 1, "X,Y", "top-left of the text", NULL},
       {"--text", NULL, VALUE, 1, "TEXT", "the text (\\n for new lines)", NULL},
       {"--size", NULL, VALUE, 0, "SIZE", "font size (default 11)", "11"},
       {"--font", NULL, VALUE, 0, "FONT", "font name (default Helvetica)", "Helvetica"},
-      {"--width", NULL, VALUE, 0, "WIDTH", "wrap at this width in points", NULL}, COLOR}, {0}},
-    {"insert-image", "Place an image on a page", INPUT, 0, cmd_insert_image,
-     {OUTPUT, PASSWORD, PAGE, {"--image", NULL, VALUE, 1, "FILE", "PNG, JPEG or another image", NULL},
-      {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points (the image keeps its proportions)", NULL}}, {0}},
-    {"sign", "Place a signature image, or sign digitally with a certificate (--cert)", INPUT, 0, cmd_sign,
-     {OUTPUT, PASSWORD, PAGE, {"--image", NULL, VALUE, 0, "FILE", "signature PNG (see prepare-signature)", NULL},
+      {"--width", NULL, VALUE, 0, "WIDTH", "wrap at this width in points", NULL},
+      COLOR},
+     {0}},
+    {"insert-image",
+     "Place an image on a page",
+     INPUT,
+     0,
+     cmd_insert_image,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--image", NULL, VALUE, 1, "FILE", "PNG, JPEG or another image", NULL},
+      {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points (the image keeps its proportions)", NULL}},
+     {0}},
+    {"sign",
+     "Place a signature image, or sign digitally with a certificate (--cert)",
+     INPUT,
+     0,
+     cmd_sign,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--image", NULL, VALUE, 0, "FILE", "signature PNG (see prepare-signature)", NULL},
       {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL},
       {"--cert", NULL, VALUE, 0, "P12", "PKCS#12 certificate (.p12/.pfx) for a digital signature", NULL},
       {"--cert-password", NULL, VALUE, 0, "PASSWORD", "the certificate's password", NULL},
-      {"--reason", NULL, VALUE, 0, "REASON", "reason shown with the digital signature", NULL}}, {0}},
-    {"bates", "Stamp Bates numbers (PREFIX000001SUFFIX) on the pages", INPUT, 0, cmd_bates,
-     {OUTPUT, PASSWORD, {"--prefix", NULL, VALUE, 0, "PREFIX", "text before the number", ""},
+      {"--reason", NULL, VALUE, 0, "REASON", "reason shown with the digital signature", NULL}},
+     {0}},
+    {"bates",
+     "Stamp Bates numbers (PREFIX000001SUFFIX) on the pages",
+     INPUT,
+     0,
+     cmd_bates,
+     {OUTPUT,
+      PASSWORD,
+      {"--prefix", NULL, VALUE, 0, "PREFIX", "text before the number", ""},
       {"--suffix", NULL, VALUE, 0, "SUFFIX", "text after the number", ""},
       {"--start", NULL, VALUE, 0, "START", "first number (default 1)", "1"},
       {"--digits", NULL, VALUE, 0, "DIGITS", "zero-padded to this many digits (default 6)", "6"},
-      {"--position", NULL, VALUE, 0, "WHERE", "top-left | top | top-right | bottom-left | bottom | bottom-right", "bottom-right"},
+      {"--position", NULL, VALUE, 0, "WHERE", "top-left | top | top-right | bottom-left | bottom | bottom-right",
+       "bottom-right"},
       {"--size", NULL, VALUE, 0, "SIZE", "font size (default 10)", "10"},
-      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7 (numbers count these)", NULL}, COLOR}, {0}},
-    {"watermark", "Stamp text across or on a corner of the pages", INPUT, 0, cmd_watermark,
-     {OUTPUT, PASSWORD, {"--text", NULL, VALUE, 1, "TEXT", "e.g. CONFIDENTIAL", NULL},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7 (numbers count these)", NULL},
+      COLOR},
+     {0}},
+    {"watermark",
+     "Stamp text across or on a corner of the pages",
+     INPUT,
+     0,
+     cmd_watermark,
+     {OUTPUT,
+      PASSWORD,
+      {"--text", NULL, VALUE, 1, "TEXT", "e.g. CONFIDENTIAL", NULL},
       {"--position", NULL, VALUE, 0, "WHERE", "diagonal | centre | top-left | top | ... | bottom-right", "diagonal"},
       {"--size", NULL, VALUE, 0, "SIZE", "font size; 0 fits a diagonal to the page (default)", "0"},
       {"--opacity", NULL, VALUE, 0, "OPACITY", "0..1 (default 0.3)", "0.3"},
-      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL}, COLOR}, {0}},
-    {"ocr", "Recognize text on scanned pages: adds an invisible, searchable text layer (Tesseract)", INPUT, 0, cmd_ocr,
-     {OUTPUT, PASSWORD, {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
+      COLOR},
+     {0}},
+    {"ocr",
+     "Recognize text on scanned pages: adds an invisible, searchable text layer (Tesseract)",
+     INPUT,
+     0,
+     cmd_ocr,
+     {OUTPUT,
+      PASSWORD,
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--language", NULL, VALUE, 0, "LANG", "Tesseract language(s), e.g. eng or deu+eng (default eng)", "eng"},
-      {"--tessdata", NULL, VALUE, 0, "DIR", "folder with LANG.traineddata", NULL}}, {0}},
-    {"compare", "Words that differ between two PDFs, page by page", "inputs", "the two PDFs", 1, cmd_compare,
-     {PASSWORD, {"--password2", NULL, VALUE, 0, "PASSWORD", "password of the second PDF", NULL}}, {0}},
-    {"export-images", "Save pages as PNG or JPEG images", INPUT, 0, cmd_export_images,
-     {PASSWORD, {"--directory", "-d", VALUE, 1, "DIRECTORY", "folder for NAME-pageN.png", NULL},
+      {"--tessdata", NULL, VALUE, 0, "DIR", "folder with LANG.traineddata", NULL}},
+     {0}},
+    {"compare",
+     "Words that differ between two PDFs, page by page",
+     "inputs",
+     "the two PDFs",
+     1,
+     cmd_compare,
+     {PASSWORD, {"--password2", NULL, VALUE, 0, "PASSWORD", "password of the second PDF", NULL}},
+     {0}},
+    {"export-images",
+     "Save pages as PNG or JPEG images",
+     INPUT,
+     0,
+     cmd_export_images,
+     {PASSWORD,
+      {"--directory", "-d", VALUE, 1, "DIRECTORY", "folder for NAME-pageN.png", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--format", NULL, VALUE, 0, "FORMAT", "png | jpeg (default png)", "png"},
-      {"--dpi", NULL, VALUE, 0, "DPI", NULL, "150"}}, {0}},
-    {"prepare-signature", "Turn a scanned signature into a cropped transparent PNG", "scan", "image of the signature",
-     0, cmd_prepare_signature, {{"--output", "-o", VALUE, 1, "OUTPUT", "output PNG", NULL}}, {0}},
-    {"scrub", "Remove hidden data: metadata, attachments, scripts, hidden text, thumbnails", INPUT, 0, cmd_scrub,
-     {OUTPUT, PASSWORD}, {0}},
+      {"--dpi", NULL, VALUE, 0, "DPI", NULL, "150"}},
+     {0}},
+    {"prepare-signature",
+     "Turn a scanned signature into a cropped transparent PNG",
+     "scan",
+     "image of the signature",
+     0,
+     cmd_prepare_signature,
+     {{"--output", "-o", VALUE, 1, "OUTPUT", "output PNG", NULL}},
+     {0}},
+    {"scrub",
+     "Remove hidden data: metadata, attachments, scripts, hidden text, thumbnails",
+     INPUT,
+     0,
+     cmd_scrub,
+     {OUTPUT, PASSWORD},
+     {0}},
     {"inspect", "Annotations (with their per-page index) and form fields", INPUT, 0, cmd_inspect, {PASSWORD}, {0}},
-    {"edit-annotation", "Change the comment of an annotation, or remove it", INPUT, 0, cmd_edit_annotation,
-     {OUTPUT, PASSWORD, PAGE, {"--index", NULL, VALUE, 1, "INDEX", "0-based, as inspect lists them", NULL},
-      {"--text", NULL, VALUE, 0, "TEXT", "new comment", NULL}, {"--remove", NULL, FLAG, 0, NULL, "delete the annotation", NULL}}, {0}},
-    {"redact-text", "Same as redact", INPUT, 0, cmd_redact,
-     {OUTPUT, PASSWORD,
+    {"edit-annotation",
+     "Change the comment of an annotation, or remove it",
+     INPUT,
+     0,
+     cmd_edit_annotation,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--index", NULL, VALUE, 1, "INDEX", "0-based, as inspect lists them", NULL},
+      {"--text", NULL, VALUE, 0, "TEXT", "new comment", NULL},
+      {"--remove", NULL, FLAG, 0, NULL, "delete the annotation", NULL}},
+     {0}},
+    {"redact-text",
+     "Same as redact",
+     INPUT,
+     0,
+     cmd_redact,
+     {OUTPUT,
+      PASSWORD,
       {"--text", NULL, APPEND, 0, "TEXT", "literal text to redact (repeatable)", NULL},
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", "#000000"},
-      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}}, {0}},
+      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
+     {0}},
 };
 #define NCOMMANDS (int)(sizeof COMMANDS / sizeof *COMMANDS)
 

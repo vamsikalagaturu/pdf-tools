@@ -84,7 +84,8 @@ void app_publish_state(void)
 {
     pt_strs paths = {0};
     for (int i = 0; i < app.tabs.n; i++)
-        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->path) pt_push(paths, pt_strdup(app.tabs.v[i].doc->path));
+        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->path)
+            pt_push(paths, pt_strdup(app.tabs.v[i].doc->path));
     ipc_publish(&paths, 0);
     pt_strs_free(&paths);
 }
@@ -150,7 +151,8 @@ void app_open_paths(pt_strs *paths)
         char *real = pt_realpath(paths->v[i]);
         int found = -1;
         for (int k = 0; k < app.tabs.n; k++)
-            if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, real)) found = k;
+            if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, real))
+                found = k;
         if (found >= 0) app.current = found;
         else tab_open_with_password(real, NULL, 0, NULL);
         free(real);
@@ -262,7 +264,8 @@ static void accent_picked(void *ctx, const unsigned char rgb[3])
 static void pick_accent(void)
 {
     unsigned char rgb[3] = {pal.highlight.r, pal.highlight.g, pal.highlight.b};
-    colour_dialog(pal.dark_mode ? "Accent colour (dark theme)" : "Accent colour (light theme)", rgb, accent_picked, NULL);
+    colour_dialog(pal.dark_mode ? "Accent colour (dark theme)" : "Accent colour (light theme)", rgb, accent_picked,
+                  NULL);
 }
 
 static void reset_accent(void)
@@ -275,8 +278,8 @@ void app_about(void)
 {
     message_box(MSG_INFO, "About " APP_NAME,
                 APP_NAME "\n\nView, redact, fill, annotate, sign and merge PDFs.\n\n" REPO_URL
-                "\n\nLicense: AGPL-3.0-or-later. Icons: Lucide (ISC). UI font: Noto Sans (OFL-1.1).\n"
-                "Native build: MuPDF, raylib, raygui.",
+                         "\n\nLicense: AGPL-3.0-or-later. Icons: Lucide (ISC). UI font: Noto Sans (OFL-1.1).\n"
+                         "Native build: MuPDF, raylib, raygui.",
                 NULL, NULL);
 }
 
@@ -330,7 +333,8 @@ void app_handle_message(const char *text)
         const char *pdf = json_str(json_at(forward, 0)), *source = json_str(json_at(forward, 2));
         int line = (int)json_num(json_at(forward, 1)), found = -1;
         for (int k = 0; k < app.tabs.n; k++)
-            if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, pdf)) found = k;
+            if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, pdf))
+                found = k;
         if (found >= 0) {
             app.current = found;
             tab_forward_search(app.tabs.v[found].doc, source, line);
@@ -367,8 +371,12 @@ static void m_action(void *ctx, intptr_t a)
     case 4: app_quit_request(); break;
     case 5: app_open_workspace(NULL); break;
     case 6: ipc_quit_all(), app_quit_request(); break;
-    case 7: if (app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n; break;
-    case 8: if (app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n; break;
+    case 7:
+        if (app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
+        break;
+    case 8:
+        if (app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
+        break;
     case 9: app_set_theme("dark"); break;
     case 10: app_set_theme("light"); break;
     case 11: app_about(); break;
@@ -425,7 +433,8 @@ ui_menu *app_build_menu(tab *t)
     menu_item(a, "Light", "light", NULL, m_action, NULL, 10, 1, !dark);
     menu_sep(a);
     menu_item(a, "Accent colour...", "custom-colour", NULL, m_action, NULL, 12, 1, 0);
-    menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()), 0);
+    menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()),
+              0);
     menu_sep(m);
     menu_item(m, "About " APP_NAME, "about", NULL, m_action, NULL, 11, 1, 0);
     return m;
@@ -433,8 +442,16 @@ ui_menu *app_build_menu(tab *t)
 
 /* ---- frame ---- */
 
-static void t_move(void *ctx, intptr_t a) { (void)a; move_to_new_window(ctx); }
-static void t_close(void *ctx, intptr_t a) { (void)a; tab_close(ctx); }
+static void t_move(void *ctx, intptr_t a)
+{
+    (void)a;
+    move_to_new_window(ctx);
+}
+static void t_close(void *ctx, intptr_t a)
+{
+    (void)a;
+    tab_close(ctx);
+}
 
 #define TAB_FS 15.0f
 
@@ -461,8 +478,10 @@ static void tab_strip(Rectangle r)
         font_kind fk = current ? F_BOLD : F_REGULAR;
         float tx = tr.x + 12, cy = tr.y;
         if (w->kind == TAB_HOME) draw_logo((Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}), tx += 20;
-        else if (w->kind == TAB_WORKSPACE) draw_icon("merge", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
-        else if (w->kind == TAB_COMPARE) draw_icon("compare", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
+        else if (w->kind == TAB_WORKSPACE)
+            draw_icon("merge", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
+        else if (w->kind == TAB_COMPARE)
+            draw_icon("compare", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
         char *el = elide_middle(title, tr.x + tr.width - 28 - tx, TAB_FS, fk);
         draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, TAB_FS, fk, fg, -1);
         free(el);
@@ -537,8 +556,9 @@ static void handle_drops(void)
     for (unsigned i = 0; i < list.count; i++) {
         const char *p = list.paths[i], *dot = strrchr(p, '.');
         int pdf = dot && !strcasecmp(dot, ".pdf");
-        int image = dot && (!strcasecmp(dot, ".png") || !strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg") || !strcasecmp(dot, ".webp") ||
-                            !strcasecmp(dot, ".bmp") || !strcasecmp(dot, ".gif") || !strcasecmp(dot, ".tif") || !strcasecmp(dot, ".tiff"));
+        int image = dot && (!strcasecmp(dot, ".png") || !strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg") ||
+                            !strcasecmp(dot, ".webp") || !strcasecmp(dot, ".bmp") || !strcasecmp(dot, ".gif") ||
+                            !strcasecmp(dot, ".tif") || !strcasecmp(dot, ".tiff"));
         if (pdf || (workspace && image)) pt_push(paths, pt_strdup(p));
     }
     UnloadDroppedFiles(list);
@@ -563,7 +583,8 @@ static void frame(void)
     Rectangle header = {0, 0, ui.w, HEADER_H};
     DrawRectangleRec(header, pal.window);
     Rectangle menu_b = {6, 6, 32, 32};
-    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, "Menu")) menu_open_below(app_build_menu(t), menu_b);
+    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, "Menu"))
+        menu_open_below(app_build_menu(t), menu_b);
     /* every header button: 32x32 on a 34 px step, glyphs (and the logo) 18 px, as in the toolbars */
     Rectangle logo = {40, 6, 32, 32};
     if (ui_hover(logo)) set_cursor(CUR_HAND);
@@ -588,7 +609,8 @@ static void frame(void)
     if (t) tab_status(t, bar);
     if (*app.status && ui.now < app.status_until) {
         float w = text_width(app.status, FS_NORMAL, F_REGULAR) + 16;
-        Rectangle s = {bar.x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) : ui.w), bar.height - 1};
+        Rectangle s = {bar.x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) : ui.w),
+                       bar.height - 1};
         DrawRectangleRec(s, pal.window);
         char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
         draw_text_in(e, (Rectangle){s.x + 8, s.y, s.width, s.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
@@ -605,7 +627,8 @@ static void frame(void)
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) tab_poll(app.tabs.v[i].doc);
     char title[600];
-    if (t && t->path) snprintf(title, sizeof title, "%s%s - %s", tab_edit_count(t) ? "* " : "", pt_basename(t->path), APP_NAME);
+    if (t && t->path)
+        snprintf(title, sizeof title, "%s%s - %s", tab_edit_count(t) ? "* " : "", pt_basename(t->path), APP_NAME);
     else if (cur && cur->kind == TAB_WORKSPACE) snprintf(title, sizeof title, "Combine & split - %s", APP_NAME);
     else if (cur && cur->kind == TAB_COMPARE) {
         char *c = compare_title(cur->cmp);
@@ -734,6 +757,7 @@ int main(int argc, char **argv)
     InitWindow(1280, 1100, APP_NAME);
     if (!IsWindowReady()) {
         pt_log(PT_LOG_ERROR, "cannot open a window (no Wayland or X11 display?)");
+        free(message);
         return 1;
     }
     SetExitKey(KEY_NULL);
@@ -780,7 +804,8 @@ int main(int argc, char **argv)
         if (focused && !was_focused) {
             pt_strs paths = {0};
             for (int i = 0; i < app.tabs.n; i++)
-                if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->path) pt_push(paths, pt_strdup(app.tabs.v[i].doc->path));
+                if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->path)
+                    pt_push(paths, pt_strdup(app.tabs.v[i].doc->path));
             ipc_publish(&paths, 1);
             pt_strs_free(&paths);
         }
@@ -790,7 +815,8 @@ int main(int argc, char **argv)
         frame();
         EndDrawing();
         /* idle: sleep until input (or a short timeout for file watching and messages) */
-        if (!ui.dirty && !ui.down && !ui_events_pending() && !file_dialog_busy() && !(*app.status && ui.now < app.status_until))
+        if (!ui.dirty && !ui.down && !ui_events_pending() && !file_dialog_busy() &&
+            !(*app.status && ui.now < app.status_until))
             glfwWaitEventsTimeout(0.3);
     }
     for (int i = 0; i < app.tabs.n; i++)
@@ -826,12 +852,15 @@ void home_frame(Rectangle area)
     y += 98;
     draw_text_in(APP_NAME, (Rectangle){x, y, w, 40}, FS_NORMAL * 1.8f, F_BOLD, pal.window_text, 0);
     y += 50;
-    draw_text_in("View, fill, annotate, redact, sign and merge PDFs", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
+    draw_text_in("View, fill, annotate, redact, sign and merge PDFs", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR,
+                 pal.disabled_text, 0);
     y += 48;
     float bw = fmaxf(170, button_width("Combine & split PDFs...", "merge", 0) + 20);
     float bx = x + (w - (bw * 2 + 12)) / 2;
-    if (ui_button(ui_id_str("home-open", 0), (Rectangle){bx, y, bw, 44}, "Open PDF...", "open", 0, NULL)) app_open_dialog();
-    if (ui_button(ui_id_str("home-merge", 0), (Rectangle){bx + bw + 12, y, bw, 44}, "Combine & split PDFs...", "merge", 0, NULL))
+    if (ui_button(ui_id_str("home-open", 0), (Rectangle){bx, y, bw, 44}, "Open PDF...", "open", 0, NULL))
+        app_open_dialog();
+    if (ui_button(ui_id_str("home-merge", 0), (Rectangle){bx + bw + 12, y, bw, 44}, "Combine & split PDFs...", "merge",
+                  0, NULL))
         app_open_workspace(NULL);
     y += 44 + 26;
     if (shown.n) {
@@ -857,9 +886,11 @@ void home_frame(Rectangle area)
             draw_text_in(name, (Rectangle){tx, r.y + 3, tw, r.height / 2}, FS_NORMAL, F_BOLD, pal.text, -1);
             free(name);
             char *dir = pt_dirname(path), *folder = dir;
-            if (home && !strncmp(dir, home, strlen(home))) folder = pt_format("~%s", dir + strlen(home)), free(dir), dir = folder;
+            if (home && !strncmp(dir, home, strlen(home)))
+                folder = pt_format("~%s", dir + strlen(home)), free(dir), dir = folder;
             char *f = elide_middle(folder, tw, FS_NORMAL * 0.9f, F_REGULAR);
-            draw_text_in(f, (Rectangle){tx, r.y + r.height / 2, tw, r.height / 2 - 3}, FS_NORMAL * 0.9f, F_REGULAR, pal.disabled_text, -1);
+            draw_text_in(f, (Rectangle){tx, r.y + r.height / 2, tw, r.height / 2 - 3}, FS_NORMAL * 0.9f, F_REGULAR,
+                         pal.disabled_text, -1);
             free(f);
             free(dir);
             ui_tooltip(ui_id_str(path, 1), r, path);
@@ -874,7 +905,8 @@ void home_frame(Rectangle area)
         ui_scissor_end();
         y += list_h + 10;
     }
-    draw_text_in("or drop a PDF anywhere in this window", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
+    draw_text_in("or drop a PDF anywhere in this window", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR,
+                 pal.disabled_text, 0);
     pt_vec_free(shown);
 }
 
@@ -885,15 +917,16 @@ void home_frame(Rectangle area)
 #ifdef __APPLE__
 static pt_strs finder_opened;
 
-static id objc_send0(id obj, const char *sel) { return ((id (*)(id, SEL))objc_msgSend)(obj, sel_registerName(sel)); }
+static id objc_send0(id obj, const char *sel) { return ((id(*)(id, SEL))objc_msgSend)(obj, sel_registerName(sel)); }
 
 static void open_urls(id self, SEL cmd, id application, id urls)
 {
     (void)self, (void)cmd, (void)application;
     unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(urls, sel_registerName("count"));
     for (unsigned long i = 0; i < n; i++) {
-        id url = ((id (*)(id, SEL, unsigned long))objc_msgSend)(urls, sel_registerName("objectAtIndex:"), i);
-        const char *path = ((const char *(*)(id, SEL))objc_msgSend)(objc_send0(url, "path"), sel_registerName("UTF8String"));
+        id url = ((id(*)(id, SEL, unsigned long))objc_msgSend)(urls, sel_registerName("objectAtIndex:"), i);
+        const char *path =
+            ((const char *(*)(id, SEL))objc_msgSend)(objc_send0(url, "path"), sel_registerName("UTF8String"));
         if (path) pt_push(finder_opened, pt_strdup(path));
     }
     ui.dirty = 1;
@@ -903,7 +936,8 @@ void mac_install_open_handler(void)
 {
     id application = objc_send0((id)objc_getClass("NSApplication"), "sharedApplication");
     id delegate = application ? objc_send0(application, "delegate") : NULL;
-    if (delegate) class_addMethod(object_getClass(delegate), sel_registerName("application:openURLs:"), (IMP)open_urls, "v@:@@");
+    if (delegate)
+        class_addMethod(object_getClass(delegate), sel_registerName("application:openURLs:"), (IMP)open_urls, "v@:@@");
 }
 
 void mac_take_opened(pt_strs *out)

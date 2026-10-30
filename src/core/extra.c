@@ -52,7 +52,8 @@ char *pt_tessdata_dir(const char *language, const char *exe_dir)
     free(shared);
     shared = with_brew;
 #endif
-    static const char *LAYOUTS[] = {"tessdata", "tesseract-ocr/5/tessdata", "tesseract-ocr/4.00/tessdata", "tesseract/tessdata"};
+    static const char *LAYOUTS[] = {"tessdata", "tesseract-ocr/5/tessdata", "tesseract-ocr/4.00/tessdata",
+                                    "tesseract/tessdata"};
     for (char *save = NULL, *d = strtok_r(shared, ":", &save); d; d = strtok_r(NULL, ":", &save))
         for (size_t i = 0; i < sizeof LAYOUTS / sizeof *LAYOUTS; i++) pt_push(dirs, pt_format("%s/%s", d, LAYOUTS[i]));
     free(shared);
@@ -69,7 +70,10 @@ static int centred_in(fz_rect c, fz_rect r)
     return x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
 }
 
-typedef struct { pt_ints runes; fz_rect box; } word;
+typedef struct {
+    pt_ints runes;
+    fz_rect box;
+} word;
 
 static void flush_word(fz_context *ctx, fz_buffer *b, word *w, fz_font *helv, fz_matrix to_pdf)
 {
@@ -103,7 +107,8 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
     word w = {0};
     int added = 0;
     fz_var(native), fz_var(seen), fz_var(sdev), fz_var(odev), fz_var(helv), fz_var(b), fz_var(font);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         native = pt_stext(ctx, (fz_page *)page);
         pt_page_chars(native, &have);
         /* the OCR device reads the page at the resolution of the matrix it is given; 300 dpi as Tesseract advises */
@@ -113,7 +118,8 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
         opts.flags = PT_TEXT_FLAGS;
         seen = fz_new_stext_page(ctx, bounds);
         sdev = fz_new_stext_device(ctx, seen, &opts);
-        odev = fz_new_ocr_device(ctx, sdev, scale, bounds, 1, language && *language ? language : "eng", datadir, NULL, NULL);
+        odev = fz_new_ocr_device(ctx, sdev, scale, bounds, 1, language && *language ? language : "eng", datadir, NULL,
+                                 NULL);
         fz_run_page(ctx, (fz_page *)page, odev, scale, NULL);
         fz_close_device(ctx, odev);
         fz_close_device(ctx, sdev);
@@ -130,7 +136,8 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
                 for (fz_stext_char *c = l->first_char; c; c = c->next) {
                     fz_rect r = fz_transform_rect(fz_rect_from_quad(c->quad), back);
                     int known = 0;
-                    for (int i = 0; i < have.n && !known; i++) known = centred_in(have.v[i].r, r) || centred_in(r, have.v[i].r);
+                    for (int i = 0; i < have.n && !known; i++)
+                        known = centred_in(have.v[i].r, r) || centred_in(r, have.v[i].r);
                     if (c->c == ' ' || known) {
                         flush_word(ctx, b, &w, helv, to_pdf);
                         continue;
@@ -145,7 +152,8 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
         fz_append_string(ctx, b, "ET\nQ\n");
         if (added) pt_append_content(ctx, doc, page, b);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pt_vec_free(w.runes);
         pt_vec_free(have);
         pdf_drop_obj(ctx, font);
@@ -181,7 +189,7 @@ typedef struct {
     int refs;
     EVP_PKEY *key;
     X509 *cert;
-    STACK_OF(X509) *chain;
+    STACK_OF(X509) * chain;
 } signer;
 
 static pdf_pkcs7_signer *keep_signer(fz_context *ctx, pdf_pkcs7_signer *s)
@@ -213,8 +221,9 @@ static pdf_pkcs7_distinguished_name *signing_name(fz_context *ctx, pdf_pkcs7_sig
     X509_NAME *n = X509_get_subject_name(((signer *)s)->cert);
     pdf_pkcs7_distinguished_name *dn = fz_malloc_struct(ctx, pdf_pkcs7_distinguished_name);
     /* MuPDF frees these with fz_free, so they are copied into its allocator */
-    char *cn = name_entry(n, NID_commonName), *o = name_entry(n, NID_organizationName), *ou = name_entry(n, NID_organizationalUnitName),
-         *email = name_entry(n, NID_pkcs9_emailAddress), *c = name_entry(n, NID_countryName);
+    char *cn = name_entry(n, NID_commonName), *o = name_entry(n, NID_organizationName),
+         *ou = name_entry(n, NID_organizationalUnitName), *email = name_entry(n, NID_pkcs9_emailAddress),
+         *c = name_entry(n, NID_countryName);
     dn->cn = cn ? fz_strdup(ctx, cn) : NULL;
     dn->o = o ? fz_strdup(ctx, o) : NULL;
     dn->ou = ou ? fz_strdup(ctx, ou) : NULL;
@@ -296,8 +305,8 @@ char *pt_certificate_name(fz_context *ctx, const char *path, const char *passwor
 #endif
 }
 
-fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, int page, fz_rect user_rect, const char *cert,
-                       const char *cert_password, const char *reason)
+fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, int page, fz_rect user_rect,
+                       const char *cert, const char *cert_password, const char *reason)
 {
 #ifdef PT_USE_OPENSSL
     signer *g = load_signer(ctx, cert, cert_password);
@@ -306,7 +315,8 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
     pdf_document *doc = NULL;
     fz_buffer *out = NULL;
     fz_var(doc), fz_var(path), fz_var(out);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         /* an incremental update appends to the file it was opened from */
         if (!mkdtemp(dir)) fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot create a temporary folder");
         path = pt_format("%s/signed.pdf", dir);
@@ -315,7 +325,8 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
         if (pdf_needs_password(ctx, doc) && !pdf_authenticate_password(ctx, doc, password ? password : ""))
             fz_throw(ctx, FZ_ERROR_ARGUMENT, "wrong password");
         pdf_page *pg = pdf_load_page(ctx, doc, page);
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             fz_matrix ctm;
             pdf_page_transform(ctx, pg, NULL, &ctm);
             char name[32];
@@ -333,7 +344,8 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
         if (pt_read_file(path, &signed_bytes)) fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot read the signed file");
         out = fz_new_buffer_from_data(ctx, signed_bytes.data, signed_bytes.len);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pdf_drop_document(ctx, doc);
         if (path) unlink(path);
         rmdir(dir);
@@ -364,7 +376,8 @@ static void words_of(fz_context *ctx, fz_page *page, pt_words *out)
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-static void diff(const pt_words *a, int a0, int na, const pt_words *b, int b0, int nb, pt_rects *only_a, pt_rects *only_b)
+static void diff(const pt_words *a, int a0, int na, const pt_words *b, int b0, int nb, pt_rects *only_a,
+                 pt_rects *only_b)
 {
     unsigned short *len = calloc((size_t)(na + 1) * (size_t)(nb + 1), sizeof *len);
     if (!len) abort();
@@ -387,7 +400,8 @@ static void diff(const pt_words *a, int a0, int na, const pt_words *b, int b0, i
 void pt_compare_pages(fz_context *ctx, fz_page *a, fz_page *b, pt_rects *only_a, pt_rects *only_b)
 {
     pt_words wa = {0}, wb = {0};
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         words_of(ctx, a, &wa);
         words_of(ctx, b, &wb);
         for (int ia = 0, ib = 0; ia < wa.n || ib < wb.n; ia += SLICE, ib += SLICE) {
@@ -395,7 +409,8 @@ void pt_compare_pages(fz_context *ctx, fz_page *a, fz_page *b, pt_rects *only_a,
             diff(&wa, ia, na > 0 ? na : 0, &wb, ib, nb > 0 ? nb : 0, only_a, only_b);
         }
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pt_words_free(&wa);
         pt_words_free(&wb);
     }

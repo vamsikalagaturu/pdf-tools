@@ -13,7 +13,10 @@ char *pt_signature_dir(void)
     return sig;
 }
 
-typedef struct { char *path; double mtime; } dated;
+typedef struct {
+    char *path;
+    double mtime;
+} dated;
 
 static int by_mtime(const void *a, const void *b)
 {
@@ -25,7 +28,10 @@ void pt_list_signatures(pt_strs *out)
 {
     char *dir = pt_signature_dir();
     DIR *d = opendir(dir);
-    if (!d) { free(dir); return; }
+    if (!d) {
+        free(dir);
+        return;
+    }
     dated *files = NULL;
     int n = 0, cap = 0;
     struct dirent *e;
@@ -34,7 +40,10 @@ void pt_list_signatures(pt_strs *out)
         if (len < 5 || strcmp(e->d_name + len - 4, ".png")) continue;
         char *path = pt_join(dir, e->d_name);
         struct stat st;
-        if (stat(path, &st)) { free(path); continue; }
+        if (stat(path, &st)) {
+            free(path);
+            continue;
+        }
         files = pt_grow(files, &cap, n + 1, sizeof *files);
         files[n++] = (dated){path, PT_MTIME(st)};
     }
@@ -61,7 +70,10 @@ char *pt_store_signature(const unsigned char *png, size_t len)
     }
     free(name);
     free(dir);
-    if (pt_write_file(path, png, len)) { free(path); return NULL; }
+    if (pt_write_file(path, png, len)) {
+        free(path);
+        return NULL;
+    }
     return path;
 }
 
@@ -72,7 +84,8 @@ fz_buffer *pt_ink_from_scan(fz_context *ctx, const char *path)
     fz_pixmap *src = NULL, *gray = NULL, *out = NULL;
     fz_buffer *png = NULL;
     unsigned char *alpha = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         src = fz_get_pixmap_from_image(ctx, img, NULL, NULL, NULL, NULL);
         while (src->w > 1600) {
             fz_pixmap *half = fz_scale_pixmap(ctx, src, 0, 0, (float)src->w / 2, (float)src->h / 2, NULL);
@@ -107,7 +120,8 @@ fz_buffer *pt_ink_from_scan(fz_context *ctx, const char *path)
             png = fz_new_buffer_from_pixmap_as_png(ctx, out, fz_default_color_params);
         }
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_free(ctx, alpha);
         fz_drop_pixmap(ctx, out);
         fz_drop_pixmap(ctx, gray);

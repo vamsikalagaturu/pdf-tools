@@ -15,12 +15,12 @@ static fz_context *ctx;
 static char tmpdir[] = "/tmp/pt-core-test-XXXXXX";
 static int failures;
 
-#define CHECK(cond)                                                                                                  \
-    do {                                                                                                             \
-        if (!(cond)) {                                                                                               \
-            fprintf(stderr, "%s:%d: %s: check failed: %s\n", __FILE__, __LINE__, __func__, #cond);                   \
-            failures++;                                                                                              \
-        }                                                                                                            \
+#define CHECK(cond)                                                                                \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            fprintf(stderr, "%s:%d: %s: check failed: %s\n", __FILE__, __LINE__, __func__, #cond); \
+            failures++;                                                                            \
+        }                                                                                          \
     } while (0)
 
 static char *tmp_path(const char *name) { return pt_format("%s/%s", tmpdir, name); }
@@ -132,7 +132,8 @@ static void test_shapes(void)
     pt_edit_entries(ctx, (fz_document *)doc, &s, 1, NULL, NULL, NULL, &entries);
     int named = 0;
     for (int i = 0; i < entries.n; i++)
-        named += entries.v[i].kind == PT_E_SHAPE && (!strcmp(entries.v[i].name, "rectangle") || !strcmp(entries.v[i].name, "arrow"));
+        named += entries.v[i].kind == PT_E_SHAPE &&
+                 (!strcmp(entries.v[i].name, "rectangle") || !strcmp(entries.v[i].name, "arrow"));
     CHECK(named == 2);
     pt_entries_free(&entries);
     fz_drop_page(ctx, (fz_page *)page);
@@ -257,8 +258,12 @@ static void test_stamps(void)
     pt_state_init(&s, 1);
     pt_push(s.inserted, ((pt_inserted){pt_strdup(PT_BLANK_PAGE "595x842"), 1}));
     pt_push(s.order, 1);
-    pt_push(s.stamps, ((pt_stamp){PT_STAMP_BATES, pt_strdup("X-"), NULL, 7, 4, PT_AT_BOTTOM_RIGHT, 10, 1, {0, 0, 0}, NULL}));
-    pt_push(s.stamps, ((pt_stamp){PT_STAMP_WATERMARK, pt_strdup("DRAFT"), NULL, 0, 0, PT_AT_DIAGONAL, 0, 0.3f, {200, 0, 0}, pt_strdup("2")}));
+    pt_push(s.stamps,
+            ((pt_stamp){PT_STAMP_BATES, pt_strdup("X-"), NULL, 7, 4, PT_AT_BOTTOM_RIGHT, 10, 1, {0, 0, 0}, NULL}));
+    pt_push(
+        s.stamps,
+        ((pt_stamp){
+            PT_STAMP_WATERMARK, pt_strdup("DRAFT"), NULL, 0, 0, PT_AT_DIAGONAL, 0, 0.3f, {200, 0, 0}, pt_strdup("2")}));
     s.meta.title = pt_strdup("Stamped");
     pt_push(s.outline, ((pt_bookmark){0, pt_strdup("Start"), 0, 0}));
     pt_push(s.outline, ((pt_bookmark){1, pt_strdup("Blank"), 1, 100}));

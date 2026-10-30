@@ -17,7 +17,12 @@
 
 /* ---- export ---- */
 
-typedef struct { ui_text pages; int flat, dpi, n, first; export_done done; void *ctx; } export_data;
+typedef struct {
+    ui_text pages;
+    int flat, dpi, n, first;
+    export_done done;
+    void *ctx;
+} export_data;
 
 static void export_free(dialog *d)
 {
@@ -34,8 +39,10 @@ static int export_frame(dialog *d, Rectangle b)
     draw_text_in(label, (Rectangle){b.x, b.y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     if (e->first) text_focus(&e->pages), text_select_all(&e->pages), e->first = 0;
     int res = ui_textfield(ui_id(d, 1), &e->pages, (Rectangle){b.x + 120, b.y, b.width - 120, 30}, 1);
-    ui_checkbox(ui_id(d, 2), (Rectangle){b.x, b.y + 40, b.width, 26}, "Flatten to images (no selectable text)", &e->flat, 0);
-    draw_text_in("DPI:", (Rectangle){b.x, b.y + 76, 120, 30}, FS_NORMAL, F_REGULAR, e->flat ? pal.window_text : pal.disabled_text, -1);
+    ui_checkbox(ui_id(d, 2), (Rectangle){b.x, b.y + 40, b.width, 26}, "Flatten to images (no selectable text)",
+                &e->flat, 0);
+    draw_text_in("DPI:", (Rectangle){b.x, b.y + 76, 120, 30}, FS_NORMAL, F_REGULAR,
+                 e->flat ? pal.window_text : pal.disabled_text, -1);
     if (e->flat) ui_spin(ui_id(d, 3), (Rectangle){b.x + 120, b.y + 76, 110, 30}, &e->dpi, 72, 600, 50, NULL, NULL);
     else {
         char dpi[16];
@@ -46,7 +53,8 @@ static int export_frame(dialog *d, Rectangle b)
     Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
     int blank = 1;
     for (const char *s = text_get(&e->pages); *s; s++) blank &= *s == ' ';
-    if (ui_button(ui_id(d, 4), ok, "Export...", NULL, B_PRIMARY | (blank ? B_DISABLED : 0), NULL) || ((res & TE_SUBMIT) && !blank)) {
+    if (ui_button(ui_id(d, 4), ok, "Export...", NULL, B_PRIMARY | (blank ? B_DISABLED : 0), NULL) ||
+        ((res & TE_SUBMIT) && !blank)) {
         char *ranges = pt_strdup(text_get(&e->pages));
         int flat = e->flat, dpi = e->dpi;
         export_done done = e->done;
@@ -55,7 +63,8 @@ static int export_frame(dialog *d, Rectangle b)
         free(ranges);
         return 1;
     }
-    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL))
+        return 1;
     return 0;
 }
 
@@ -72,7 +81,12 @@ void export_dialog(int n_pages, const char *ranges, int flat, int dpi, export_do
 
 /* ---- protect ---- */
 
-typedef struct { ui_text a, b; int first; password_done done; void *ctx; } password_data;
+typedef struct {
+    ui_text a, b;
+    int first;
+    password_done done;
+    void *ctx;
+} password_data;
 
 static void password_free(dialog *d)
 {
@@ -85,7 +99,8 @@ static void password_free(dialog *d)
 static int password_frame(dialog *d, Rectangle b)
 {
     password_data *p = d->data;
-    draw_text("Saves an AES-256 encrypted copy; it opens only with this password.", b.x, b.y + 4, FS_NORMAL, F_REGULAR, pal.window_text);
+    draw_text("Saves an AES-256 encrypted copy; it opens only with this password.", b.x, b.y + 4, FS_NORMAL, F_REGULAR,
+              pal.window_text);
     if (p->first) text_focus(&p->a), p->first = 0;
     draw_text_in("Password:", (Rectangle){b.x, b.y + 32, 90, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     int r1 = ui_textfield(ui_id(d, 1), &p->a, (Rectangle){b.x + 90, b.y + 32, b.width - 90, 30}, 1);
@@ -95,15 +110,19 @@ static int password_frame(dialog *d, Rectangle b)
     if (r2 & (TE_BACKTAB | TE_TAB)) text_focus(&p->a), text_select_all(&p->a);
     const char *a = text_get(&p->a), *c = text_get(&p->b);
     int match = *a && !strcmp(a, c);
-    if (*c && strcmp(a, c)) draw_text("The passwords differ", b.x + 90, b.y + 106, FS_SMALL, F_REGULAR, pal.disabled_text);
+    if (*c && strcmp(a, c))
+        draw_text("The passwords differ", b.x + 90, b.y + 106, FS_SMALL, F_REGULAR, pal.disabled_text);
     Rectangle ok = {b.x + b.width - 110, b.y + b.height - 30, 110, 30};
-    if (ui_button(ui_id(d, 3), ok, "Save copy...", NULL, B_PRIMARY | (match ? 0 : B_DISABLED), NULL) || ((r2 & TE_SUBMIT) && match)) {
+    if (ui_button(ui_id(d, 3), ok, "Save copy...", NULL, B_PRIMARY | (match ? 0 : B_DISABLED), NULL) ||
+        ((r2 & TE_SUBMIT) && match)) {
         char *pw = pt_strdup(a);
         p->done(p->ctx, pw);
         free(pw);
         return 1;
     }
-    if (ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || ((r1 | r2) & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) ||
+        ((r1 | r2) & TE_CANCEL))
+        return 1;
     return 0;
 }
 
@@ -127,7 +146,7 @@ typedef struct {
     Texture2D tex;
     int tex_ok, has_last, drawn;
     Vector2 last;
-    float x0, y0, x1, y1;   /* ink bounds in image pixels */
+    float x0, y0, x1, y1; /* ink bounds in image pixels */
     void (*done)(void *ctx, fz_buffer *png);
     void *ctx;
 } pad_data;
@@ -165,15 +184,18 @@ static void pad_line(pad_data *p, Vector2 a, Vector2 b, float r)
 static fz_buffer *pad_png(pad_data *p)
 {
     if (!p->drawn) return NULL;
-    int x0 = (int)fmaxf(0, p->x0), y0 = (int)fmaxf(0, p->y0), x1 = (int)fminf(PAD_W, p->x1), y1 = (int)fminf(PAD_H, p->y1);
+    int x0 = (int)fmaxf(0, p->x0), y0 = (int)fmaxf(0, p->y0), x1 = (int)fminf(PAD_W, p->x1),
+        y1 = (int)fminf(PAD_H, p->y1);
     if (x1 <= x0 || y1 <= y0) return NULL;
     fz_buffer *png = NULL;
     fz_pixmap *pix = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         pix = fz_new_pixmap(CTX, fz_device_rgb(CTX), x1 - x0, y1 - y0, NULL, 1);
         for (int y = 0; y < pix->h; y++)
             for (int x = 0; x < pix->w; x++) {
-                unsigned char *s = p->rgba + ((y0 + y) * PAD_W + x0 + x) * 4, *d = pix->samples + y * pix->stride + x * 4;
+                unsigned char *s = p->rgba + ((y0 + y) * PAD_W + x0 + x) * 4,
+                              *d = pix->samples + y * pix->stride + x * 4;
                 /* MuPDF pixmaps are premultiplied: black ink stays black */
                 d[0] = d[1] = d[2] = 0;
                 d[3] = s[3];
@@ -207,7 +229,8 @@ static int pad_frame(dialog *d, Rectangle b)
     DrawRectangleRec(surface, WHITE);
     float ly = surface.y + surface.height * 0.75f;
     for (float x = surface.x + 20; x < surface.x + surface.width - 20; x += 8)
-        DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1, (Color){200, 200, 200, 255});
+        DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1,
+                   (Color){200, 200, 200, 255});
     DrawTexturePro(p->tex, (Rectangle){0, 0, PAD_W, PAD_H}, surface, (Vector2){0, 0}, 0, WHITE);
     ui_touch_drag_area(surface);
     int over = ui_hover(surface);
@@ -248,15 +271,26 @@ static void signature_pad(void (*done)(void *ctx, fz_buffer *png), void *ctx)
 
 /* ---- the signature library ---- */
 
-typedef struct { char *path; Texture2D tex; int ok, w, h; } sig;
+typedef struct {
+    char *path;
+    Texture2D tex;
+    int ok, w, h;
+} sig;
 PT_VEC(sigs, sig);
-typedef struct { sigs list; int current; signature_done done; void *ctx; float scroll; } library_data;
+typedef struct {
+    sigs list;
+    int current;
+    signature_done done;
+    void *ctx;
+    float scroll;
+} library_data;
 
 static void load_sig_texture(sig *s)
 {
     fz_pixmap *pix = NULL;
     fz_image *img = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         img = fz_new_image_from_file(CTX, s->path);
         pix = fz_get_pixmap_from_image(CTX, img, NULL, NULL, NULL, NULL);
         if (fz_colorspace_n(CTX, pix->colorspace) != 3) {
@@ -279,7 +313,8 @@ static void load_sig_texture(sig *s)
         s->w = pix->w, s->h = pix->h, s->ok = 1;
         free(rgba);
     }
-    fz_always(CTX) {
+    fz_always(CTX)
+    {
         fz_drop_pixmap(CTX, pix);
         fz_drop_image(CTX, img);
     }
@@ -368,7 +403,8 @@ static int library_frame(dialog *d, Rectangle b)
         DrawRectangleRec(img, WHITE);
         if (s->ok) {
             float sc = fminf(img.width / s->w, img.height / s->h);
-            Rectangle dst = {img.x + (img.width - s->w * sc) / 2, img.y + (img.height - s->h * sc) / 2, s->w * sc, s->h * sc};
+            Rectangle dst = {img.x + (img.width - s->w * sc) / 2, img.y + (img.height - s->h * sc) / 2, s->w * sc,
+                             s->h * sc};
             DrawTexturePro(s->tex, (Rectangle){0, 0, (float)s->w, (float)s->h}, dst, (Vector2){0, 0}, 0, WHITE);
         }
         char *name = elide_middle(pt_basename(s->path), cell.width - 8, FS_SMALL, F_REGULAR);
@@ -379,19 +415,22 @@ static int library_frame(dialog *d, Rectangle b)
             if (ui.dclick) place = 1;
         }
     }
-    if (!l->list.n) draw_text_in("No signatures yet: draw or import one.", grid, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
+    if (!l->list.n)
+        draw_text_in("No signatures yet: draw or import one.", grid, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
     ui_scissor_end();
     float by = grid.y + grid.height + 10;
     if (ui_button(ui_id(d, 1), (Rectangle){b.x, by, 110, 30}, "Draw new...", NULL, 0, NULL)) signature_pad(drawn, l);
     if (ui_button(ui_id(d, 2), (Rectangle){b.x + 118, by, 130, 30}, "Import image...", NULL, 0, NULL))
         file_dialog(FD_OPEN, "Import signature", getenv("HOME"), "Images", "*.png *.jpg *.jpeg", imported, l);
-    if (ui_button(ui_id(d, 3), (Rectangle){b.x + 256, by, 80, 30}, "Delete", NULL, l->current >= 0 ? 0 : B_DISABLED, NULL)) {
+    if (ui_button(ui_id(d, 3), (Rectangle){b.x + 256, by, 80, 30}, "Delete", NULL, l->current >= 0 ? 0 : B_DISABLED,
+                  NULL)) {
         char *msg = pt_format("Move %s to the trash?", pt_basename(l->list.v[l->current].path));
         question_box("Signatures", msg, "Move to trash", "Cancel", delete_answer, l);
         free(msg);
     }
     Rectangle ok = {b.x + b.width - 90, b.y + b.height - 30, 90, 30};
-    if (ui_button(ui_id(d, 4), ok, "Place", NULL, B_PRIMARY | (l->current >= 0 ? 0 : B_DISABLED), NULL) || (place && l->current >= 0)) {
+    if (ui_button(ui_id(d, 4), ok, "Place", NULL, B_PRIMARY | (l->current >= 0 ? 0 : B_DISABLED), NULL) ||
+        (place && l->current >= 0)) {
         char *path = pt_strdup(l->list.v[l->current].path);
         l->done(l->ctx, path);
         free(path);
@@ -440,9 +479,20 @@ static void colour_picked(void *ctx, const unsigned char rgb[3])
 
 /* ---- personal data ---- */
 
-typedef struct { int page; pt_pii_kind kind; char *text; pt_rects rects; int on; } pii_hit;
+typedef struct {
+    int page;
+    pt_pii_kind kind;
+    char *text;
+    pt_rects rects;
+    int on;
+} pii_hit;
 PT_VEC(pii_hits, pii_hit);
-typedef struct { tab *t; pii_hits hits; int next, kind_on[PT_PII_COUNT], count[PT_PII_COUNT]; float scroll; } pii_data;
+typedef struct {
+    tab *t;
+    pii_hits hits;
+    int next, kind_on[PT_PII_COUNT], count[PT_PII_COUNT];
+    float scroll;
+} pii_data;
 
 static void pii_free(dialog *d)
 {
@@ -459,14 +509,17 @@ static void pii_scan_page(pii_data *p, int page)
 {
     tab *t = p->t;
     pt_piis found = {0};
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *fp = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_stext_page *st = NULL;
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             st = pt_stext(CTX, fp);
             pt_find_personal_data(CTX, st, &found);
         }
-        fz_always(CTX) {
+        fz_always(CTX)
+        {
             fz_drop_stext_page(CTX, st);
             fz_drop_page(CTX, fp);
         }
@@ -489,7 +542,8 @@ static int pii_frame(dialog *d, Rectangle b)
     tab *t = p->t;
     int total = t->st.order.n;
     /* a few pages per frame, so the window stays live on long documents */
-    for (double until = GetTime() + 0.03; p->next < total && GetTime() < until;) pii_scan_page(p, t->st.order.v[p->next++]);
+    for (double until = GetTime() + 0.03; p->next < total && GetTime() < until;)
+        pii_scan_page(p, t->st.order.v[p->next++]);
     if (p->next < total) ui.dirty = 1;
     float y = b.y;
     if (p->next < total) {
@@ -497,7 +551,9 @@ static int pii_frame(dialog *d, Rectangle b)
         snprintf(msg, sizeof msg, "Searching page %d of %d...", p->next + 1, total);
         ui_spinner((Vector2){b.x + 10, y + 12}, 9);
         draw_text_in(msg, (Rectangle){b.x + 28, y, b.width - 28, 24}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
-    } else draw_text_in("Tick what to mark for redaction:", (Rectangle){b.x, y, b.width, 24}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    } else
+        draw_text_in("Tick what to mark for redaction:", (Rectangle){b.x, y, b.width, 24}, FS_NORMAL, F_REGULAR,
+                     pal.window_text, -1);
     y += 30;
     /* one checkbox per kind, two or three to a row */
     float cw = b.width >= 540 ? b.width / 3 : b.width / 2;
@@ -517,7 +573,8 @@ static int pii_frame(dialog *d, Rectangle b)
     ui_panel(list, pal.base, pal.border, 4);
     float content = p->hits.n * ROW_H + 8;
     if (ui_hover(list) && ui.wheel) p->scroll -= ui.wheel * 60;
-    ui_scrollbar(ui_id(d, 2), (Rectangle){list.x + list.width - 12, list.y + 2, 10, list.height - 4}, content, list.height, &p->scroll);
+    ui_scrollbar(ui_id(d, 2), (Rectangle){list.x + list.width - 12, list.y + 2, 10, list.height - 4}, content,
+                 list.height, &p->scroll);
     ui_scissor_begin(list);
     for (int i = 0; i < p->hits.n; i++) {
         pii_hit *h = &p->hits.v[i];
@@ -527,9 +584,10 @@ static int pii_frame(dialog *d, Rectangle b)
         char label[32];
         snprintf(label, sizeof label, "p. %d", order_index(t, h->page) + 1);
         float lw = 60, kw = 110;
-        draw_text_in(label, (Rectangle){row.x + row.width - lw, row.y, lw, row.height}, FS_SMALL, F_REGULAR, pal.disabled_text, 1);
-        draw_text_in(pt_pii_names[h->kind], (Rectangle){row.x + row.width - lw - kw, row.y, kw, row.height}, FS_SMALL, F_REGULAR,
-                     pal.disabled_text, -1);
+        draw_text_in(label, (Rectangle){row.x + row.width - lw, row.y, lw, row.height}, FS_SMALL, F_REGULAR,
+                     pal.disabled_text, 1);
+        draw_text_in(pt_pii_names[h->kind], (Rectangle){row.x + row.width - lw - kw, row.y, kw, row.height}, FS_SMALL,
+                     F_REGULAR, pal.disabled_text, -1);
         int on = h->on;
         if (ui_checkbox(ui_id(d, 1000 + i), (Rectangle){row.x, row.y, 22, row.height}, "", &on, 0)) {
             h->on = on;
@@ -557,7 +615,8 @@ static int pii_frame(dialog *d, Rectangle b)
         int added = 0;
         for (int i = 0; i < p->hits.n; i++)
             if (p->hits.v[i].on)
-                for (int k = 0; k < p->hits.v[i].rects.n; k++) added += add_redaction(t, p->hits.v[i].page, p->hits.v[i].rects.v[k]);
+                for (int k = 0; k < p->hits.v[i].rects.n; k++)
+                    added += add_redaction(t, p->hits.v[i].page, p->hits.v[i].rects.v[k]);
         if (added) push_undo(t, &snap);
         else pt_state_free(&snap);
         char *msg = pt_format("Marked %d item(s) for redaction; they are removed when you save", marked);
@@ -586,13 +645,18 @@ void pii_dialog(tab *t)
 
 /* ---- Bates numbers and watermarks ---- */
 
-static const char *AT_LABELS[PT_AT_COUNT] = {"Top left", "Top centre", "Top right", "Bottom left", "Bottom centre",
-                                            "Bottom right", "Centre", "Diagonal"};
+static const char *AT_LABELS[PT_AT_COUNT] = {"Top left",      "Top centre",   "Top right", "Bottom left",
+                                             "Bottom centre", "Bottom right", "Centre",    "Diagonal"};
 /* the session's last choices, the starting point of the next dialog */
 static pt_stamp last_bates = {PT_STAMP_BATES, NULL, NULL, 1, 6, PT_AT_BOTTOM_RIGHT, 10, 1, {0, 0, 0}, NULL};
 static pt_stamp last_mark = {PT_STAMP_WATERMARK, NULL, NULL, 0, 0, PT_AT_DIAGONAL, 0, 0.3f, {200, 30, 30}, NULL};
 
-typedef struct { tab *t; pt_stamp s; ui_text text, suffix, pages; int first; } stamp_data;
+typedef struct {
+    tab *t;
+    pt_stamp s;
+    ui_text text, suffix, pages;
+    int first;
+} stamp_data;
 
 static void stamp_free(dialog *d)
 {
@@ -637,7 +701,8 @@ static int stamp_frame(dialog *d, Rectangle b)
     if (!bates) {
         if (s->s.at != PT_AT_DIAGONAL && s->s.size <= 0) s->s.size = 48;
         if (s->s.at == PT_AT_DIAGONAL) {
-            if (ui_checkbox(ui_id(d, 6), (Rectangle){sx, y, 130, 30}, "Fit the page", &automatic, 0)) s->s.size = automatic ? 0 : 48;
+            if (ui_checkbox(ui_id(d, 6), (Rectangle){sx, y, 130, 30}, "Fit the page", &automatic, 0))
+                s->s.size = automatic ? 0 : 48;
             sx += 140;
         }
     }
@@ -649,7 +714,8 @@ static int stamp_frame(dialog *d, Rectangle b)
     if (!bates) {
         draw_text_in("Opacity:", (Rectangle){b.x + 170, y, 70, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
         int pct = (int)lroundf(s->s.opacity * 100);
-        if (ui_spin(ui_id(d, 9), (Rectangle){b.x + 250, y, 100, 30}, &pct, 5, 100, 5, NULL, "%")) s->s.opacity = pct / 100.0f;
+        if (ui_spin(ui_id(d, 9), (Rectangle){b.x + 250, y, 100, 30}, &pct, 5, 100, 5, NULL, "%"))
+            s->s.opacity = pct / 100.0f;
     }
     y += 38;
     char label[48];
@@ -668,7 +734,8 @@ static int stamp_frame(dialog *d, Rectangle b)
     }
     int empty = !bates && blank(text_get(&s->text));
     Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
-    if (ui_button(ui_id(d, 11), ok, "Add", NULL, B_PRIMARY | (bad || empty ? B_DISABLED : 0), NULL) || ((res & TE_SUBMIT) && !bad && !empty)) {
+    if (ui_button(ui_id(d, 11), ok, "Add", NULL, B_PRIMARY | (bad || empty ? B_DISABLED : 0), NULL) ||
+        ((res & TE_SUBMIT) && !bad && !empty)) {
         pt_stamp st = pt_stamp_copy(&s->s);
         free(st.text), free(st.suffix), free(st.pages);
         st.text = pt_strdup(text_get(&s->text));
@@ -682,10 +749,13 @@ static int stamp_frame(dialog *d, Rectangle b)
         pt_push(t->st.stamps, st);
         push_undo(t, &snap);
         reload_display(t);
-        status(bates ? "Bates numbers added; they are written when you save" : "Watermark added; it is written when you save", 5);
+        status(bates ? "Bates numbers added; they are written when you save"
+                     : "Watermark added; it is written when you save",
+               5);
         return 1;
     }
-    if (ui_button(ui_id(d, 12), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 12), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL))
+        return 1;
     return 0;
 }
 
@@ -710,10 +780,18 @@ void watermark_dialog(tab *t) { stamp_dialog(t, 0); }
 
 /* ---- document properties ---- */
 
-typedef struct { tab *t; ui_text f[4]; char *orig[4]; int first; } props_data;
+typedef struct {
+    tab *t;
+    ui_text f[4];
+    char *orig[4];
+    int first;
+} props_data;
 static const char *PROP_LABELS[4] = {"Title:", "Author:", "Subject:", "Keywords:"};
 
-static char **meta_slot(pt_meta *m, int i) { return i == 0 ? &m->title : i == 1 ? &m->author : i == 2 ? &m->subject : &m->keywords; }
+static char **meta_slot(pt_meta *m, int i)
+{
+    return i == 0 ? &m->title : i == 1 ? &m->author : i == 2 ? &m->subject : &m->keywords;
+}
 
 static void props_free(dialog *d)
 {
@@ -759,7 +837,8 @@ static int props_frame(dialog *d, Rectangle b)
         pt_meta_free(&m);
         return 1;
     }
-    if (ui_button(ui_id(d, 11), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 11), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL))
+        return 1;
     return 0;
 }
 
@@ -784,8 +863,16 @@ void properties_dialog(tab *t)
 
 /* ---- pages as images ---- */
 
-typedef struct { tab *t; ui_text pages; int dpi, jpeg, first; } images_data;
-typedef struct { tab *t; pt_ints pages; int dpi, jpeg; } images_job;
+typedef struct {
+    tab *t;
+    ui_text pages;
+    int dpi, jpeg, first;
+} images_data;
+typedef struct {
+    tab *t;
+    pt_ints pages;
+    int dpi, jpeg;
+} images_job;
 
 static void images_dir_chosen(void *ctx, pt_strs *paths)
 {
@@ -807,7 +894,8 @@ static void images_dir_chosen(void *ctx, pt_strs *paths)
             char *name = pt_format("%s-page%d.%s", stem, job->pages.v[i] + 1, job->jpeg ? "jpg" : "png");
             char *out = pt_join(paths->v[0], name);
             fz_buffer *img = NULL;
-            fz_try(CTX) {
+            fz_try(CTX)
+            {
                 fz_page *p = fz_load_page(CTX, (fz_document *)doc, i);
                 fz_try(CTX) img = pt_page_image(CTX, p, job->dpi, job->jpeg);
                 fz_always(CTX) fz_drop_page(CTX, p);
@@ -820,8 +908,9 @@ static void images_dir_chosen(void *ctx, pt_strs *paths)
         }
         free(stem);
         pdf_drop_document(CTX, doc);
-        char *msg = written == job->pages.n ? pt_format("Saved %d image(s) in %s", written, paths->v[0])
-                                            : pt_format("Saved %d of %d image(s) in %s", written, job->pages.n, paths->v[0]);
+        char *msg = written == job->pages.n
+                        ? pt_format("Saved %d image(s) in %s", written, paths->v[0])
+                        : pt_format("Saved %d of %d image(s) in %s", written, job->pages.n, paths->v[0]);
         status(msg, 8);
         free(msg);
     }
@@ -856,7 +945,8 @@ static int images_frame(dialog *d, Rectangle b)
     pt_ints pages = {0};
     int ok_pages = pt_parse_ranges(text_get(&e->pages), t->st.order.n, &pages) > 0;
     Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
-    if (ui_button(ui_id(d, 4), ok, "Export...", NULL, B_PRIMARY | (ok_pages ? 0 : B_DISABLED), NULL) || ((res & TE_SUBMIT) && ok_pages)) {
+    if (ui_button(ui_id(d, 4), ok, "Export...", NULL, B_PRIMARY | (ok_pages ? 0 : B_DISABLED), NULL) ||
+        ((res & TE_SUBMIT) && ok_pages)) {
         images_job *job = calloc(1, sizeof *job);
         job->t = t, job->pages = pages, job->dpi = e->dpi, job->jpeg = e->jpeg;
         char *dir = pt_dirname(t->path);
@@ -865,7 +955,8 @@ static int images_frame(dialog *d, Rectangle b)
         return 1;
     }
     pt_vec_free(pages);
-    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL))
+        return 1;
     return 0;
 }
 
@@ -899,7 +990,8 @@ static void cert_password_given(void *ctx, const char *password)
     if (!password || !t->cert_path) return;
     char *name = NULL;
     fz_try(CTX) name = pt_certificate_name(CTX, t->cert_path, password);
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         /* only a wrong password is worth another try */
         if (fz_caught(CTX) == FZ_ERROR_ARGUMENT) {
             char *prompt = pt_format("%s\n\nPassword:", fz_caught_message(CTX));
@@ -913,7 +1005,8 @@ static void cert_password_given(void *ctx, const char *password)
     pt_settings_set_str(&app.settings, "signing_certificate", t->cert_path);
     tool_set(t, T_SIGN);
     t->cert_placing = 1;
-    char *msg = pt_format("Drag a box (or click) where the signature of %s goes", *name ? name : pt_basename(t->cert_path));
+    char *msg =
+        pt_format("Drag a box (or click) where the signature of %s goes", *name ? name : pt_basename(t->cert_path));
     status(msg, 10);
     free(msg), free(name);
 }
@@ -933,7 +1026,8 @@ void cert_sign_start(tab *t)
 {
     if (!t->doc) return;
     if (!pt_have_signing()) {
-        message_box(MSG_INFO, "Sign with certificate", "This build has no OpenSSL, so it cannot make certificate signatures.", NULL, NULL);
+        message_box(MSG_INFO, "Sign with certificate",
+                    "This build has no OpenSSL, so it cannot make certificate signatures.", NULL, NULL);
         return;
     }
     const char *last = pt_settings_str(&app.settings, "signing_certificate");
@@ -971,11 +1065,13 @@ void cert_draw(tab *t)
     if (!t->st.cert.cert || order_index(t, t->st.cert.page) < 0 || t->off_y[t->st.cert.page] < -1e8f) return;
     Rectangle r = scene_rect_to_screen(t, to_scene(t, t->st.cert.page, t->st.cert.rect));
     DrawRectangleRec(r, with_alpha(pal.highlight, 30));
-    Vector2 tl = {r.x, r.y}, tr = {r.x + r.width, r.y}, bl = {r.x, r.y + r.height}, br = {r.x + r.width, r.y + r.height};
+    Vector2 tl = {r.x, r.y}, tr = {r.x + r.width, r.y}, bl = {r.x, r.y + r.height},
+            br = {r.x + r.width, r.y + r.height};
     dashed_line(tl, tr, pal.highlight), dashed_line(bl, br, pal.highlight);
     dashed_line(tl, bl, pal.highlight), dashed_line(tr, br, pal.highlight);
     char *label = pt_format("Signature: %s", pt_basename(t->st.cert.cert));
-    draw_text_in(label, (Rectangle){r.x + 4, r.y, r.width - 8, fminf(r.height, 24)}, FS_SMALL, F_REGULAR, pal.highlight, -1);
+    draw_text_in(label, (Rectangle){r.x + 4, r.y, r.width - 8, fminf(r.height, 24)}, FS_SMALL, F_REGULAR, pal.highlight,
+                 -1);
     free(label);
 }
 
@@ -988,12 +1084,14 @@ fz_buffer *cert_sign_output(tab *t, fz_buffer *pdf, const pt_ints *pages, const 
         if (order->v[i] == t->st.cert.page) index = i;
     if (index < 0) return pdf;
     if (!t->cert_password || !t->cert_path || strcmp(t->cert_path, t->st.cert.cert)) {
-        message_box(MSG_ERROR, "Sign with certificate", "The certificate's password is needed again: choose the certificate once more.", NULL, NULL);
+        message_box(MSG_ERROR, "Sign with certificate",
+                    "The certificate's password is needed again: choose the certificate once more.", NULL, NULL);
         fz_drop_buffer(CTX, pdf);
         return NULL;
     }
     fz_buffer *signed_pdf = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         /* the box in PDF user space, which page rotation and cropping leave as it is */
         fz_rect disp = rect_src_to_disp(t, t->st.cert.page, t->st.cert.rect);
         pdf_page *page = pdf_load_page(CTX, t->doc, t->st.cert.page);
@@ -1004,7 +1102,8 @@ fz_buffer *cert_sign_output(tab *t, fz_buffer *pdf, const pt_ints *pages, const 
         signed_pdf = pt_sign_pdf(CTX, pdf, password, index, user, t->st.cert.cert, t->cert_password, NULL);
     }
     fz_always(CTX) fz_drop_buffer(CTX, pdf);
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         char *msg = pt_format("Could not sign the file:\n%s", fz_caught_message(CTX));
         message_box(MSG_ERROR, "Sign with certificate", msg, NULL, NULL);
         free(msg);
@@ -1084,7 +1183,7 @@ void file_dialogs_poll(void)
         if (n > 0) {
             if (c->len + (size_t)n + 1 > c->cap) {
                 c->cap = (c->len + (size_t)n + 1) * 2;
-                c->out = realloc(c->out, c->cap);
+                c->out = pt_realloc(c->out, c->cap);
             }
             memcpy(c->out + c->len, buf, (size_t)n);
             c->len += (size_t)n;
@@ -1099,7 +1198,8 @@ void file_dialogs_poll(void)
         while (1) {
             ssize_t n = read(c->fd, buf, sizeof buf);
             if (n <= 0) break;
-            if (c->len + (size_t)n + 1 > c->cap) c->cap = (c->len + (size_t)n + 1) * 2, c->out = realloc(c->out, c->cap);
+            if (c->len + (size_t)n + 1 > c->cap)
+                c->cap = (c->len + (size_t)n + 1) * 2, c->out = pt_realloc(c->out, c->cap);
             memcpy(c->out + c->len, buf, (size_t)n);
             c->len += (size_t)n;
             c->out[c->len] = 0;
@@ -1157,7 +1257,7 @@ typedef struct {
     int mode;
     char *dir;
     ui_text path;
-    pt_strs entries;     /* names; directories end in '/' */
+    pt_strs entries; /* names; directories end in '/' */
     char **patterns;
     int npatterns;
     pt_ints picked;
@@ -1277,7 +1377,8 @@ static int browser_frame(dialog *d, Rectangle r)
         return 0;
     }
     float y = list.y + list.height + 8;
-    draw_text_in(b->mode == FD_DIR ? "Folder:" : "Name:", (Rectangle){r.x, y, 60, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    draw_text_in(b->mode == FD_DIR ? "Folder:" : "Name:", (Rectangle){r.x, y, 60, 30}, FS_NORMAL, F_REGULAR,
+                 pal.window_text, -1);
     if (b->first) text_focus(&b->path), b->first = 0;
     int res = ui_textfield(ui_id(d, 2), &b->path, (Rectangle){r.x + 60, y, r.width - 60, 30}, 1);
     Rectangle ok = {r.x + r.width - 90, r.y + r.height - 30, 90, 30};
@@ -1304,18 +1405,20 @@ static int browser_frame(dialog *d, Rectangle r)
         pt_strs_free(&out);
         return 1;
     }
-    if (ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL)) return 1;
+    if (ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) || (res & TE_CANCEL))
+        return 1;
     return 0;
 }
 
-static void builtin_dialog(int mode, const char *title, const char *start, const char *patterns, ui_files_done done, void *ctx)
+static void builtin_dialog(int mode, const char *title, const char *start, const char *patterns, ui_files_done done,
+                           void *ctx)
 {
     browser *b = calloc(1, sizeof *b);
     b->mode = mode, b->done = done, b->ctx = ctx, b->first = 1;
     if (patterns) {
         char *copy = pt_strdup(patterns);
         for (char *p = strtok(copy, " "); p; p = strtok(NULL, " ")) {
-            b->patterns = realloc(b->patterns, sizeof(char *) * (size_t)(b->npatterns + 1));
+            b->patterns = pt_realloc(b->patterns, sizeof(char *) * (size_t)(b->npatterns + 1));
             b->patterns[b->npatterns++] = pt_strdup(p);
         }
         free(copy);
@@ -1353,9 +1456,12 @@ static char *mac_chooser_script(int mode, const char *title, const char *start, 
 {
     struct stat st;
     int is_dir = start && !stat(start, &st) && S_ISDIR(st.st_mode);
-    char *dir = is_dir ? pt_strdup(start) : start ? pt_dirname(start) : pt_strdup(getenv("HOME") ? getenv("HOME") : "/");
+    char *dir = is_dir  ? pt_strdup(start)
+                : start ? pt_dirname(start)
+                        : pt_strdup(getenv("HOME") ? getenv("HOME") : "/");
     char *qtitle = as_quote(title), *qdir = as_quote(dir);
-    char *where = !stat(dir, &st) && S_ISDIR(st.st_mode) ? pt_format(" default location (POSIX file %s)", qdir) : pt_strdup("");
+    char *where =
+        !stat(dir, &st) && S_ISDIR(st.st_mode) ? pt_format(" default location (POSIX file %s)", qdir) : pt_strdup("");
     /* "*.pdf *.png" -> of type {"pdf", "png"}; a "*" pattern allows everything */
     char types[512] = "";
     if (patterns && mode != FD_DIR && !strstr(patterns, "\"")) {
@@ -1380,8 +1486,10 @@ static char *mac_chooser_script(int mode, const char *title, const char *start, 
         free(qname);
     } else if (mode == FD_DIR) script = pt_format("POSIX path of (choose folder with prompt %s%s)", qtitle, where);
     else if (mode == FD_OPEN_MANY)
-        script = pt_format("set out to \"\"\nrepeat with f in (choose file with prompt %s%s%s with multiple selections allowed)\n"
-                           "set out to out & POSIX path of f & linefeed\nend repeat\nout", qtitle, types, where);
+        script = pt_format(
+            "set out to \"\"\nrepeat with f in (choose file with prompt %s%s%s with multiple selections allowed)\n"
+            "set out to out & POSIX path of f & linefeed\nend repeat\nout",
+            qtitle, types, where);
     else script = pt_format("POSIX path of (choose file with prompt %s%s%s)", qtitle, types, where);
     free(dir), free(qtitle), free(qdir), free(where);
     return script;
@@ -1423,9 +1531,12 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
         argv[n++] = "kdialog";
         argv[n++] = "--title";
         argv[n++] = (char *)title;
-        argv[n++] = mode == FD_SAVE ? "--getsavefilename" : mode == FD_DIR ? "--getexistingdirectory" : "--getopenfilename";
+        argv[n++] = mode == FD_SAVE  ? "--getsavefilename"
+                    : mode == FD_DIR ? "--getexistingdirectory"
+                                     : "--getopenfilename";
         argv[n++] = (char *)(start ? start : getenv("HOME"));
-        if (patterns && mode != FD_DIR) argv[n++] = OWN(pt_format("%s|%s", patterns, filter_name ? filter_name : "Files"));
+        if (patterns && mode != FD_DIR)
+            argv[n++] = OWN(pt_format("%s|%s", patterns, filter_name ? filter_name : "Files"));
         if (mode == FD_OPEN_MANY) argv[n++] = "--multiple", argv[n++] = "--separate-output";
     }
 #endif
@@ -1443,7 +1554,8 @@ static char *url_encode(const char *s)
 {
     char *out = malloc(strlen(s) * 3 + 1), *o = out;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || strchr("/-_.~", *p)) *o++ = (char)*p;
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || strchr("/-_.~", *p))
+            *o++ = (char)*p;
         else o += sprintf(o, "%%%02X", *p);
     }
     *o = 0;
@@ -1506,7 +1618,8 @@ int move_to_trash(const char *path)
     char *stem = pt_stem(base);
     int rc = -1;
     for (int k = 1; k < 10000 && rc; k++) {
-        char *target = k == 1 ? pt_format("%s/%s", trash, base) : pt_format("%s/%s %d%s", trash, stem, k, dot && dot != base ? dot : "");
+        char *target = k == 1 ? pt_format("%s/%s", trash, base)
+                              : pt_format("%s/%s %d%s", trash, stem, k, dot && dot != base ? dot : "");
         struct stat st;
         if (stat(target, &st)) {
             rc = rename(abs, target) ? -1 : 0;
@@ -1523,7 +1636,8 @@ int move_to_trash(const char *path)
 {
     char *abs = pt_realpath(path);
     const char *xdg = getenv("XDG_DATA_HOME");
-    char *home_trash = xdg && *xdg ? pt_join(xdg, "Trash") : pt_format("%s/.local/share/Trash", getenv("HOME") ? getenv("HOME") : "");
+    char *home_trash =
+        xdg && *xdg ? pt_join(xdg, "Trash") : pt_format("%s/.local/share/Trash", getenv("HOME") ? getenv("HOME") : "");
     struct stat file_st, trash_st;
     int rc = -1;
     pt_mkdirs(home_trash);

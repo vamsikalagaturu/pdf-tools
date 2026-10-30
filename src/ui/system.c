@@ -38,7 +38,7 @@ struct json {
     char *str;           /* string, or key of an object member */
     struct json **items; /* array elements / object members (with str = key) */
     int n;
-    struct json *value;  /* object member value */
+    struct json *value; /* object member value */
 };
 
 static void ws(const char **s)
@@ -81,7 +81,7 @@ static char *parse_string(const char **s)
             default: tmp[0] = c;
             }
         }
-        if (n + (size_t)len + 1 > cap) out = realloc(out, cap *= 2);
+        if (n + (size_t)len + 1 > cap) out = pt_realloc(out, cap *= 2);
         memcpy(out + n, tmp, (size_t)len);
         n += (size_t)len;
     }
@@ -111,7 +111,7 @@ static json *parse_value(const char **s)
                 if (**s == ':') (*s)++;
                 item->value = parse_value(s);
             } else item = parse_value(s);
-            j->items = realloc(j->items, sizeof(json *) * (size_t)(j->n + 1));
+            j->items = pt_realloc(j->items, sizeof(json *) * (size_t)(j->n + 1));
             j->items[j->n++] = item;
             ws(s);
             if (**s == ',') (*s)++;
@@ -178,7 +178,11 @@ char *json_quote(const char *s)
 
 /* ---- the windows' registry ---- */
 
-typedef struct { int pid; double focused; pt_strs paths; } window_entry;
+typedef struct {
+    int pid;
+    double focused;
+    pt_strs paths;
+} window_entry;
 PT_VEC(window_entries, window_entry);
 
 static void remove_socket(int pid);
@@ -357,7 +361,7 @@ void ipc_poll(void)
         for (;;) {
             ssize_t n = read(fd, chunk, sizeof chunk);
             if (n <= 0) break;
-            buf = realloc(buf, len + (size_t)n + 1);
+            buf = pt_realloc(buf, len + (size_t)n + 1);
             memcpy(buf + len, chunk, (size_t)n);
             len += (size_t)n;
             buf[len] = 0;
@@ -531,8 +535,12 @@ static int print_frame(dialog *d, Rectangle b)
     print_job *j = d->data;
     float y = b.y;
     draw_text_in("Printer:", (Rectangle){b.x, y, 100, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
-    if (j->printers.n) ui_combo(ui_id(d, 1), (Rectangle){b.x + 100, y, b.width - 100, 30}, (const char **)j->printers.v, j->printers.n, &j->printer);
-    else draw_text_in("No printers (CUPS lpstat lists none)", (Rectangle){b.x + 100, y, b.width - 100, 30}, FS_NORMAL, F_REGULAR, pal.disabled_text, -1);
+    if (j->printers.n)
+        ui_combo(ui_id(d, 1), (Rectangle){b.x + 100, y, b.width - 100, 30}, (const char **)j->printers.v, j->printers.n,
+                 &j->printer);
+    else
+        draw_text_in("No printers (CUPS lpstat lists none)", (Rectangle){b.x + 100, y, b.width - 100, 30}, FS_NORMAL,
+                     F_REGULAR, pal.disabled_text, -1);
     y += 40;
     draw_text_in("Copies:", (Rectangle){b.x, y, 100, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     ui_spin(ui_id(d, 2), (Rectangle){b.x + 100, y, 90, 30}, &j->copies, 1, 999, 1, NULL, NULL);
@@ -553,7 +561,9 @@ static int print_frame(dialog *d, Rectangle b)
     }
     Rectangle ok = {b.x + b.width - 90, b.y + b.height - 30, 90, 30};
     if (ui_button(ui_id(d, 30), ok, "Print", NULL, B_PRIMARY, NULL)) {
-        if (send_to_printer(j)) message_box(MSG_ERROR, "Print", "Could not start printing (is CUPS' lp installed and a printer set up?).", NULL, NULL);
+        if (send_to_printer(j))
+            message_box(MSG_ERROR, "Print", "Could not start printing (is CUPS' lp installed and a printer set up?).",
+                        NULL, NULL);
         else status("Sent to the printer", 4);
         return 1;
     }
@@ -582,10 +592,12 @@ static int preview_frame(dialog *d, Rectangle b)
     DrawRectangleRec(view, pal.page_bg);
     if (j->doc) {
         fz_rect bounds = fz_empty_rect;
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             fz_page *p = fz_load_page(CTX, (fz_document *)j->doc, j->shown);
             bounds = fz_bound_page(CTX, p);
-            float scale = fminf((view.width - 20) / (bounds.x1 - bounds.x0), (view.height - 20) / (bounds.y1 - bounds.y0));
+            float scale =
+                fminf((view.width - 20) / (bounds.x1 - bounds.x0), (view.height - 20) / (bounds.y1 - bounds.y0));
             if (!j->tex_ok || j->tex_page != j->shown || fabsf(j->tex_scale - scale) > 0.01f) {
                 if (j->tex_ok) UnloadTexture(j->tex);
                 fz_pixmap *pix = pt_render_page(CTX, p, scale * UI_PX, 0);
@@ -598,17 +610,20 @@ static int preview_frame(dialog *d, Rectangle b)
             fz_drop_page(CTX, p);
             float w = (bounds.x1 - bounds.x0) * scale, h = (bounds.y1 - bounds.y0) * scale;
             Rectangle dst = {view.x + (view.width - w) / 2, view.y + (view.height - h) / 2, w, h};
-            DrawTexturePro(j->tex, (Rectangle){0, 0, (float)j->tex.width, (float)j->tex.height}, dst, (Vector2){0, 0}, 0, WHITE);
+            DrawTexturePro(j->tex, (Rectangle){0, 0, (float)j->tex.width, (float)j->tex.height}, dst, (Vector2){0, 0},
+                           0, WHITE);
         }
         fz_catch(CTX) fz_ignore_error(CTX);
     }
     float y = b.y + b.height - 32;
-    if (ui_button(ui_id(d, 1), (Rectangle){b.x, y, 34, 30}, NULL, "prev", 0, "Previous page") || (key_pressed(KEY_LEFT) && !ui.focus))
+    if (ui_button(ui_id(d, 1), (Rectangle){b.x, y, 34, 30}, NULL, "prev", 0, "Previous page") ||
+        (key_pressed(KEY_LEFT) && !ui.focus))
         if (j->shown > 0) j->shown--;
     char pos[32];
     snprintf(pos, sizeof pos, "%d / %d", j->shown + 1, j->pages);
     draw_text_in(pos, (Rectangle){b.x + 38, y, 80, 30}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
-    if (ui_button(ui_id(d, 2), (Rectangle){b.x + 122, y, 34, 30}, NULL, "next", 0, "Next page") || (key_pressed(KEY_RIGHT) && !ui.focus))
+    if (ui_button(ui_id(d, 2), (Rectangle){b.x + 122, y, 34, 30}, NULL, "next", 0, "Next page") ||
+        (key_pressed(KEY_RIGHT) && !ui.focus))
         if (j->shown < j->pages - 1) j->shown++;
     if (ui_hover(view) && ui.wheel) j->shown = (int)fminf(fmaxf(j->shown - (ui.wheel > 0 ? 1 : -1), 0), j->pages - 1);
     Rectangle print = {b.x + b.width - 100, y, 100, 30};

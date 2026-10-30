@@ -13,15 +13,23 @@
 #include <mach-o/dyld.h>
 #endif
 
+void *pt_realloc(void *v, size_t size)
+{
+    void *p = realloc(v, size);
+    if (!p) {
+        fputs("out of memory\n", stderr);
+        abort();
+    }
+    return p;
+}
+
 void *pt_grow(void *v, int *cap, int need, size_t size)
 {
     if (need <= *cap) return v;
     int n = *cap ? *cap : 8;
     while (n < need) n *= 2;
-    void *p = realloc(v, (size_t)n * size);
-    if (!p) { fputs("out of memory\n", stderr); abort(); }
     *cap = n;
-    return p;
+    return pt_realloc(v, (size_t)n * size);
 }
 
 char *pt_strdup(const char *s)
@@ -64,8 +72,10 @@ int pt_read_file(const char *path, pt_bytes *out)
         n += got;
         if (n == cap) {
             unsigned char *b = realloc(buf, cap *= 2);
-            if (!b) { free(buf); buf = NULL; }
-            else buf = b;
+            if (!b) {
+                free(buf);
+                buf = NULL;
+            } else buf = b;
         }
     }
     fclose(f);
@@ -81,7 +91,10 @@ int pt_mkdirs(const char *path)
     for (char *s = p + 1; *s; s++) {
         if (*s != '/') continue;
         *s = 0;
-        if (mkdir(p, 0777) && errno != EEXIST) { free(p); return -1; }
+        if (mkdir(p, 0777) && errno != EEXIST) {
+            free(p);
+            return -1;
+        }
         *s = '/';
     }
     int rc = mkdir(p, 0777) && errno != EEXIST ? -1 : 0;
@@ -199,7 +212,10 @@ static void indent(pt_json *j)
 
 static void value_start(pt_json *j)
 {
-    if (j->after_key) { j->after_key = 0; return; }
+    if (j->after_key) {
+        j->after_key = 0;
+        return;
+    }
     if (j->depth) {
         if (!j->first) fputc(',', j->out);
         indent(j);
@@ -272,12 +288,19 @@ void pt_json_key(pt_json *j, const char *key)
 
 void pt_json_string(pt_json *j, const char *s)
 {
-    if (!s) { pt_json_null(j); return; }
+    if (!s) {
+        pt_json_null(j);
+        return;
+    }
     value_start(j);
     quoted(j->out, s);
 }
 
-void pt_json_int(pt_json *j, long v) { value_start(j); fprintf(j->out, "%ld", v); }
+void pt_json_int(pt_json *j, long v)
+{
+    value_start(j);
+    fprintf(j->out, "%ld", v);
+}
 
 void pt_json_number(pt_json *j, double v)
 {
@@ -287,8 +310,16 @@ void pt_json_number(pt_json *j, double v)
     else fprintf(j->out, "%.15g", r);
 }
 
-void pt_json_bool(pt_json *j, int v) { value_start(j); fputs(v ? "true" : "false", j->out); }
-void pt_json_null(pt_json *j) { value_start(j); fputs("null", j->out); }
+void pt_json_bool(pt_json *j, int v)
+{
+    value_start(j);
+    fputs(v ? "true" : "false", j->out);
+}
+void pt_json_null(pt_json *j)
+{
+    value_start(j);
+    fputs("null", j->out);
+}
 
 void pt_json_rect(pt_json *j, fz_rect r)
 {
@@ -337,7 +368,10 @@ void pt_log(pt_log_level level, const char *fmt, ...)
 
 /* MuPDF reports every thrown error, including the ones the caller handles, so those count as debug */
 static void mupdf_warning(void *user, const char *message) { (void)user, pt_log(PT_LOG_INFO, "mupdf: %s", message); }
-static void mupdf_error(void *user, const char *message) { (void)user, pt_log(PT_LOG_DEBUG, "mupdf error: %s", message); }
+static void mupdf_error(void *user, const char *message)
+{
+    (void)user, pt_log(PT_LOG_DEBUG, "mupdf error: %s", message);
+}
 
 void pt_log_mupdf(fz_context *ctx)
 {
@@ -386,11 +420,18 @@ int pt_parse_ranges(const char *text, int n, pt_ints *out)
 {
     pt_ints lohi = {0};
     out->n = 0;
-    if (parts(text, &lohi)) { pt_vec_free(lohi); return -1; }
+    if (parts(text, &lohi)) {
+        pt_vec_free(lohi);
+        return -1;
+    }
     char *seen = calloc((size_t)n + 1, 1);
     for (int i = 0; i < lohi.n; i += 2) {
         int lo = lohi.v[i], hi = lohi.v[i + 1];
-        if (!(1 <= lo && lo <= hi && hi <= n)) { free(seen); pt_vec_free(lohi); return -1; }
+        if (!(1 <= lo && lo <= hi && hi <= n)) {
+            free(seen);
+            pt_vec_free(lohi);
+            return -1;
+        }
         for (int p = lo; p <= hi; p++) seen[p - 1] = 1;
     }
     for (int p = 0; p < n; p++)
@@ -404,10 +445,16 @@ int pt_ordered_ranges(const char *text, int n, pt_ints *out)
 {
     pt_ints lohi = {0};
     out->n = 0;
-    if (parts(text, &lohi)) { pt_vec_free(lohi); return -1; }
+    if (parts(text, &lohi)) {
+        pt_vec_free(lohi);
+        return -1;
+    }
     for (int i = 0; i < lohi.n; i += 2) {
         int lo = lohi.v[i], hi = lohi.v[i + 1];
-        if (!(1 <= lo && lo <= n && 1 <= hi && hi <= n)) { pt_vec_free(lohi); return -1; }
+        if (!(1 <= lo && lo <= n && 1 <= hi && hi <= n)) {
+            pt_vec_free(lohi);
+            return -1;
+        }
         int step = hi >= lo ? 1 : -1;
         for (int p = lo;; p += step) {
             pt_push(*out, p - 1);
@@ -460,7 +507,10 @@ void pt_put_back(pt_ints *order, int page)
 {
     int at = order->n;
     for (int i = 0; i < order->n; i++)
-        if (order->v[i] > page) { at = i; break; }
+        if (order->v[i] > page) {
+            at = i;
+            break;
+        }
     pt_push(*order, 0);
     memmove(order->v + at + 1, order->v + at, (size_t)(order->n - 1 - at) * sizeof(int));
     order->v[at] = page;
@@ -487,7 +537,8 @@ fz_rect pt_content_rect(fz_context *ctx, fz_page *page, float margin)
 {
     fz_rect full = fz_bound_page(ctx, page), box = fz_empty_rect;
     fz_device *dev = fz_new_bbox_device(ctx, &box);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_run_page_contents(ctx, page, dev, fz_identity, NULL);
         fz_close_device(ctx, dev);
     }

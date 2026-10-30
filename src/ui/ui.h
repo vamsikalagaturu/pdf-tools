@@ -31,10 +31,10 @@ typedef enum { F_REGULAR, F_BOLD } font_kind;
 void ui_fonts_load(void);
 float text_width(const char *s, float size, font_kind f);
 void draw_text(const char *s, float x, float y, float size, font_kind f, Color c);
-float text_top(float centre_y, float size);   /* y that centres a line of text on centre_y */
+float text_top(float centre_y, float size); /* y that centres a line of text on centre_y */
 /* aligned in r: align -1 left, 0 centre, 1 right; vertically centred */
 void draw_text_in(const char *s, Rectangle r, float size, font_kind f, Color c, int align);
-char *elide_middle(const char *s, float width, float size, font_kind f);  /* malloc'd */
+char *elide_middle(const char *s, float width, float size, font_kind f); /* malloc'd */
 char *elide_right(const char *s, float width, float size, font_kind f);
 int text_index_at(const char *s, int len, float x, float size, font_kind f); /* byte offset nearest x */
 
@@ -43,57 +43,71 @@ void icons_init(fz_context *ctx);
 void draw_icon(const char *name, Rectangle r, Color tint);
 void draw_logo(Rectangle r);
 Texture2D logo_texture(void);
-typedef enum { CUR_ARROW, CUR_IBEAM, CUR_CROSS, CUR_HAND, CUR_MOVE, CUR_SIZE_FDIAG, CUR_SIZE_HOR, CUR_SIZE_VER,
-               CUR_FORBIDDEN, CUR_WAIT, CUR_PEN, CUR_OPEN_HAND, CUR_CLOSED_HAND, CUR_COUNT } cursor_kind;
+typedef enum {
+    CUR_ARROW,
+    CUR_IBEAM,
+    CUR_CROSS,
+    CUR_HAND,
+    CUR_MOVE,
+    CUR_SIZE_FDIAG,
+    CUR_SIZE_HOR,
+    CUR_SIZE_VER,
+    CUR_FORBIDDEN,
+    CUR_WAIT,
+    CUR_PEN,
+    CUR_OPEN_HAND,
+    CUR_CLOSED_HAND,
+    CUR_COUNT
+} cursor_kind;
 void cursors_init(void);
-void set_cursor(cursor_kind c);   /* the cursor for this frame; the last call wins */
+void set_cursor(cursor_kind c); /* the cursor for this frame; the last call wins */
 void cursor_commit(void);
 
 /* ---- immediate-mode state ---- */
 typedef struct {
-    float scale, w, h;              /* logical window size */
-    float density;                  /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
+    float scale, w, h; /* logical window size */
+    float density;     /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
     Vector2 mouse;
     int pressed, released, down, rpressed, rreleased, dclick, mpressed;
     float wheel, wheel_x;
-    float pinch;                    /* zoom factor of a two-finger pinch this frame, 1 = none */
-    Vector2 pinch_at;               /* logical point the pinch is centred on */
-    int double_tap;                 /* touch: a double tap this frame, at double_tap_at (logical) */
+    float pinch;      /* zoom factor of a two-finger pinch this frame, 1 = none */
+    Vector2 pinch_at; /* logical point the pinch is centred on */
+    int double_tap;   /* touch: a double tap this frame, at double_tap_at (logical) */
     Vector2 double_tap_at;
     int ctrl, shift, alt;
     double now;
-    unsigned layer;                 /* layer being drawn */
-    unsigned mouse_layer;           /* layer that owns the mouse this frame */
-    unsigned modal;                 /* topmost modal layer of the previous frame, or 0 */
-    void *focus;                    /* text field with keyboard focus */
-    Rectangle focus_rect;           /* where it was last drawn, to keep it clear of a soft keyboard */
-    int focus_taken;                /* set when a widget took focus this frame */
-    unsigned active;                /* widget being pressed/dragged */
+    unsigned layer;       /* layer being drawn */
+    unsigned mouse_layer; /* layer that owns the mouse this frame */
+    unsigned modal;       /* topmost modal layer of the previous frame, or 0 */
+    void *focus;          /* text field with keyboard focus */
+    Rectangle focus_rect; /* where it was last drawn, to keep it clear of a soft keyboard */
+    int focus_taken;      /* set when a widget took focus this frame */
+    unsigned active;      /* widget being pressed/dragged */
     unsigned hot;
-    const char *tip;                /* tooltip text requested this frame */
+    const char *tip; /* tooltip text requested this frame */
     Rectangle tip_rect;
     double tip_since;
     unsigned tip_id;
-    int typing;                     /* a text field consumed keys this frame */
+    int typing; /* a text field consumed keys this frame */
     int keys_eaten;
-    int dirty;                      /* something changed; keep redrawing */
+    int dirty; /* something changed; keep redrawing */
 } ui_state;
 extern ui_state ui;
 
 float ui_detect_scale(void);
 #ifdef __APPLE__
-void mac_install_open_handler(void);   /* app.c: documents opened from Finder */
+void mac_install_open_handler(void); /* app.c: documents opened from Finder */
 void mac_take_opened(pt_strs *out);
 #endif
 /* framebuffer pixels per logical unit: the size to rasterise text and pages at */
 float ui_px(void);
 #define UI_PX ui_px()
-void ui_set_insets(float left, float top, float right, float bottom);   /* screen pixels kept free at each edge */
-void ui_touch_drag_area(Rectangle r);   /* a one-finger drag here draws instead of panning */
-void ui_add_pinch(float factor, float screen_x, float screen_y);   /* touch: applied at the next frame */
+void ui_set_insets(float left, float top, float right, float bottom); /* screen pixels kept free at each edge */
+void ui_touch_drag_area(Rectangle r);                            /* a one-finger drag here draws instead of panning */
+void ui_add_pinch(float factor, float screen_x, float screen_y); /* touch: applied at the next frame */
 void ui_add_double_tap(float screen_x, float screen_y);
 int ui_touch_drags_at(float screen_x, float screen_y);
-void ui_touch_zoom_area(Rectangle r);   /* a double tap here zooms instead of clicking twice */
+void ui_touch_zoom_area(Rectangle r); /* a double tap here zooms instead of clicking twice */
 int ui_touch_zooms_at(float screen_x, float screen_y);
 void ui_input_init(void);
 int ui_events_pending(void);
@@ -104,18 +118,25 @@ void ui_begin_frame(void);
 void ui_end_frame(void);
 void ui_layer_begin(unsigned id, Rectangle r, int modal);
 void ui_layer_end(void);
-int ui_hover(Rectangle r);                  /* the mouse is over r in the current layer */
-int ui_clicked(Rectangle r);                /* pressed and released over r */
+int ui_hover(Rectangle r);   /* the mouse is over r in the current layer */
+int ui_clicked(Rectangle r); /* pressed and released over r */
 void ui_tooltip(unsigned id, Rectangle r, const char *text);
 void ui_scissor_begin(Rectangle r);
 void ui_scissor_end(void);
-int ui_key(int key);                        /* pressed (or repeating), unless a text field took it */
+int ui_key(int key); /* pressed (or repeating), unless a text field took it */
 int ui_shortcut(int ctrl, int shift, int key);
 int ui_key_eaten(void);
 
 /* ---- widgets ---- */
 enum {
-    B_FLAT = 1, B_CHECKED = 2, B_DISABLED = 4, B_PRIMARY = 8, B_ICON_ONLY = 16, B_MENU = 32, B_DANGER = 64, B_FRAME = 128
+    B_FLAT = 1,
+    B_CHECKED = 2,
+    B_DISABLED = 4,
+    B_PRIMARY = 8,
+    B_ICON_ONLY = 16,
+    B_MENU = 32,
+    B_DANGER = 64,
+    B_FRAME = 128
 };
 float button_width(const char *label, const char *icon, int flags);
 int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int flags, const char *tip);
@@ -144,13 +165,22 @@ typedef struct {
     int caret, anchor;
     float scroll_x, scroll_y;
     int multiline, password, readonly;
-    int invisible;          /* handle keys only; the caller draws the text */
+    int invisible; /* handle keys only; the caller draws the text */
     const char *placeholder;
     float size;
     double blink;
     int changed;
 } ui_text;
-enum { TE_CHANGED = 1, TE_SUBMIT = 2, TE_CANCEL = 4, TE_BLUR = 8, TE_CTRL_SUBMIT = 16, TE_SHIFT_SUBMIT = 32, TE_TAB = 64, TE_BACKTAB = 128 };
+enum {
+    TE_CHANGED = 1,
+    TE_SUBMIT = 2,
+    TE_CANCEL = 4,
+    TE_BLUR = 8,
+    TE_CTRL_SUBMIT = 16,
+    TE_SHIFT_SUBMIT = 32,
+    TE_TAB = 64,
+    TE_BACKTAB = 128
+};
 void text_set(ui_text *t, const char *s);
 void text_free(ui_text *t);
 const char *text_get(const ui_text *t);
@@ -162,8 +192,8 @@ void text_select_all(ui_text *t);
 typedef void (*ui_action)(void *ctx, intptr_t arg);
 typedef struct ui_menu ui_menu;
 ui_menu *menu_new(void);
-void menu_item(ui_menu *m, const char *label, const char *icon, const char *shortcut, ui_action fn, void *ctx, intptr_t arg,
-               int enabled, int checked);
+void menu_item(ui_menu *m, const char *label, const char *icon, const char *shortcut, ui_action fn, void *ctx,
+               intptr_t arg, int enabled, int checked);
 void menu_swatch_item(ui_menu *m, const char *label, const unsigned char rgb[3], ui_action fn, void *ctx, intptr_t arg,
                       int checked);
 void menu_sep(ui_menu *m);
@@ -193,7 +223,7 @@ typedef void (*ui_answer)(void *ctx, int yes);
 enum { MSG_INFO, MSG_WARNING, MSG_ERROR, MSG_QUESTION };
 void message_box(int kind, const char *title, const char *text, ui_answer done, void *ctx);
 void question_box(const char *title, const char *text, const char *yes, const char *no, ui_answer done, void *ctx);
-typedef void (*ui_input_done)(void *ctx, const char *text);   /* text NULL when cancelled */
+typedef void (*ui_input_done)(void *ctx, const char *text); /* text NULL when cancelled */
 void input_box(const char *title, const char *prompt, const char *initial, int password, ui_input_done done, void *ctx);
 typedef void (*ui_colour_done)(void *ctx, const unsigned char rgb[3]); /* rgb NULL when cancelled */
 void colour_dialog(const char *title, const unsigned char rgb[3], ui_colour_done done, void *ctx);
@@ -207,7 +237,7 @@ void toggle_favourite_colour(const unsigned char rgb[3]);
 int ui_favourite_row(unsigned id, Rectangle r, const unsigned char current[3], unsigned char picked[3], float *used);
 
 /* ---- platform ---- */
-typedef void (*ui_files_done)(void *ctx, pt_strs *paths);    /* empty when cancelled */
+typedef void (*ui_files_done)(void *ctx, pt_strs *paths); /* empty when cancelled */
 enum { FD_OPEN, FD_OPEN_MANY, FD_SAVE, FD_DIR };
 void file_dialog(int mode, const char *title, const char *start, const char *filter_name, const char *patterns,
                  ui_files_done done, void *ctx);
@@ -223,7 +253,11 @@ typedef struct tab tab;
 typedef struct workspace workspace;
 typedef enum { TAB_HOME, TAB_DOC, TAB_WORKSPACE, TAB_COMPARE } tab_kind;
 typedef struct compare compare;
-typedef struct { tab_kind kind; tab *doc; compare *cmp; } win_tab;
+typedef struct {
+    tab_kind kind;
+    tab *doc;
+    compare *cmp;
+} win_tab;
 PT_VEC(win_tabs, win_tab);
 typedef struct {
     win_tabs tabs;
@@ -242,26 +276,26 @@ typedef struct {
 extern app_state app;
 
 void app_open_paths(pt_strs *paths);
-void app_add_doc(tab *t);   /* show a loaded document tab after the current one */
-void app_add_compare(compare *c);   /* takes ownership */
+void app_add_doc(tab *t);         /* show a loaded document tab after the current one */
+void app_add_compare(compare *c); /* takes ownership */
 void app_open_dialog(void);
 void app_go_home(void);
 void app_open_workspace(tab *t);
 void app_close_tab(int index);
 void app_remove_tab(tab *t);
-int app_new_window(const char *adopt_file);   /* 0 when the new window process started */
+int app_new_window(const char *adopt_file); /* 0 when the new window process started */
 void app_set_theme(const char *mode);
 void app_about(void);
 tab *app_current_doc(void);
 void app_handle_message(const char *json);
 void app_quit_request(void);
-int tab_escape_pending(tab *t);   /* Escape would close or clear something in the tab */
+int tab_escape_pending(tab *t); /* Escape would close or clear something in the tab */
 ui_menu *app_build_menu(tab *t);
 void app_publish_state(void);
 
 /* ---- document tabs (edit_tab.c and friends) ---- */
 tab *tab_new(void);
-int tab_load(tab *t, const char *path, const char *password);  /* 0 ok, 1 needs password, -1 error */
+int tab_load(tab *t, const char *path, const char *password); /* 0 ok, 1 needs password, -1 error */
 void tab_free(tab *t);
 void tab_frame(tab *t, Rectangle area);
 void tab_toolbar(tab *t, Rectangle area);
@@ -270,7 +304,7 @@ void tab_shortcuts(tab *t);
 const char *tab_path(const tab *t);
 char *tab_title(const tab *t);
 int tab_edit_count(const tab *t);
-void tab_close(tab *t);                                     /* asks about unsaved edits, then removes the tab */
+void tab_close(tab *t); /* asks about unsaved edits, then removes the tab */
 void tab_forward_search(tab *t, const char *source, int line);
 void tab_poll(tab *t);
 fz_buffer *tab_edited(tab *t, const pt_ints *pages, pt_leaks *leaks);
@@ -296,7 +330,7 @@ void print_document(tab *t, int preview);
 
 /* ---- ipc ---- */
 char *ipc_dir(void);
-int ipc_send_to_running(const char *message);   /* 1 when a running window took it */
+int ipc_send_to_running(const char *message); /* 1 when a running window took it */
 void ipc_serve(void);
 void ipc_poll(void);
 void ipc_stop(void);

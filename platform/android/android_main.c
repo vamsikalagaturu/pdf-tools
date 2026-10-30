@@ -104,10 +104,7 @@ char *pt_java(const char *method, int nargs, ...)
 
 /* ---- clipboard (raylib's Android platform has none) ---- */
 
-void pt_android_set_clipboard(const char *text)
-{
-    free(pt_java("setClipboard", 1, text ? text : ""));
-}
+void pt_android_set_clipboard(const char *text) { free(pt_java("setClipboard", 1, text ? text : "")); }
 
 const char *pt_android_get_clipboard(void)
 {
@@ -123,7 +120,9 @@ const char *pt_android_get_clipboard(void)
 static void copy_tessdata(ANativeActivity *act, const char *data)
 {
     char *dir = pt_format("%s/pdf-tools/tessdata", data), *path = pt_format("%s/eng.traineddata", dir);
-    AAsset *asset = pt_exists(path) ? NULL : AAssetManager_open(act->assetManager, "tessdata/eng.traineddata", AASSET_MODE_STREAMING);
+    AAsset *asset = pt_exists(path)
+                        ? NULL
+                        : AAssetManager_open(act->assetManager, "tessdata/eng.traineddata", AASSET_MODE_STREAMING);
     if (asset) {
         pt_mkdirs(dir);
         char *part = pt_format("%s.part", path);
@@ -146,7 +145,8 @@ static void setup_environment(void)
     JNIEnv *e = jni();
     (*e)->PushLocalFrame(e, 16);
     cache_dir = dir_of(e, call_obj(e, act->clazz, "getCacheDir", "()Ljava/io/File;"));
-    char *external = dir_of(e, call_obj(e, act->clazz, "getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;", NULL));
+    char *external =
+        dir_of(e, call_obj(e, act->clazz, "getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;", NULL));
     (*e)->PopLocalFrame(e, NULL);
     const char *files = act->internalDataPath;
     if (!cache_dir) cache_dir = pt_strdup(files);
@@ -222,16 +222,16 @@ static pthread_mutex_t ime_lock = PTHREAD_MUTEX_INITIALIZER;
 static int ime_q[1024], n_ime;
 static Vector2 wheel_acc, wheel_frame;
 static struct {
-    int pending;      /* finger down, press not yet sent: a second finger makes it a scroll instead */
-    int draws;        /* landed on a drag area (drawing tool, signature pad): moving presses at once */
-    int pressed;      /* press sent, release owed */
+    int pending; /* finger down, press not yet sent: a second finger makes it a scroll instead */
+    int draws;   /* landed on a drag area (drawing tool, signature pad): moving presses at once */
+    int pressed; /* press sent, release owed */
     int scrolling;
-    int rebase;       /* finger count changed: restart the scroll from the current centroid */
-    int lifted;       /* released; move the pointer away once the release is taken */
-    int held;         /* long press reached, nothing sent yet: moving drags, lifting right-clicks */
+    int rebase; /* finger count changed: restart the scroll from the current centroid */
+    int lifted; /* released; move the pointer away once the release is taken */
+    int held;   /* long press reached, nothing sent yet: moving drags, lifting right-clicks */
     double t;
     float x, y, cx, cy;
-    float spread;     /* distance between the first two fingers, for pinch zoom; 0 with one finger */
+    float spread; /* distance between the first two fingers, for pinch zoom; 0 with one finger */
 } touch;
 /* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
 typedef struct {
@@ -246,7 +246,7 @@ static struct {
     double t;
 } fling;
 static int mouse_left, mouse_buttons;
-static int back_pressed;   /* Back (button or gesture) since the last frame */
+static int back_pressed; /* Back (button or gesture) since the last frame */
 
 static void send_mouse(int button, int action)
 {
@@ -258,10 +258,7 @@ static void send_key(int key, int mods)
     if (pt_glfw_key) pt_glfw_key(NULL, key, 0, GLFW_PRESS, mods);
 }
 
-static float dp(void)
-{
-    return ui.scale > 0 ? ui.scale : GetWindowScaleDPI().x;
-}
+static float dp(void) { return ui.scale > 0 ? ui.scale : GetWindowScaleDPI().x; }
 
 static void flush_press(void)
 {
@@ -381,7 +378,8 @@ static void on_touch(const AInputEvent *e, int action)
         static float last_tap_x, last_tap_y;
         if (touch.pending && action == AMOTION_EVENT_ACTION_UP) {
             double now = GetTime();
-            if (!touch.draws && ui_touch_zooms_at(x, y) && now - last_tap_t < 0.35 && hypotf(x - last_tap_x, y - last_tap_y) < 24 * dp()) {
+            if (!touch.draws && ui_touch_zooms_at(x, y) && now - last_tap_t < 0.35 &&
+                hypotf(x - last_tap_x, y - last_tap_y) < 24 * dp()) {
                 ui_add_double_tap(x, y);
                 touch.pending = 0;
                 last_tap_t = 0;
@@ -396,8 +394,8 @@ static void on_touch(const AInputEvent *e, int action)
             send_mouse(MOUSE_BUTTON_RIGHT, GLFW_PRESS), send_mouse(MOUSE_BUTTON_RIGHT, GLFW_RELEASE);
         touch.held = 0;
         float vx, vy;
-        if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP && release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) &&
-            hypotf(vx, vy) > 100 * dp())
+        if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP &&
+            release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) && hypotf(vx, vy) > 100 * dp())
             fling.vx = vx, fling.vy = vy, fling.t = GetTime();
         touch.pending = touch.pressed = touch.scrolling = 0;
         touch.lifted = 1;
@@ -447,7 +445,8 @@ static int key_char(int code, int meta)
         ctor = (*e)->GetMethodID(e, cls, "<init>", "(JJIIII)V");
         get = (*e)->GetMethodID(e, cls, "getUnicodeChar", "(I)I");
     }
-    jobject k = (*e)->NewObject(e, cls, ctor, (jlong)0, (jlong)0, (jint)AKEY_EVENT_ACTION_DOWN, (jint)code, (jint)0, (jint)meta);
+    jobject k = (*e)->NewObject(e, cls, ctor, (jlong)0, (jlong)0, (jint)AKEY_EVENT_ACTION_DOWN, (jint)code, (jint)0,
+                                (jint)meta);
     if (jfailed(e) || !k) return 0;
     int ch = (*e)->CallIntMethod(e, k, get, (jint)meta);
     (*e)->DeleteLocalRef(e, k);
@@ -471,7 +470,8 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
         int32_t handled = raylib_input(a, e);
         int key;
         while ((key = GetKeyPressed())) send_key(key, glfw_mods(meta));
-        int repeat = action == AKEY_EVENT_ACTION_MULTIPLE ? AKeyEvent_getRepeatCount(e) : action == AKEY_EVENT_ACTION_DOWN;
+        int repeat =
+            action == AKEY_EVENT_ACTION_MULTIPLE ? AKeyEvent_getRepeatCount(e) : action == AKEY_EVENT_ACTION_DOWN;
         if (repeat > 0 && !(meta & (AMETA_CTRL_ON | AMETA_ALT_ON))) {
             int ch = key_char(code, meta);
             for (int i = 0; ch >= 32 && ch != 127 && i < repeat && nchars < 64; i++) chars[nchars++] = ch;
@@ -556,7 +556,7 @@ static void on_cmd(struct android_app *a, int32_t cmd)
 static void close_answered(void *ctx, int yes)
 {
     (void)ctx;
-    if (yes) app_quit_request();   /* asks about unsaved edits first */
+    if (yes) app_quit_request(); /* asks about unsaved edits first */
 }
 
 /* ---- hooks in app.c ---- */
@@ -564,7 +564,7 @@ static void close_answered(void *ctx, int yes)
 void pt_android_init_window(int width, int height, const char *title)
 {
     (void)width, (void)height;
-    InitWindow(0, 0, title);   /* 0x0: the whole display, not a 1280x1100 framebuffer scaled to it */
+    InitWindow(0, 0, title); /* 0x0: the whole display, not a 1280x1100 framebuffer scaled to it */
     struct android_app *a = GetAndroidApp();
     raylib_input = a->onInputEvent;
     a->onInputEvent = on_input;

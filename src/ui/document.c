@@ -11,11 +11,13 @@
 #define CTX app.ctx
 
 const tool_def TOOLS[T_COUNT] = {
-    {"view", "View", "view", KEY_V, "Fill forms, drag to select text (Alt-drag: rectangle), click notes to read them (V)"},
+    {"view", "View", "view", KEY_V,
+     "Fill forms, drag to select text (Alt-drag: rectangle), click notes to read them (V)"},
     {"redact", "Redact", "redact", KEY_R, "Drag over text to redact it; Alt-drag or Snap off for a free rectangle (R)"},
     {"highlight", "Highlight", "highlight", KEY_H, "Drag over text to highlight it, then add an optional comment (H)"},
     {"note", "Note", "note", KEY_N, "Click to add a sticky note; click one to read or edit it (N)"},
-    {"text", "Text", "text", KEY_T, "Click to type on the page, or drag first to set a width; double-click a box to edit it (T)"},
+    {"text", "Text", "text", KEY_T,
+     "Click to type on the page, or drag first to set a width; double-click a box to edit it (T)"},
     {"sign", "Sign", "sign", KEY_S, "Click to place a signature (S)"},
     {"image", "Image", "image", KEY_I, "Click, or drag a box, to place a picture; drag its corner to resize (I)"},
     {"draw", "Draw", "draw", KEY_D, "Draw freehand; strokes made in quick succession form one drawing (D)"},
@@ -24,17 +26,17 @@ const tool_def TOOLS[T_COUNT] = {
 };
 /* tints for background highlights on white paper; text under them stays black */
 const preset HIGHLIGHT_PRESETS[5] = {
-    {"Yellow", {255, 228, 92}}, {"Green", {168, 230, 161}}, {"Blue", {167, 211, 255}},
-    {"Pink", {255, 179, 217}}, {"Orange", {255, 196, 140}},
+    {"Yellow", {255, 228, 92}}, {"Green", {168, 230, 161}},  {"Blue", {167, 211, 255}},
+    {"Pink", {255, 179, 217}},  {"Orange", {255, 196, 140}},
 };
 /* inks for lines and text colour: each >= 4.5:1 contrast on white (WCAG 2.1 AA, 1.4.3) */
 const preset INK_PRESETS[5] = {
-    {"Red", {198, 40, 40}}, {"Blue", {21, 101, 192}}, {"Green", {46, 125, 50}},
+    {"Red", {198, 40, 40}},     {"Blue", {21, 101, 192}}, {"Green", {46, 125, 50}},
     {"Purple", {106, 27, 154}}, {"Orange", {196, 62, 0}},
 };
 const preset PEN_COLOURS[6] = {
-    {"Black", {0, 0, 0}}, {"Red", {198, 40, 40}}, {"Blue", {21, 101, 192}}, {"Green", {46, 125, 50}},
-    {"Purple", {106, 27, 154}}, {"Orange", {196, 62, 0}},
+    {"Black", {0, 0, 0}},     {"Red", {198, 40, 40}},     {"Blue", {21, 101, 192}},
+    {"Green", {46, 125, 50}}, {"Purple", {106, 27, 154}}, {"Orange", {196, 62, 0}},
 };
 const struct pen_width PEN_WIDTHS[3] = {{"Thin", 1}, {"Medium", 2}, {"Thick", 4}};
 const char *MARK_LABELS[5] = {"Highlight", "Underline", "Strikethrough", "Squiggly", "Text colour"};
@@ -256,7 +258,8 @@ int tab_load(tab *t, const char *path, const char *password)
 {
     pdf_document *doc = NULL;
     fz_try(CTX) doc = pdf_open_document(CTX, path);
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         char *msg = pt_format("Cannot open %s:\n%s", pt_basename(path), fz_caught_message(CTX));
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
@@ -312,17 +315,15 @@ char *tab_title(const tab *t)
     return pt_format("%s%s", tab_edit_count(t) ? "* " : "", pt_basename(t->path));
 }
 
-int tab_edit_count(const tab *t)
-{
-    return t->doc ? pt_count_edits(&t->st, t->own, t->npages) : 0;
-}
+int tab_edit_count(const tab *t) { return t->doc ? pt_count_edits(&t->st, t->own, t->npages) : 0; }
 
 /* The display copy as saving builds the output: inserted pages, removed annotations, the added rotation. */
 void reload_display(tab *t)
 {
     finish_text(t);
     pdf_document *fresh = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fresh = pt_open_pdf(CTX, t->path, t->password, &t->st.inserted);
         for (int i = 0; i < t->st.deleted.n; i++) pt_remove_annot(CTX, fresh, t->st.deleted.v[i]);
         for (int i = 0; i < t->st.rotation.n; i++) {
@@ -339,7 +340,8 @@ void reload_display(tab *t)
             fz_catch(CTX) fz_rethrow(CTX);
         }
     }
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         char *msg = pt_format("Cannot reload %s:\n%s", pt_basename(t->path), fz_caught_message(CTX));
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
@@ -358,7 +360,8 @@ int page_rotation(tab *t, int page) { return ((pt_rotation_of(&t->st, page) % 36
 fz_rect page_bounds(tab *t, int page)
 {
     fz_rect r = fz_empty_rect;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
         r = fz_bound_page(CTX, p);
         fz_drop_page(CTX, p);
@@ -432,10 +435,7 @@ fz_point scene_to_src_point(tab *t, int page, fz_point s)
     return disp_to_src(t, page, (fz_point){s.x - t->off_x[page], s.y - t->off_y[page]});
 }
 
-fz_rect page_scene_rect(tab *t, int page)
-{
-    return disp_to_scene(t, page, page_bounds(t, page));
-}
+fz_rect page_scene_rect(tab *t, int page) { return disp_to_scene(t, page, page_bounds(t, page)); }
 
 int page_at(tab *t, fz_point pt)
 {
@@ -459,12 +459,14 @@ static float content_x(tab *t)
 
 Vector2 scene_to_screen(tab *t, fz_point p)
 {
-    return (Vector2){t->view.x + content_x(t) + (p.x + PAGE_GAP) * t->zoom, t->view.y - t->scroll_y + (p.y + PAGE_GAP) * t->zoom};
+    return (Vector2){t->view.x + content_x(t) + (p.x + PAGE_GAP) * t->zoom,
+                     t->view.y - t->scroll_y + (p.y + PAGE_GAP) * t->zoom};
 }
 
 fz_point screen_to_scene(tab *t, Vector2 p)
 {
-    return (fz_point){(p.x - t->view.x - content_x(t)) / t->zoom - PAGE_GAP, (p.y - t->view.y + t->scroll_y) / t->zoom - PAGE_GAP};
+    return (fz_point){(p.x - t->view.x - content_x(t)) / t->zoom - PAGE_GAP,
+                      (p.y - t->view.y + t->scroll_y) / t->zoom - PAGE_GAP};
 }
 
 Rectangle scene_rect_to_screen(tab *t, fz_rect r)
@@ -512,7 +514,10 @@ static void touched_pages(tab *t, const pt_state *a, const pt_state *b, char *ou
                 same = ia >= a->items.n && ib >= b->items.n;
                 break;
             }
-            if (!same_item(&a->items.v[ia], &b->items.v[ib])) { same = 0; break; }
+            if (!same_item(&a->items.v[ia], &b->items.v[ib])) {
+                same = 0;
+                break;
+            }
             ia++, ib++;
         }
         if (!same) out[p] = 1;
@@ -525,9 +530,11 @@ static void touched_pages(tab *t, const pt_state *a, const pt_state *b, char *ou
     for (int i = 0; i < b->forms.n; i++)
         if (b->forms.v[i].key.page < t->npages) out[b->forms.v[i].key.page] = 1;
     for (int i = 0; i < a->deleted.n; i++)
-        if (!pt_state_has_key(&b->deleted, a->deleted.v[i]) && a->deleted.v[i].page < t->npages) out[a->deleted.v[i].page] = 1;
+        if (!pt_state_has_key(&b->deleted, a->deleted.v[i]) && a->deleted.v[i].page < t->npages)
+            out[a->deleted.v[i].page] = 1;
     for (int i = 0; i < b->deleted.n; i++)
-        if (!pt_state_has_key(&a->deleted, b->deleted.v[i]) && b->deleted.v[i].page < t->npages) out[b->deleted.v[i].page] = 1;
+        if (!pt_state_has_key(&a->deleted, b->deleted.v[i]) && b->deleted.v[i].page < t->npages)
+            out[b->deleted.v[i].page] = 1;
 }
 
 static int same_str(const char *a, const char *b) { return !strcmp(a ? a : "", b ? b : ""); }
@@ -540,9 +547,9 @@ static int stamps_differ(const pt_state *a, const pt_state *b)
     if (a->order.n != b->order.n || memcmp(a->order.v, b->order.v, sizeof(int) * (size_t)a->order.n)) return 1;
     for (int i = 0; i < a->stamps.n; i++) {
         const pt_stamp *x = &a->stamps.v[i], *y = &b->stamps.v[i];
-        if (x->kind != y->kind || !same_str(x->text, y->text) || !same_str(x->suffix, y->suffix) || x->start != y->start ||
-            x->digits != y->digits || x->at != y->at || x->size != y->size || x->opacity != y->opacity ||
-            memcmp(x->rgb, y->rgb, 3) || !same_str(x->pages, y->pages))
+        if (x->kind != y->kind || !same_str(x->text, y->text) || !same_str(x->suffix, y->suffix) ||
+            x->start != y->start || x->digits != y->digits || x->at != y->at || x->size != y->size ||
+            x->opacity != y->opacity || memcmp(x->rgb, y->rgb, 3) || !same_str(x->pages, y->pages))
             return 1;
     }
     return 0;
@@ -701,7 +708,8 @@ void tab_fit(tab *t, fit_mode fit)
 
 static Texture2D texture_from_pixmap(fz_pixmap *pix)
 {
-    Image img = {pix->samples, pix->w, pix->h, 1, pix->n == 4 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : PIXELFORMAT_UNCOMPRESSED_R8G8B8};
+    Image img = {pix->samples, pix->w, pix->h, 1,
+                 pix->n == 4 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : PIXELFORMAT_UNCOMPRESSED_R8G8B8};
     Texture2D tex = LoadTextureFromImage(img);
     SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
     return tex;
@@ -734,7 +742,8 @@ Texture2D *page_texture(tab *t, int page, float scale)
     int slot = free_slot >= 0 ? free_slot : far;
     if (t->pix[slot].ok) UnloadTexture(t->pix[slot].tex), t->pix[slot].ok = 0;
     fz_pixmap *pix = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_try(CTX) pix = pt_render_page(CTX, p, scale, 0);
         fz_always(CTX) fz_drop_page(CTX, p);
@@ -752,7 +761,8 @@ Texture2D *thumb_texture(tab *t, int page)
     fz_rect b = page_bounds(t, page);
     float zoom = fminf(THUMB_W / b.x1, THUMB_H / b.y1) * UI_PX;
     fz_pixmap *pix = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_try(CTX) pix = pt_render_page(CTX, p, zoom, 0);
         fz_always(CTX) fz_drop_page(CTX, p);
@@ -768,7 +778,8 @@ Texture2D *thumb_texture(tab *t, int page)
 pt_words *page_words(tab *t, int page)
 {
     if (!t->words_ok[page]) {
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
             fz_stext_page *st = pt_stext(CTX, p);
             pt_reading_order_words(st, &t->words[page]);
@@ -785,7 +796,8 @@ field_infos *page_fields(tab *t, int page)
 {
     if (t->fields_ok[page]) return &t->fields[page];
     t->fields_ok[page] = 1;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         pdf_page *p = pdf_load_page(CTX, t->doc, page);
         for (pdf_annot *w = pdf_first_widget(CTX, p); w; w = pdf_next_widget(CTX, w)) {
             pdf_obj *obj = pdf_annot_obj(CTX, w);
@@ -823,20 +835,27 @@ annot_infos *page_annots(tab *t, int page)
 {
     if (t->annots_ok[page]) return &t->annots[page];
     t->annots_ok[page] = 1;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         pdf_page *p = pdf_load_page(CTX, t->doc, page);
         fz_stext_page *st = NULL;
         for (pdf_annot *a = pdf_first_annot(CTX, p); a; a = pdf_next_annot(CTX, a)) {
             enum pdf_annot_type type = pdf_annot_type(CTX, a);
             if (type == PDF_ANNOT_POPUP || type == PDF_ANNOT_WIDGET) continue;
-            annot_info info = {pdf_to_num(CTX, pdf_annot_obj(CTX, a)), type, pdf_bound_annot(CTX, a),
-                               pt_strdup(pdf_annot_contents(CTX, a)), {153, 153, 153}, NULL};
+            annot_info info = {pdf_to_num(CTX, pdf_annot_obj(CTX, a)),
+                               type,
+                               pdf_bound_annot(CTX, a),
+                               pt_strdup(pdf_annot_contents(CTX, a)),
+                               {153, 153, 153},
+                               NULL};
             int n = 0;
             float c[4] = {0};
             pdf_annot_color(CTX, a, &n, c);
-            if (n == 3) for (int k = 0; k < 3; k++) info.rgb[k] = (unsigned char)lroundf(c[k] * 255);
+            if (n == 3)
+                for (int k = 0; k < 3; k++) info.rgb[k] = (unsigned char)lroundf(c[k] * 255);
             else if (n == 1) info.rgb[0] = info.rgb[1] = info.rgb[2] = (unsigned char)lroundf(c[0] * 255);
-            if (type == PDF_ANNOT_HIGHLIGHT || type == PDF_ANNOT_UNDERLINE || type == PDF_ANNOT_STRIKE_OUT || type == PDF_ANNOT_SQUIGGLY) {
+            if (type == PDF_ANNOT_HIGHLIGHT || type == PDF_ANNOT_UNDERLINE || type == PDF_ANNOT_STRIKE_OUT ||
+                type == PDF_ANNOT_SQUIGGLY) {
                 if (!st) st = pt_stext(CTX, (fz_page *)p);
                 char *q = pt_textbox(CTX, st, info.rect);
                 for (char *s = q; *s; s++)
@@ -858,7 +877,8 @@ link_infos *page_links(tab *t, int page)
     t->links_ok[page] = 1;
     fz_link *links = NULL;
     fz_var(links);
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_rect b = fz_bound_page(CTX, p);
         links = fz_load_links(CTX, p);
@@ -866,7 +886,8 @@ link_infos *page_links(tab *t, int page)
         for (fz_link *l = links; l; l = l->next) {
             if (!l->uri) continue;
             /* display coordinates start at the page's top-left corner (page_bounds) */
-            link_info info = {fz_make_rect(l->rect.x0 - b.x0, l->rect.y0 - b.y0, l->rect.x1 - b.x0, l->rect.y1 - b.y0), -1, 0, 0, NULL};
+            link_info info = {fz_make_rect(l->rect.x0 - b.x0, l->rect.y0 - b.y0, l->rect.x1 - b.x0, l->rect.y1 - b.y0),
+                              -1, 0, 0, NULL};
             if (fz_is_external_link(CTX, l->uri)) info.uri = pt_strdup(l->uri);
             else {
                 float x = 0, y = 0;
@@ -937,7 +958,8 @@ void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3])
     fz_pixmap *pix = NULL;
     fz_device *dev = NULL;
     fz_page *p = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         p = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_rect full = fz_bound_page(CTX, p);
         fz_irect clip = fz_round_rect(fz_transform_rect(full, fz_scale(scale, scale)));
@@ -969,7 +991,8 @@ void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3])
             free(ch[k]);
         }
     }
-    fz_always(CTX) {
+    fz_always(CTX)
+    {
         fz_drop_device(CTX, dev);
         fz_drop_pixmap(CTX, pix);
         fz_drop_page(CTX, p);
@@ -994,7 +1017,8 @@ fz_buffer *tab_edited(tab *t, const pt_ints *pages, pt_leaks *leaks)
                 s.forms.v[i].size = (float)t->editors.v[k].fit_px;
     fz_buffer *data = NULL;
     fz_try(CTX) data = pt_apply_edits(CTX, t->path, t->password, &s, leaks);
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         char *msg = pt_format("Could not write the edited PDF:\n%s", fz_caught_message(CTX));
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
@@ -1077,7 +1101,8 @@ static void save_confirmed(void *ctx, int yes)
         unlink(tmp);
         message_box(MSG_ERROR, APP_NAME, "Could not move the original to the trash; nothing changed.", NULL, NULL);
     } else if (rename(tmp, path)) {
-        message_box(MSG_ERROR, APP_NAME, "Could not put the edited file in place; the original is in the trash.", NULL, NULL);
+        message_box(MSG_ERROR, APP_NAME, "Could not put the edited file in place; the original is in the trash.", NULL,
+                    NULL);
     } else {
         tab_report(t, path, &leaks, scrubbed);
         tab_load(t, path, password);
@@ -1094,16 +1119,23 @@ void tab_save(tab *t)
 #ifdef __ANDROID__
     char *msg = pt_format("Overwrite %s with the edited version?", pt_basename(t->path));
 #elif defined(__APPLE__)
-    char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the Trash.", pt_basename(t->path));
+    char *msg =
+        pt_format("Overwrite %s with the edited version?\n\nThe original goes to the Trash.", pt_basename(t->path));
 #else
-    char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the trash (restore with trash-restore).",
-                          pt_basename(t->path));
+    char *msg = pt_format(
+        "Overwrite %s with the edited version?\n\nThe original goes to the trash (restore with trash-restore).",
+        pt_basename(t->path));
 #endif
     question_box("Overwrite original", msg, "Overwrite", "Cancel", save_confirmed, t);
     free(msg);
 }
 
-typedef struct { tab *t; pt_ints pages; int has_pages, dpi, keep_password, optimize; char *password; } copy_job;
+typedef struct {
+    tab *t;
+    pt_ints pages;
+    int has_pages, dpi, keep_password, optimize;
+    char *password;
+} copy_job;
 
 static void write_copy_chosen(void *ctx, pt_strs *paths)
 {
@@ -1118,7 +1150,8 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
             fz_buffer *data = tab_edited(t, job->has_pages ? &job->pages : NULL, &leaks);
             if (data && job->dpi) {
                 fz_buffer *flat = NULL;
-                fz_try(CTX) {
+                fz_try(CTX)
+                {
                     flat = pt_flatten(CTX, data, job->dpi);
                     pdf_document *check = pt_open_pdf_bytes(CTX, flat->data, flat->len, NULL);
                     for (int i = 0; i < pdf_count_pages(CTX, check); i++) {
@@ -1140,7 +1173,8 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
             if (data && job->optimize) {
                 fz_buffer *small = NULL;
                 fz_try(CTX) small = pt_optimize(CTX, data);
-                fz_catch(CTX) {
+                fz_catch(CTX)
+                {
                     char *msg = pt_format("Could not optimize the document:\n%s", fz_caught_message(CTX));
                     message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
                     free(msg);
@@ -1158,12 +1192,14 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
             }
             if (data && !job->dpi) data = cert_sign_output(t, data, job->has_pages ? &job->pages : NULL, pw);
             if (data) {
-                if (pt_write_file(out, data->data, data->len)) message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
+                if (pt_write_file(out, data->data, data->len))
+                    message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
                 else {
                     tab_report(t, out, &leaks, scrubs(t, job->has_pages ? &job->pages : NULL) || job->dpi);
                     if (job->optimize) {
-                        char *msg = pt_format("Optimized copy saved: %.1f MB -> %.1f MB (%d%% smaller)", before / 1048576.0,
-                                              data->len / 1048576.0, before ? (int)lround(100.0 * (1 - (double)data->len / before)) : 0);
+                        char *msg = pt_format("Optimized copy saved: %.1f MB -> %.1f MB (%d%% smaller)",
+                                              before / 1048576.0, data->len / 1048576.0,
+                                              before ? (int)lround(100.0 * (1 - (double)data->len / before)) : 0);
                         status(msg, 8);
                         free(msg);
                     }
@@ -1180,7 +1216,8 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
 
 /* Save the edited `pages` (NULL: all, in order) to a chosen file; password_mode 1 keeps the file's password,
  * 0 writes it unprotected, 2 uses `password`. */
-static void write_copy(tab *t, const pt_ints *pages, const char *default_name, int dpi, int password_mode, const char *password)
+static void write_copy(tab *t, const pt_ints *pages, const char *default_name, int dpi, int password_mode,
+                       const char *password)
 {
     copy_job *job = calloc(1, sizeof *job);
     job->t = t;
@@ -1333,7 +1370,8 @@ void rotate_pages(tab *t, const pt_ints *pages, int degrees)
     if (!t->doc) return;
     pt_state snap;
     change_pages_begin(t, &snap);
-    for (int i = 0; i < pages->n; i++) pt_set_rotation(&t->st, pages->v[i], ((pt_rotation_of(&t->st, pages->v[i]) + degrees) % 360 + 360) % 360);
+    for (int i = 0; i < pages->n; i++)
+        pt_set_rotation(&t->st, pages->v[i], ((pt_rotation_of(&t->st, pages->v[i]) + degrees) % 360 + 360) % 360);
     change_pages_end(t, &snap, 1);
 }
 
@@ -1357,7 +1395,10 @@ void remove_pages(tab *t, const pt_ints *pages)
         for (int i = pos; i < t->st.order.n; i++) {
             int p = t->st.order.v[i], dead = 0;
             for (int k = 0; k < pages->n; k++) dead |= pages->v[k] == p;
-            if (!dead) { next = p; break; }
+            if (!dead) {
+                next = p;
+                break;
+            }
         }
         t->pno = next;
     }
@@ -1368,7 +1409,10 @@ void remove_pages(tab *t, const pt_ints *pages)
     change_pages_end(t, &snap, 0);
 }
 
-typedef struct { tab *t; int after; } insert_job;
+typedef struct {
+    tab *t;
+    int after;
+} insert_job;
 
 /* `count` pages of `path` (a PDF, or PT_BLANK_PAGE) right after display page `after`, one undo step */
 static void insert_after(tab *t, int after, const char *path, int count)
@@ -1380,7 +1424,8 @@ static void insert_after(tab *t, int after, const char *path, int count)
     pt_push(t->st.inserted, (pt_inserted){pt_strdup(path), count});
     for (int k = 0; k < count; k++) {
         pt_push(t->st.order, 0);
-        memmove(t->st.order.v + pos + k + 1, t->st.order.v + pos + k, sizeof(int) * (size_t)(t->st.order.n - 1 - pos - k));
+        memmove(t->st.order.v + pos + k + 1, t->st.order.v + pos + k,
+                sizeof(int) * (size_t)(t->st.order.n - 1 - pos - k));
         t->st.order.v[pos + k] = start + k;
     }
     change_pages_end(t, &snap, 1);
@@ -1394,14 +1439,16 @@ static void insert_chosen(void *ctx, pt_strs *paths)
     if (paths->n) {
         const char *path = paths->v[0];
         int count = 0, locked = 0, ok = 0;
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             pdf_document *src = pdf_open_document(CTX, path);
             count = pdf_count_pages(CTX, src);
             locked = pdf_needs_password(CTX, src);
             pdf_drop_document(CTX, src);
             ok = 1;
         }
-        fz_catch(CTX) {
+        fz_catch(CTX)
+        {
             char *msg = pt_format("Cannot open %s:\n%s", pt_basename(path), fz_caught_message(CTX));
             message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
             free(msg);
@@ -1463,7 +1510,8 @@ void crop_to_content(tab *t, const pt_ints *pages)
 {
     fz_rect *rects = calloc((size_t)pages->n + 1, sizeof(fz_rect));
     for (int i = 0; i < pages->n; i++) {
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, pages->v[i]);
             rects[i] = rect_disp_to_src(t, pages->v[i], pt_content_rect(CTX, p, 6));
             fz_drop_page(CTX, p);
@@ -1497,7 +1545,8 @@ pt_synctex *tab_synctex(tab *t)
         if (t->sync) pt_synctex_free(t->sync);
         else t->sync = calloc(1, sizeof *t->sync);
         fz_try(CTX) pt_synctex_load(CTX, t->sync, t->path);
-        fz_catch(CTX) {
+        fz_catch(CTX)
+        {
             free(t->sync->pdf);
             memset(t->sync, 0, sizeof *t->sync);
             t->sync->pdf = pt_strdup(t->path);
@@ -1506,7 +1555,10 @@ pt_synctex *tab_synctex(tab *t)
     return t->sync->path ? t->sync : NULL;
 }
 
-typedef struct { char *path; int line; } source_job;
+typedef struct {
+    char *path;
+    int line;
+} source_job;
 
 static void open_source_now(const char *command, const char *path, int line)
 {
@@ -1634,7 +1686,8 @@ void tab_share(tab *t)
     char *dir = pt_format("%s/share", tmp ? tmp : "."), *path = pt_format("%s/%s", dir, pt_basename(t->path));
     pt_mkdirs(dir);
     int ok = 0;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_save_buffer(CTX, data, path);
         ok = 1;
     }
@@ -1723,12 +1776,14 @@ void set_mark_style(tab *t, int style)
 static void reload_now(tab *t)
 {
     pdf_document *fresh = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fresh = pt_open_pdf(CTX, t->path, t->password, NULL);
         fz_page *last = fz_load_page(CTX, (fz_document *)fresh, pdf_count_pages(CTX, fresh) - 1);
         fz_drop_page(CTX, last);
     }
-    fz_catch(CTX) {
+    fz_catch(CTX)
+    {
         pdf_drop_document(CTX, fresh);
         /* still being written: try again shortly, a few times */
         if (++t->reload_tries < RELOAD_TRIES) t->settle_until = ui.now + RELOAD_SETTLE;
@@ -1793,7 +1848,8 @@ void tab_poll(tab *t)
     int n = tab_edit_count(t);
     if (n) {
         t->reload_asked = 1;
-        char *msg = pt_format("%s changed on disk.\n\nReload it and discard %d unsaved edit(s)?", pt_basename(t->path), n);
+        char *msg =
+            pt_format("%s changed on disk.\n\nReload it and discard %d unsaved edit(s)?", pt_basename(t->path), n);
         question_box(APP_NAME, msg, "Reload", "Keep my edits", reload_answer, t);
         free(msg);
         return;
@@ -1812,8 +1868,18 @@ static void w_str(FILE *f, const char *s)
     if (n > 0) fwrite(s, 1, (size_t)n, f);
 }
 static void w_rect(FILE *f, fz_rect r) { fwrite(&r, sizeof r, 1, f); }
-static int r_int(FILE *f) { int v = 0; if (fread(&v, sizeof v, 1, f) != 1) v = 0; return v; }
-static float r_float(FILE *f) { float v = 0; if (fread(&v, sizeof v, 1, f) != 1) v = 0; return v; }
+static int r_int(FILE *f)
+{
+    int v = 0;
+    if (fread(&v, sizeof v, 1, f) != 1) v = 0;
+    return v;
+}
+static float r_float(FILE *f)
+{
+    float v = 0;
+    if (fread(&v, sizeof v, 1, f) != 1) v = 0;
+    return v;
+}
 static char *r_str(FILE *f)
 {
     int n = r_int(f);
@@ -1822,7 +1888,12 @@ static char *r_str(FILE *f)
     if (n && fread(s, 1, (size_t)n, f) != (size_t)n) s[0] = 0;
     return s;
 }
-static fz_rect r_rect(FILE *f) { fz_rect r = {0}; if (fread(&r, sizeof r, 1, f) != 1) r = fz_empty_rect; return r; }
+static fz_rect r_rect(FILE *f)
+{
+    fz_rect r = {0};
+    if (fread(&r, sizeof r, 1, f) != 1) r = fz_empty_rect;
+    return r;
+}
 
 static void write_state(FILE *f, const pt_state *s)
 {
@@ -1854,7 +1925,8 @@ static void write_state(FILE *f, const pt_state *s)
         w_int(f, v->is_bool), w_int(f, v->on), w_str(f, v->text), w_float(f, v->size);
     }
     w_int(f, s->annot_text.n);
-    for (int i = 0; i < s->annot_text.n; i++) fwrite(&s->annot_text.v[i].key, sizeof(pt_key), 1, f), w_str(f, s->annot_text.v[i].text);
+    for (int i = 0; i < s->annot_text.n; i++)
+        fwrite(&s->annot_text.v[i].key, sizeof(pt_key), 1, f), w_str(f, s->annot_text.v[i].text);
     w_int(f, s->order.n);
     fwrite(s->order.v, sizeof(int), (size_t)s->order.n, f);
     w_int(f, s->rotation.n);
@@ -1874,7 +1946,8 @@ static void write_state(FILE *f, const pt_state *s)
     w_int(f, s->outline_set);
     w_int(f, s->outline.n);
     for (int i = 0; i < s->outline.n; i++)
-        w_int(f, s->outline.v[i].level), w_str(f, s->outline.v[i].title), w_int(f, s->outline.v[i].page), w_float(f, s->outline.v[i].y);
+        w_int(f, s->outline.v[i].level), w_str(f, s->outline.v[i].title), w_int(f, s->outline.v[i].page),
+            w_float(f, s->outline.v[i].y);
     w_str(f, s->cert.cert), w_int(f, s->cert.page), w_rect(f, s->cert.rect);
 }
 
@@ -1950,7 +2023,8 @@ static void read_state(FILE *f, pt_state *s)
     n = r_int(f);
     for (int i = 0; i < n; i++) {
         pt_stamp st = {0};
-        st.kind = (pt_stamp_kind)r_int(f), st.text = r_str(f), st.suffix = r_str(f), st.start = r_int(f), st.digits = r_int(f);
+        st.kind = (pt_stamp_kind)r_int(f), st.text = r_str(f), st.suffix = r_str(f), st.start = r_int(f),
+        st.digits = r_int(f);
         st.at = (pt_stamp_at)r_int(f), st.size = r_float(f), st.opacity = r_float(f), st.pages = r_str(f);
         if (fread(st.rgb, 1, 3, f) != 3) memset(st.rgb, 0, 3);
         pt_push(s->stamps, st);
@@ -1977,7 +2051,8 @@ int tab_write_state(tab *t, const char *file)
     for (int i = 0; i < t->nhist; i++) write_state(f, &t->history[i]);
     w_int(f, t->nfut);
     for (int i = 0; i < t->nfut; i++) write_state(f, &t->future[i]);
-    return fclose(f);
+    int failed = ferror(f);
+    return fclose(f) || failed ? -1 : 0;
 }
 
 tab *tab_read_state(const char *file)

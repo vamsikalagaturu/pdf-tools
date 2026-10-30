@@ -1,0 +1,20 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Linux
+IndentCaseLabels: false
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+AlignAfterOpenBracket: Align
+AlignOperands: Align
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+MaxEmptyLinesToKeep: 1
+# include order matters in places (feature macros, raygui's pragmas)
+SortIncludes: Never
+ReflowComments: true

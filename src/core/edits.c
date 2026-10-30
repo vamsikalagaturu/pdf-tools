@@ -134,7 +134,8 @@ void pt_state_copy(pt_state *d, const pt_state *s)
     for (int i = 0; i < s->inserted.n; i++)
         pt_push(d->inserted, (pt_inserted){pt_strdup(s->inserted.v[i].path), s->inserted.v[i].pages});
     for (int i = 0; i < s->stamps.n; i++) pt_push(d->stamps, pt_stamp_copy(&s->stamps.v[i]));
-    d->meta = (pt_meta){pt_strdup(s->meta.title), pt_strdup(s->meta.author), pt_strdup(s->meta.subject), pt_strdup(s->meta.keywords)};
+    d->meta = (pt_meta){pt_strdup(s->meta.title), pt_strdup(s->meta.author), pt_strdup(s->meta.subject),
+                        pt_strdup(s->meta.keywords)};
     for (int i = 0; i < s->outline.n; i++) {
         pt_bookmark b = s->outline.v[i];
         b.title = pt_strdup(b.title);
@@ -185,7 +186,10 @@ void pt_set_rotation(pt_state *s, int page, int degrees)
 void pt_set_crop(pt_state *s, int page, fz_rect rect)
 {
     for (int i = 0; i < s->crop.n; i++)
-        if (s->crop.v[i].page == page) { s->crop.v[i].rect = rect; return; }
+        if (s->crop.v[i].page == page) {
+            s->crop.v[i].rect = rect;
+            return;
+        }
     pt_push(s->crop, (pt_crop){page, rect});
 }
 
@@ -217,10 +221,7 @@ void pt_set_annot_text(pt_state *s, pt_key key, const char *text)
 
 /* ---- opening and writing ---- */
 
-int pt_is_password_error(const char *message)
-{
-    return message && strstr(message, "Wrong password") != NULL;
-}
+int pt_is_password_error(const char *message) { return message && strstr(message, "Wrong password") != NULL; }
 
 static void authenticate(fz_context *ctx, pdf_document *doc, const char *password, const char *what)
 {
@@ -234,17 +235,20 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
 {
     pdf_document *doc = pdf_open_document(ctx, path);
     authenticate(ctx, doc, password, path);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         for (int i = 0; inserted && i < inserted->n; i++) {
             float w, h;
             if (sscanf(inserted->v[i].path, PT_BLANK_PAGE "%fx%f", &w, &h) == 2) {
                 pdf_obj *res = pdf_new_dict(ctx, doc, 1), *page = NULL;
                 fz_buffer *contents = fz_new_buffer(ctx, 1);
-                fz_try(ctx) {
+                fz_try(ctx)
+                {
                     page = pdf_add_page(ctx, doc, fz_make_rect(0, 0, w, h), 0, res, contents);
                     pdf_insert_page(ctx, doc, -1, page);
                 }
-                fz_always(ctx) {
+                fz_always(ctx)
+                {
                     pdf_drop_obj(ctx, page);
                     pdf_drop_obj(ctx, res);
                     fz_drop_buffer(ctx, contents);
@@ -253,7 +257,8 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
                 continue;
             }
             pdf_document *src = pdf_open_document(ctx, inserted->v[i].path);
-            fz_try(ctx) {
+            fz_try(ctx)
+            {
                 int n = pdf_count_pages(ctx, src);
                 pt_ints all = {0};
                 for (int p = 0; p < n; p++) pt_push(all, p);
@@ -264,7 +269,8 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
             fz_catch(ctx) fz_rethrow(ctx);
         }
     }
-    fz_catch(ctx) {
+    fz_catch(ctx)
+    {
         pdf_drop_document(ctx, doc);
         fz_rethrow(ctx);
     }
@@ -276,11 +282,13 @@ pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size
     fz_buffer *buf = fz_new_buffer_from_copied_data(ctx, data, len);
     fz_stream *stm = NULL;
     pdf_document *doc = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         stm = fz_open_buffer(ctx, buf);
         doc = pdf_open_document_with_stream(ctx, stm);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_stream(ctx, stm);
         fz_drop_buffer(ctx, buf);
     }
@@ -307,13 +315,15 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
     }
     fz_buffer *buf = fz_new_buffer(ctx, 1 << 16);
     fz_output *out = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         out = fz_new_output_with_buffer(ctx, buf);
         pdf_write_document(ctx, doc, out, &o);
         fz_close_output(ctx, out);
     }
     fz_always(ctx) fz_drop_output(ctx, out);
-    fz_catch(ctx) {
+    fz_catch(ctx)
+    {
         fz_drop_buffer(ctx, buf);
         fz_rethrow(ctx);
     }
@@ -344,7 +354,7 @@ static pdf_obj *page_resources(fz_context *ctx, pdf_document *doc, pdf_page *pag
 
 /* Register `ref` under `type` in the page resources with a fresh name like "PTF3"; returns the name. */
 void pt_add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_obj *type, const char *prefix,
-                         pdf_obj *ref, char name[32])
+                     pdf_obj *ref, char name[32])
 {
     pdf_obj *res = page_resources(ctx, doc, page);
     pdf_obj *sub = pdf_dict_get(ctx, res, type);
@@ -366,20 +376,22 @@ void pt_append_content(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_bu
     pdf_obj *contents = pdf_dict_get(ctx, page->obj, PDF_NAME(Contents));
     pdf_obj *arr = pdf_new_array(ctx, doc, 4);
     fz_buffer *q = NULL, *tail = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         q = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)"q\n", 2);
         pdf_array_push_drop(ctx, arr, pdf_add_stream(ctx, doc, q, NULL, 0));
         if (pdf_is_array(ctx, contents))
-            for (int i = 0; i < pdf_array_len(ctx, contents); i++) pdf_array_push(ctx, arr, pdf_array_get(ctx, contents, i));
-        else if (contents)
-            pdf_array_push(ctx, arr, contents);
+            for (int i = 0; i < pdf_array_len(ctx, contents); i++)
+                pdf_array_push(ctx, arr, pdf_array_get(ctx, contents, i));
+        else if (contents) pdf_array_push(ctx, arr, contents);
         tail = fz_new_buffer(ctx, ops->len + 4);
         fz_append_string(ctx, tail, "Q\n");
         fz_append_buffer(ctx, tail, ops);
         pdf_array_push_drop(ctx, arr, pdf_add_stream(ctx, doc, tail, NULL, 0));
         pdf_dict_put(ctx, page->obj, PDF_NAME(Contents), arr);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pdf_drop_obj(ctx, arr);
         fz_drop_buffer(ctx, q);
         fz_drop_buffer(ctx, tail);
@@ -396,7 +408,8 @@ void pt_fill_rect(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect r,
 {
     fz_matrix m = fz_concat(fz_make_matrix(r.x1 - r.x0, 0, 0, r.y1 - r.y0, r.x0, r.y0), pt_page_to_pdf(ctx, page));
     fz_buffer *b = fz_new_buffer(ctx, 128);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_append_printf(ctx, b, "q\n%g %g %g rg\n", rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
         pt_append_matrix(ctx, b, m, "cm");
         fz_append_string(ctx, b, "0 0 1 1 re\nf\nQ\n");
@@ -406,13 +419,15 @@ void pt_fill_rect(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect r,
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect r, const unsigned char *data, size_t len)
+void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect r, const unsigned char *data,
+                     size_t len)
 {
     fz_buffer *buf = fz_new_buffer_from_copied_data(ctx, data, len);
     fz_image *img = NULL;
     pdf_obj *ref = NULL;
     fz_buffer *b = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         img = fz_new_image_from_buffer(ctx, buf);
         /* keep the image's proportions, centred in the box (as PyMuPDF's insert_image) */
         float bw = r.x1 - r.x0, bh = r.y1 - r.y0, ar = (float)img->w / (float)img->h;
@@ -429,7 +444,8 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
         fz_append_printf(ctx, b, "/%s Do\nQ\n", name);
         pt_append_content(ctx, doc, page, b);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_buffer(ctx, b);
         pdf_drop_obj(ctx, ref);
         fz_drop_image(ctx, img);
@@ -442,8 +458,9 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
 int pt_winansi(int c)
 {
     static const int high[32] = {
-        0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017d, 0,
-        0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0, 0x017e, 0x0178,
+        0x20ac, 0,      0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160,
+        0x2039, 0x0152, 0,      0x017d, 0,      0,      0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
+        0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0,      0x017e, 0x0178,
     };
     if (c < 128 || (c >= 160 && c < 256)) return c;
     for (int i = 0; i < 32; i++)
@@ -471,7 +488,8 @@ void pt_draw_text(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_i
     pdf_obj *ref = NULL;
     fz_buffer *b = NULL;
     pt_strs lines = {0};
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         int simple = rf.base14[0] != 0;
         ref = simple ? pt_standard_font(ctx, doc, rf.base14) : pdf_add_cid_font(ctx, doc, rf.font);
         char name[32];
@@ -497,7 +515,8 @@ void pt_draw_text(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_i
         fz_append_string(ctx, b, "ET\nQ\n");
         pt_append_content(ctx, doc, page, b);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pt_strs_free(&lines);
         fz_drop_buffer(ctx, b);
         pdf_drop_obj(ctx, ref);
@@ -530,7 +549,8 @@ static void set_lighten(fz_context *ctx, pdf_annot *a)
 void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
 {
     pdf_annot *a = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         if (it->kind == PT_HIGHLIGHT) {
             static const enum pdf_annot_type types[] = {
                 PDF_ANNOT_HIGHLIGHT, PDF_ANNOT_UNDERLINE, PDF_ANNOT_STRIKE_OUT, PDF_ANNOT_SQUIGGLY, PDF_ANNOT_HIGHLIGHT,
@@ -561,10 +581,13 @@ void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
             float w = it->pen_width > 0 ? it->pen_width : 2;
             if (it->shape == PT_SHAPE_LINE || it->shape == PT_SHAPE_ARROW) {
                 a = pdf_create_annot(ctx, page, PDF_ANNOT_LINE);
-                fz_point p0 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[0] : (fz_point){it->rect.x0, it->rect.y0};
-                fz_point p1 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[1] : (fz_point){it->rect.x1, it->rect.y1};
+                fz_point p0 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[0]
+                                                                      : (fz_point){it->rect.x0, it->rect.y0};
+                fz_point p1 = it->strokes.n && it->strokes.v[0].n > 1 ? it->strokes.v[0].v[1]
+                                                                      : (fz_point){it->rect.x1, it->rect.y1};
                 pdf_set_annot_line(ctx, a, p0, p1);
-                if (it->shape == PT_SHAPE_ARROW) pdf_set_annot_line_ending_styles(ctx, a, PDF_ANNOT_LE_NONE, PDF_ANNOT_LE_OPEN_ARROW);
+                if (it->shape == PT_SHAPE_ARROW)
+                    pdf_set_annot_line_ending_styles(ctx, a, PDF_ANNOT_LE_NONE, PDF_ANNOT_LE_OPEN_ARROW);
             } else {
                 a = pdf_create_annot(ctx, page, it->shape == PT_SHAPE_ELLIPSE ? PDF_ANNOT_CIRCLE : PDF_ANNOT_SQUARE);
                 pdf_set_annot_rect(ctx, a, it->rect);
@@ -595,7 +618,8 @@ static pdf_annot *find_annot(fz_context *ctx, pdf_page *page, int xref)
 void pt_remove_annot(fz_context *ctx, pdf_document *doc, pt_key key)
 {
     pdf_page *page = pdf_load_page(ctx, doc, key.page);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         pdf_annot *a = find_annot(ctx, page, key.xref);
         if (a) pdf_delete_annot(ctx, page, a);
     }
@@ -605,8 +629,8 @@ void pt_remove_annot(fz_context *ctx, pdf_document *doc, pt_key key)
 
 /* ---- crops and scrubbing ---- */
 
-static void redact(fz_context *ctx, pdf_document *doc, pdf_page *page, const fz_rect *rects, int n,
-                   int images, int line_art)
+static void redact(fz_context *ctx, pdf_document *doc, pdf_page *page, const fz_rect *rects, int n, int images,
+                   int line_art)
 {
     if (!n) return;
     for (int i = 0; i < n; i++) {
@@ -621,12 +645,15 @@ static void redact(fz_context *ctx, pdf_document *doc, pdf_page *page, const fz_
 void pt_crop_page(fz_context *ctx, pdf_document *doc, int pno, fz_rect rect)
 {
     pdf_page *page = pdf_load_page(ctx, doc, pno);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_rect full = fz_bound_page(ctx, (fz_page *)page);
         rect = fz_intersect_rect(rect, full);
         fz_rect strips[4] = {
-            {full.x0, full.y0, full.x1, rect.y0}, {full.x0, rect.y1, full.x1, full.y1},
-            {full.x0, rect.y0, rect.x0, rect.y1}, {rect.x1, rect.y0, full.x1, rect.y1},
+            {full.x0, full.y0, full.x1, rect.y0},
+            {full.x0, rect.y1, full.x1, full.y1},
+            {full.x0, rect.y0, rect.x0, rect.y1},
+            {rect.x1, rect.y0, full.x1, rect.y1},
         };
         fz_rect keep[4];
         int n = 0;
@@ -683,7 +710,8 @@ void pt_scrub(fz_context *ctx, pdf_document *doc)
     int n = pdf_count_pages(ctx, doc);
     for (int p = 0; p < n; p++) {
         pdf_page *page = pdf_load_page(ctx, doc, p);
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             redact_hidden_text(ctx, doc, page);
             for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
                 if (pdf_annot_type(ctx, a) != PDF_ANNOT_FILE_ATTACHMENT) continue;
@@ -707,7 +735,8 @@ void pt_scrub(fz_context *ctx, pdf_document *doc)
     for (int x = 1; x < len; x++) {
         pdf_obj *obj = NULL;
         fz_try(ctx) obj = pdf_load_object(ctx, doc, x);
-        fz_catch(ctx) {
+        fz_catch(ctx)
+        {
             fz_ignore_error(ctx);
             continue;
         }
@@ -743,7 +772,8 @@ static void set_annot_texts(fz_context *ctx, pdf_document *doc, const pt_state *
         pt_annot_text *t = &s->annot_text.v[i];
         if (pt_state_has_key(&s->deleted, t->key)) continue;
         pdf_page *page = pdf_load_page(ctx, doc, t->key.page);
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             pdf_annot *a = find_annot(ctx, page, t->key.xref);
             if (a) {
                 pdf_set_annot_contents(ctx, a, t->text ? t->text : "");
@@ -760,7 +790,8 @@ static void set_forms(fz_context *ctx, pdf_document *doc, const pt_state *s)
     for (int i = 0; i < s->forms.n; i++) {
         pt_form_value *f = &s->forms.v[i];
         pdf_page *page = pdf_load_page(ctx, doc, f->key.page);
-        fz_try(ctx) {
+        fz_try(ctx)
+        {
             for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w))
                 if (pdf_to_num(ctx, pdf_annot_obj(ctx, w)) == f->key.xref)
                     pt_set_field(ctx, w, f->text, f->is_bool, f->on, f->size);
@@ -770,16 +801,18 @@ static void set_forms(fz_context *ctx, pdf_document *doc, const pt_state *s)
     }
 }
 
-static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *fonts_doc, int pno,
-                             const pt_state *s, pt_leaks *leaks)
+static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *fonts_doc, int pno, const pt_state *s,
+                             pt_leaks *leaks)
 {
     pdf_page *page = pdf_load_page(ctx, doc, pno);
     pt_rects redacts = {0};
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         for (int i = 0; i < s->items.n; i++)
             if (s->items.v[i].page == pno && s->items.v[i].kind == PT_REDACT) pt_push(redacts, s->items.v[i].rect);
         if (redacts.n) {
-            redact(ctx, doc, page, redacts.v, redacts.n, PDF_REDACT_IMAGE_PIXELS, PDF_REDACT_LINE_ART_REMOVE_IF_COVERED);
+            redact(ctx, doc, page, redacts.v, redacts.n, PDF_REDACT_IMAGE_PIXELS,
+                   PDF_REDACT_LINE_ART_REMOVE_IF_COVERED);
             for (int i = 0; i < s->items.n; i++) {
                 const pt_item *it = &s->items.v[i];
                 if (it->page != pno || it->kind != PT_REDACT) continue;
@@ -808,7 +841,8 @@ static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *f
                 pt_add_annotation(ctx, page, it);
         }
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pt_vec_free(redacts);
         fz_drop_page(ctx, (fz_page *)page);
     }
@@ -821,7 +855,8 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
     pdf_document *fonts_doc = NULL;
     fz_buffer *out = NULL;
     pt_ints pages = {0};
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fonts_doc = pt_open_pdf(ctx, path, password, &s->inserted);
         for (int i = 0; i < s->deleted.n; i++) pt_remove_annot(ctx, doc, s->deleted.v[i]);
         set_annot_texts(ctx, doc, s);
@@ -847,7 +882,8 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
         pt_apply_stamps(ctx, doc, &s->stamps, NULL, 0);
         out = pt_doc_bytes(ctx, doc, NULL);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pt_vec_free(pages);
         pdf_drop_document(ctx, fonts_doc);
         pdf_drop_document(ctx, doc);
@@ -876,7 +912,8 @@ fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data)
     fz_output *out = NULL;
     fz_var(buf);
     fz_var(out);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         pdf_image_rewriter_options img = {0};
         img.color_lossless_image_subsample_method = img.color_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC;
         img.gray_lossless_image_subsample_method = img.gray_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC;
@@ -903,11 +940,13 @@ fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data)
         pdf_write_document(ctx, doc, out, &o);
         fz_close_output(ctx, out);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_output(ctx, out);
         pdf_drop_document(ctx, doc);
     }
-    fz_catch(ctx) {
+    fz_catch(ctx)
+    {
         fz_drop_buffer(ctx, buf);
         fz_rethrow(ctx);
     }
@@ -923,7 +962,8 @@ fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg)
 {
     fz_pixmap *pix = pt_render_page(ctx, page, dpi / 72.0f, 0);
     fz_buffer *out = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         fz_set_pixmap_resolution(ctx, pix, dpi, dpi);
         out = jpeg ? fz_new_buffer_from_pixmap_as_jpeg(ctx, pix, fz_default_color_params, JPEG_QUALITY, 0)
                    : fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
@@ -938,7 +978,8 @@ static void image_page(fz_context *ctx, pdf_document *out, fz_image *img, float 
 {
     pdf_obj *ref = NULL, *res = NULL, *page = NULL;
     fz_buffer *b = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         ref = pdf_add_image(ctx, out, img);
         res = pdf_new_dict(ctx, out, 1);
         pdf_dict_puts(ctx, pdf_dict_put_dict(ctx, res, PDF_NAME(XObject), 1), "Im0", ref);
@@ -947,7 +988,8 @@ static void image_page(fz_context *ctx, pdf_document *out, fz_image *img, float 
         page = pdf_add_page(ctx, out, fz_make_rect(0, 0, w, h), 0, res, b);
         pdf_insert_page(ctx, out, -1, page);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pdf_drop_obj(ctx, page);
         fz_drop_buffer(ctx, b);
         pdf_drop_obj(ctx, res);
@@ -961,7 +1003,8 @@ fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
     pdf_document *src = pt_open_pdf_bytes(ctx, data->data, data->len, NULL);
     pdf_document *out = NULL;
     fz_buffer *result = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         out = pdf_create_document(ctx);
         int n = pdf_count_pages(ctx, src);
         for (int i = 0; i < n; i++) {
@@ -969,14 +1012,16 @@ fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
             fz_pixmap *pix = NULL;
             fz_buffer *jpg = NULL;
             fz_image *img = NULL;
-            fz_try(ctx) {
+            fz_try(ctx)
+            {
                 fz_rect r = fz_bound_page(ctx, page);
                 pix = pt_render_page(ctx, page, (float)dpi / 72, 0);
                 jpg = fz_new_buffer_from_pixmap_as_jpeg(ctx, pix, fz_default_color_params, JPEG_QUALITY, 0);
                 img = fz_new_image_from_buffer(ctx, jpg);
                 image_page(ctx, out, img, r.x1 - r.x0, r.y1 - r.y0);
             }
-            fz_always(ctx) {
+            fz_always(ctx)
+            {
                 fz_drop_image(ctx, img);
                 fz_drop_buffer(ctx, jpg);
                 fz_drop_pixmap(ctx, pix);
@@ -986,7 +1031,8 @@ fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
         }
         result = pt_doc_bytes(ctx, out, NULL);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         pdf_drop_document(ctx, out);
         pdf_drop_document(ctx, src);
     }
@@ -999,14 +1045,16 @@ pdf_document *pt_image_document(fz_context *ctx, const char *path)
 {
     fz_image *img = fz_new_image_from_file(ctx, path);
     pdf_document *out = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         int xres, yres;
         fz_image_resolution(img, &xres, &yres);
         out = pdf_create_document(ctx);
         image_page(ctx, out, img, img->w * 72.0f / (float)xres, img->h * 72.0f / (float)yres);
     }
     fz_always(ctx) fz_drop_image(ctx, img);
-    fz_catch(ctx) {
+    fz_catch(ctx)
+    {
         pdf_drop_document(ctx, out);
         fz_rethrow(ctx);
     }
@@ -1025,16 +1073,14 @@ static int is_pdf_path(fz_context *ctx, const char *path)
     return 0;
 }
 
-int pt_is_image_file(fz_context *ctx, const char *path)
-{
-    return !is_pdf_path(ctx, path);
-}
+int pt_is_image_file(fz_context *ctx, const char *path) { return !is_pdf_path(ctx, path); }
 
 fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts)
 {
     pdf_document *out = pdf_create_document(ctx);
     fz_buffer *result = NULL;
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         for (int i = 0; i < parts->n; i++) {
             const char *path = parts->v[i].path;
             pdf_document *src = is_pdf_path(ctx, path) ? pdf_open_document(ctx, path) : pt_image_document(ctx, path);
@@ -1054,7 +1100,8 @@ fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts)
 void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const int *pages, int count)
 {
     pdf_graft_map *map = pdf_new_graft_map(ctx, dst);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         pdf_obj *srcform = pdf_dict_getp(ctx, pdf_trailer(ctx, src), "Root/AcroForm");
         pdf_obj *dstroot = pdf_dict_get(ctx, pdf_trailer(ctx, dst), PDF_NAME(Root));
         pdf_obj *fields = NULL;
@@ -1073,7 +1120,8 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
             }
             if (!srcform) continue;
             pdf_page *pg = pdf_load_page(ctx, src, id);
-            fz_try(ctx) {
+            fz_try(ctx)
+            {
                 for (pdf_annot *w = pdf_first_widget(ctx, pg); w; w = pdf_next_widget(ctx, w)) {
                     pdf_obj *field = pdf_annot_obj(ctx, w), *parent;
                     while ((parent = pdf_dict_get(ctx, field, PDF_NAME(Parent)))) field = parent;
@@ -1107,9 +1155,8 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
 /* ---- the unsaved edits as a list (the Edits tab), and discarding some of them ---- */
 
 const char *pt_entry_names[] = {
-    "redact", "text", "note", "sign", "image", "highlight", "ink", "shape",
-    "form", "deleted", "comment", "rotate", "crop", "remove_page", "insert", "reorder",
-    "stamp", "properties", "outline", "certificate",
+    "redact",  "text",   "note", "sign",        "image",  "highlight", "ink",   "shape",      "form",    "deleted",
+    "comment", "rotate", "crop", "remove_page", "insert", "reorder",   "stamp", "properties", "outline", "certificate",
 };
 
 static void add(pt_entries *out, int page, pt_entry_kind kind, const char *name, const char *detail, pt_ref ref)
@@ -1129,7 +1176,8 @@ const char *pt_inserted_name(const pt_inserts *inserted, int own, int page)
     int start = own;
     for (int i = 0; i < inserted->n; i++) {
         if (page < start + inserted->v[i].pages)
-            return strncmp(inserted->v[i].path, PT_BLANK_PAGE, strlen(PT_BLANK_PAGE)) ? pt_basename(inserted->v[i].path) : "";
+            return strncmp(inserted->v[i].path, PT_BLANK_PAGE, strlen(PT_BLANK_PAGE)) ? pt_basename(inserted->v[i].path)
+                                                                                      : "";
         start += inserted->v[i].pages;
     }
     return "";
@@ -1142,8 +1190,8 @@ static int cmp_key(const void *a, const void *b)
 }
 
 /* Entries grouped by page: the document first, then each page in turn. */
-void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int own,
-                     pt_name_fn form_name, pt_name_fn annot_type, void *opaque, pt_entries *out)
+void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int own, pt_name_fn form_name,
+                     pt_name_fn annot_type, void *opaque, pt_entries *out)
 {
     pt_entries flat = {0};
     if (pt_is_reordered(s->order.v, s->order.n, own))
@@ -1156,24 +1204,28 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         free(detail);
     }
     if (s->meta.title || s->meta.author || s->meta.subject || s->meta.keywords)
-        add(&flat, PT_DOCUMENT, PT_E_META, "", s->meta.title ? s->meta.title : "", (pt_ref){PT_E_META, PT_DOCUMENT, 0, {0, 0}});
+        add(&flat, PT_DOCUMENT, PT_E_META, "", s->meta.title ? s->meta.title : "",
+            (pt_ref){PT_E_META, PT_DOCUMENT, 0, {0, 0}});
     if (s->outline_set) {
         char detail[32];
         snprintf(detail, sizeof detail, "%d entries", s->outline.n);
         add(&flat, PT_DOCUMENT, PT_E_OUTLINE, "", detail, (pt_ref){PT_E_OUTLINE, PT_DOCUMENT, 0, {0, 0}});
     }
     if (s->cert.cert)
-        add(&flat, s->cert.page, PT_E_CERT, "", pt_basename(s->cert.cert), (pt_ref){PT_E_CERT, s->cert.page, 0, {0, 0}});
+        add(&flat, s->cert.page, PT_E_CERT, "", pt_basename(s->cert.cert),
+            (pt_ref){PT_E_CERT, s->cert.page, 0, {0, 0}});
     int pages = fz_count_pages(ctx, doc);
     for (int p = 0; p < pages; p++) {
-        if (p < own && !in_order(s, p)) add(&flat, p, PT_E_REMOVE_PAGE, "", "", (pt_ref){PT_E_REMOVE_PAGE, p, 0, {0, 0}});
+        if (p < own && !in_order(s, p))
+            add(&flat, p, PT_E_REMOVE_PAGE, "", "", (pt_ref){PT_E_REMOVE_PAGE, p, 0, {0, 0}});
         if (p >= own && in_order(s, p))
             add(&flat, p, PT_E_INSERT, "", pt_inserted_name(&s->inserted, own, p), (pt_ref){PT_E_INSERT, p, 0, {0, 0}});
     }
     for (int i = 0; i < s->rotation.n; i++) {
         char detail[32];
         snprintf(detail, sizeof detail, "%d degrees", ((s->rotation.v[i].degrees % 360) + 360) % 360);
-        add(&flat, s->rotation.v[i].page, PT_E_ROTATE, "", detail, (pt_ref){PT_E_ROTATE, s->rotation.v[i].page, 0, {0, 0}});
+        add(&flat, s->rotation.v[i].page, PT_E_ROTATE, "", detail,
+            (pt_ref){PT_E_ROTATE, s->rotation.v[i].page, 0, {0, 0}});
     }
     for (int i = 0; i < s->crop.n; i++)
         add(&flat, s->crop.v[i].page, PT_E_CROP, "", "", (pt_ref){PT_E_CROP, s->crop.v[i].page, 0, {0, 0}});
@@ -1193,7 +1245,8 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
             char *detail = NULL;
             if (it->kind == PT_REDACT) {
                 if (!st) {
-                    fz_try(ctx) {
+                    fz_try(ctx)
+                    {
                         page = fz_load_page(ctx, doc, p);
                         st = pt_stext(ctx, page);
                     }
@@ -1208,7 +1261,9 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
                 detail[n] = 0;
             } else if (it->kind == PT_HIGHLIGHT) detail = pt_strdup(it->quote ? it->quote : "");
             else detail = pt_strdup(it->text ? it->text : "");
-            const char *name = it->kind == PT_HIGHLIGHT ? pt_mark_names[it->style] : it->kind == PT_SHAPE ? pt_shape_names[it->shape] : "";
+            const char *name = it->kind == PT_HIGHLIGHT ? pt_mark_names[it->style]
+                               : it->kind == PT_SHAPE   ? pt_shape_names[it->shape]
+                                                        : "";
             add(&flat, p, (pt_entry_kind)it->kind, name, detail, (pt_ref){(pt_entry_kind)it->kind, p, index, {0, 0}});
             free(detail);
             index++;
@@ -1220,7 +1275,8 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     for (int i = 0; i < s->forms.n; i++) {
         const pt_form_value *f = &s->forms.v[i];
         const char *shown = f->is_bool ? (f->on ? "checked" : "unchecked") : f->text;
-        add(&flat, f->key.page, PT_E_FORM, form_name ? form_name(opaque, f->key) : "", shown, (pt_ref){PT_E_FORM, f->key.page, 0, f->key});
+        add(&flat, f->key.page, PT_E_FORM, form_name ? form_name(opaque, f->key) : "", shown,
+            (pt_ref){PT_E_FORM, f->key.page, 0, f->key});
     }
     pt_key *deleted = malloc(sizeof(pt_key) * (size_t)(s->deleted.n + 1));
     if (!deleted) abort();
@@ -1228,7 +1284,8 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     qsort(deleted, (size_t)s->deleted.n, sizeof(pt_key), cmp_key);
     for (int i = 0; i < s->deleted.n; i++) {
         const char *type = annot_type ? annot_type(opaque, deleted[i]) : NULL;
-        add(&flat, deleted[i].page, PT_E_DELETED, type && *type ? type : "annotation", "", (pt_ref){PT_E_DELETED, deleted[i].page, 0, deleted[i]});
+        add(&flat, deleted[i].page, PT_E_DELETED, type && *type ? type : "annotation", "",
+            (pt_ref){PT_E_DELETED, deleted[i].page, 0, deleted[i]});
     }
     free(deleted);
     pt_annot_texts comments = {0};
@@ -1236,7 +1293,8 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         if (!pt_state_has_key(&s->deleted, s->annot_text.v[i].key)) pt_push(comments, s->annot_text.v[i]);
     qsort(comments.v, (size_t)comments.n, sizeof(pt_annot_text), cmp_key);
     for (int i = 0; i < comments.n; i++)
-        add(&flat, comments.v[i].key.page, PT_E_COMMENT, "", comments.v[i].text, (pt_ref){PT_E_COMMENT, comments.v[i].key.page, 0, comments.v[i].key});
+        add(&flat, comments.v[i].key.page, PT_E_COMMENT, "", comments.v[i].text,
+            (pt_ref){PT_E_COMMENT, comments.v[i].key.page, 0, comments.v[i].key});
     pt_vec_free(comments);
     /* grouped by page, pages in the order they are first listed */
     pt_ints order = {0};
@@ -1269,8 +1327,8 @@ int pt_count_edits(const pt_state *s, int own, int pages)
     for (int p = 0; p < own; p++) removed += !in_order(s, p);
     for (int i = 0; i < s->order.n; i++) inserted += s->order.v[i] >= own;
     int structure = removed + inserted + s->rotation.n + s->crop.n + pt_is_reordered(s->order.v, s->order.n, own);
-    int document = s->stamps.n + (s->meta.title || s->meta.author || s->meta.subject || s->meta.keywords) + s->outline_set +
-                   (s->cert.cert != NULL);
+    int document = s->stamps.n + (s->meta.title || s->meta.author || s->meta.subject || s->meta.keywords) +
+                   s->outline_set + (s->cert.cert != NULL);
     return s->items.n + s->forms.n + s->deleted.n + comments + structure + document;
 }
 
@@ -1282,7 +1340,14 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
     for (int r = 0; r < n; r++) {
         pt_ref ref = refs[r];
         switch (ref.kind) {
-        case PT_E_REDACT: case PT_E_TEXT: case PT_E_NOTE: case PT_E_SIGN: case PT_E_IMAGE: case PT_E_HIGHLIGHT: case PT_E_INK: case PT_E_SHAPE:
+        case PT_E_REDACT:
+        case PT_E_TEXT:
+        case PT_E_NOTE:
+        case PT_E_SIGN:
+        case PT_E_IMAGE:
+        case PT_E_HIGHLIGHT:
+        case PT_E_INK:
+        case PT_E_SHAPE:
             for (int i = 0, k = 0; i < s->items.n; i++)
                 if (s->items.v[i].page == ref.page && k++ == ref.index) drop[i] = 1;
             break;
@@ -1306,7 +1371,8 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
             for (int i = 0; i < s->annot_text.n; i++)
                 if (!memcmp(&s->annot_text.v[i].key, &ref.key, sizeof ref.key)) {
                     free(s->annot_text.v[i].text);
-                    memmove(s->annot_text.v + i, s->annot_text.v + i + 1, sizeof(pt_annot_text) * (size_t)(s->annot_text.n - i - 1));
+                    memmove(s->annot_text.v + i, s->annot_text.v + i + 1,
+                            sizeof(pt_annot_text) * (size_t)(s->annot_text.n - i - 1));
                     s->annot_text.n--;
                     break;
                 }
@@ -1322,12 +1388,11 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
             break;
         case PT_E_REMOVE_PAGE: pt_put_back(&s->order, ref.page); break;
         case PT_E_INSERT: {
-                int k = 0;
-                for (int i = 0; i < s->order.n; i++)
-                    if (s->order.v[i] != ref.page) s->order.v[k++] = s->order.v[i];
-                s->order.n = k;
-            }
-            break;
+            int k = 0;
+            for (int i = 0; i < s->order.n; i++)
+                if (s->order.v[i] != ref.page) s->order.v[k++] = s->order.v[i];
+            s->order.n = k;
+        } break;
         case PT_E_REORDER: pt_file_order(s->order.v, s->order.n, own); break;
         case PT_E_STAMP:
             if (ref.index >= 0 && ref.index < s->stamps.n) drop_stamp[ref.index] = 1;

@@ -8,7 +8,8 @@
 
 #define MARGIN 24.0f
 
-const char *pt_stamp_at_names[PT_AT_COUNT] = {"top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right", "centre", "diagonal"};
+const char *pt_stamp_at_names[PT_AT_COUNT] = {"top-left", "top",          "top-right", "bottom-left",
+                                              "bottom",   "bottom-right", "centre",    "diagonal"};
 
 int pt_stamp_at_from_name(const char *name)
 {
@@ -22,7 +23,8 @@ char *pt_bates_label(const pt_stamp *s, int n)
     return pt_format("%s%0*d%s", s->text ? s->text : "", s->digits, s->start + n, s->suffix ? s->suffix : "");
 }
 
-static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_stamp *s, const char *text, fz_font *helv)
+static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_stamp *s, const char *text,
+                       fz_font *helv)
 {
     fz_rect box = fz_bound_page(ctx, (fz_page *)page);
     float w = box.x1 - box.x0, h = box.y1 - box.y0;
@@ -45,7 +47,8 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
     pdf_obj *font = NULL, *gs = NULL, *gs_ref = NULL;
     fz_buffer *b = NULL;
     fz_var(font), fz_var(gs), fz_var(gs_ref), fz_var(b);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         char fname[32], gname[32] = "";
         font = pt_standard_font(ctx, doc, "Helvetica");
         pt_add_resource(ctx, doc, page, PDF_NAME(Font), "PTF", font, fname);
@@ -60,7 +63,8 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
         b = fz_new_buffer(ctx, 256);
         fz_append_string(ctx, b, "q\n");
         if (*gname) fz_append_printf(ctx, b, "/%s gs\n", gname);
-        fz_append_printf(ctx, b, "%g %g %g rg\nBT\n/%s 1 Tf\n", s->rgb[0] / 255.0, s->rgb[1] / 255.0, s->rgb[2] / 255.0, fname);
+        fz_append_printf(ctx, b, "%g %g %g rg\nBT\n/%s 1 Tf\n", s->rgb[0] / 255.0, s->rgb[1] / 255.0, s->rgb[2] / 255.0,
+                         fname);
         pt_append_matrix(ctx, b, tm, "Tm");
         fz_append_byte(ctx, b, '<');
         for (const char *p = text; *p;) {
@@ -71,7 +75,8 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
         fz_append_string(ctx, b, "> Tj\nET\nQ\n");
         pt_append_content(ctx, doc, page, b);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_buffer(ctx, b);
         pdf_drop_obj(ctx, gs_ref);
         pdf_drop_obj(ctx, gs);
@@ -90,7 +95,8 @@ void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps
     fz_font *helv = NULL;
     pt_ints list = {0};
     fz_var(helv);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         helv = fz_new_base14_font(ctx, "Helvetica");
         for (int k = 0; k < stamps->n; k++) {
             const pt_stamp *s = &stamps->v[k];
@@ -105,11 +111,13 @@ void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps
                 if (o < 0 || o >= out_count || !chosen[o]) continue;
                 char *text = s->kind == PT_STAMP_BATES ? pt_bates_label(s, rank[o]) : pt_strdup(s->text ? s->text : "");
                 pdf_page *page = NULL;
-                fz_try(ctx) {
+                fz_try(ctx)
+                {
                     page = pdf_load_page(ctx, doc, p);
                     if (*text) stamp_page(ctx, doc, page, s, text, helv);
                 }
-                fz_always(ctx) {
+                fz_always(ctx)
+                {
                     fz_drop_page(ctx, (fz_page *)page);
                     free(text);
                 }
@@ -117,7 +125,8 @@ void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps
             }
         }
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_font(ctx, helv);
         pt_vec_free(list);
         free(chosen);
@@ -128,9 +137,13 @@ void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps
 
 /* ---- document properties ---- */
 
-static const char *META_KEYS[4] = {FZ_META_INFO_TITLE, FZ_META_INFO_AUTHOR, FZ_META_INFO_SUBJECT, FZ_META_INFO_KEYWORDS};
+static const char *META_KEYS[4] = {FZ_META_INFO_TITLE, FZ_META_INFO_AUTHOR, FZ_META_INFO_SUBJECT,
+                                   FZ_META_INFO_KEYWORDS};
 
-static char **meta_field(pt_meta *m, int i) { return i == 0 ? &m->title : i == 1 ? &m->author : i == 2 ? &m->subject : &m->keywords; }
+static char **meta_field(pt_meta *m, int i)
+{
+    return i == 0 ? &m->title : i == 1 ? &m->author : i == 2 ? &m->subject : &m->keywords;
+}
 
 void pt_get_meta(fz_context *ctx, pdf_document *doc, pt_meta *out)
 {
@@ -180,10 +193,12 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
     }
     int n = b->n, pages = pdf_count_pages(ctx, doc);
     pdf_obj **node = calloc((size_t)n + 1, sizeof *node);
-    int *level = calloc((size_t)n, sizeof(int)), *parent = calloc((size_t)n, sizeof(int)), *count = calloc((size_t)n, sizeof(int));
+    int *level = calloc((size_t)n, sizeof(int)), *parent = calloc((size_t)n, sizeof(int)),
+        *count = calloc((size_t)n, sizeof(int));
     pdf_obj *top = NULL;
     fz_var(top);
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         for (int i = 0; i < n; i++) {
             level[i] = b->v[i].level < 0 ? 0 : b->v[i].level;
             if (i == 0) level[i] = 0;
@@ -197,7 +212,8 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
             int pno = b->v[i].page;
             if (pno >= 0 && pno < pages) {
                 pdf_page *page = pdf_load_page(ctx, doc, pno);
-                fz_try(ctx) {
+                fz_try(ctx)
+                {
                     fz_point at = fz_transform_point(fz_make_point(0, b->v[i].y), pt_page_to_pdf(ctx, page));
                     pdf_obj *dest = pdf_dict_put_array(ctx, node[i], PDF_NAME(Dest), 5);
                     pdf_array_push(ctx, dest, page->obj);
@@ -240,7 +256,8 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
         pdf_dict_put_int(ctx, top, PDF_NAME(Count), n);
         pdf_dict_put(ctx, root, PDF_NAME(Outlines), top);
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         for (int i = 0; i < n; i++) pdf_drop_obj(ctx, node[i]);
         pdf_drop_obj(ctx, top);
         free(node), free(level), free(parent), free(count);

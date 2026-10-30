@@ -26,13 +26,24 @@ pt_glfw_key_fn glfwSetKeyCallback(void *window, pt_glfw_key_fn fn)
 }
 
 typedef void (*glfw_close_fn)(void *window);
-glfw_close_fn glfwSetWindowCloseCallback(void *window, glfw_close_fn fn) { (void)window, (void)fn; return NULL; }
+glfw_close_fn glfwSetWindowCloseCallback(void *window, glfw_close_fn fn)
+{
+    (void)window, (void)fn;
+    return NULL;
+}
 void glfwSetWindowShouldClose(void *window, int value) { (void)window, (void)value; }
 void glfwFocusWindow(void *window) { (void)window; }
 void glfwRequestWindowAttention(void *window) { (void)window; }
 
-typedef struct { int width, height; unsigned char *pixels; } GLFWimage;
-void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot) { (void)image, (void)xhot, (void)yhot; return NULL; }
+typedef struct {
+    int width, height;
+    unsigned char *pixels;
+} GLFWimage;
+void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot)
+{
+    (void)image, (void)xhot, (void)yhot;
+    return NULL;
+}
 void glfwSetCursor(void *window, void *cursor) { (void)window, (void)cursor; }
 void glfwDestroyCursor(void *cursor) { (void)cursor; }
 
@@ -45,5 +56,6 @@ void glfwWaitEventsTimeout(double timeout)
     struct android_app *a = GetAndroidApp();
     struct android_poll_source *source = NULL;
     int events = 0;
-    if (ALooper_pollOnce((int)(timeout * 1000), NULL, &events, (void **)&source) >= 0 && source) source->process(a, source);
+    if (ALooper_pollOnce((int)(timeout * 1000), NULL, &events, (void **)&source) >= 0 && source)
+        source->process(a, source);
 }

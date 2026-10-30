@@ -27,9 +27,9 @@ int pt_desktop_install(const char *exe, char **entry, char **icon)
     pt_desktop_targets(entry, icon);
     const char *text = (const char *)pt_asset_desktop, *exec = strstr(text, "Exec=" DESKTOP_ID " ");
     char *quoted = strchr(exe, ' ') ? pt_format("\"%s\"", exe) : pt_strdup(exe);
-    char *content = exec ? pt_format("%.*sExec=%s %s", (int)(exec - text), text, quoted,
-                                     exec + strlen("Exec=" DESKTOP_ID " "))
-                         : pt_strdup(text);
+    char *content =
+        exec ? pt_format("%.*sExec=%s %s", (int)(exec - text), text, quoted, exec + strlen("Exec=" DESKTOP_ID " "))
+             : pt_strdup(text);
     free(quoted);
     int rc = pt_write_file(*entry, content, strlen(content)) ||
              pt_write_file(*icon, pt_asset_logo_svg, (size_t)pt_asset_logo_svg_size);

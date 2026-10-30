@@ -15,7 +15,12 @@ static unsigned bid(tab *t, int k) { return ui_id(t, 60000 + k); }
 
 /* ---- opening ---- */
 
-typedef struct { tab *t; char *path; int tried, line; char *source; } open_job;
+typedef struct {
+    tab *t;
+    char *path;
+    int tried, line;
+    char *source;
+} open_job;
 
 static void open_password(void *ctx, const char *password);
 
@@ -84,14 +89,62 @@ void tab_restyle(tab *t) { (void)t; }
 /* ---- actions shared by toolbar, menus and shortcuts ---- */
 
 enum {
-    A_SAVE, A_SAVE_AS, A_OPTIMIZE, A_EXPORT, A_PROTECT, A_UNPROTECT, A_PRINT, A_PREVIEW, A_COPY_PATH, A_SHARE, A_SPLIT,
-    A_UNDO, A_REDO, A_COPY, A_DELETE, A_CLEAR_PAGE, A_CLEAR_ALL, A_FIND,
-    A_SNAP, A_AUTO, A_REDACT_COLOUR, A_MARK_COLOUR, A_PEN_COLOUR,
-    A_ROTATE_LEFT, A_ROTATE_RIGHT, A_FIT_CONTENT, A_UNCROP, A_INSERT, A_INSERT_BLANK, A_REMOVE, A_TICK, A_UNTICK,
-    A_SIDEBAR, A_CONTINUOUS, A_ZOOM_IN, A_ZOOM_OUT, A_FIT, A_FIT_HEIGHT, A_PREV, A_NEXT, A_GOTO,
-    A_PII, A_BATES, A_WATERMARK, A_PROPERTIES, A_EXPORT_IMAGES, A_TWO_PAGES, A_COVER, A_PRESENT, A_COMPARE, A_OCR,
-    A_CERT, A_TOOL0,
-    A_STYLE0 = A_TOOL0 + T_COUNT, A_MARKC0 = A_STYLE0 + 5, A_SHAPE0 = A_MARKC0 + 5,
+    A_SAVE,
+    A_SAVE_AS,
+    A_OPTIMIZE,
+    A_EXPORT,
+    A_PROTECT,
+    A_UNPROTECT,
+    A_PRINT,
+    A_PREVIEW,
+    A_COPY_PATH,
+    A_SHARE,
+    A_SPLIT,
+    A_UNDO,
+    A_REDO,
+    A_COPY,
+    A_DELETE,
+    A_CLEAR_PAGE,
+    A_CLEAR_ALL,
+    A_FIND,
+    A_SNAP,
+    A_AUTO,
+    A_REDACT_COLOUR,
+    A_MARK_COLOUR,
+    A_PEN_COLOUR,
+    A_ROTATE_LEFT,
+    A_ROTATE_RIGHT,
+    A_FIT_CONTENT,
+    A_UNCROP,
+    A_INSERT,
+    A_INSERT_BLANK,
+    A_REMOVE,
+    A_TICK,
+    A_UNTICK,
+    A_SIDEBAR,
+    A_CONTINUOUS,
+    A_ZOOM_IN,
+    A_ZOOM_OUT,
+    A_FIT,
+    A_FIT_HEIGHT,
+    A_PREV,
+    A_NEXT,
+    A_GOTO,
+    A_PII,
+    A_BATES,
+    A_WATERMARK,
+    A_PROPERTIES,
+    A_EXPORT_IMAGES,
+    A_TWO_PAGES,
+    A_COVER,
+    A_PRESENT,
+    A_COMPARE,
+    A_OCR,
+    A_CERT,
+    A_TOOL0,
+    A_STYLE0 = A_TOOL0 + T_COUNT,
+    A_MARKC0 = A_STYLE0 + 5,
+    A_SHAPE0 = A_MARKC0 + 5,
 };
 
 static const char *SHAPE_ICONS[4] = {"shape-rect", "shape-ellipse", "shape-line", "shape-arrow"};
@@ -244,12 +297,14 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(tools, "Compare with...", "compare", NULL, run, t, A_COMPARE, doc, 0);
         menu_sep(tools);
         ui_menu *s = menu_sub(tools, "Mark style", "highlight");
-        for (int i = 0; i < 5; i++) menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, mark_style() == i);
+        for (int i = 0; i < 5; i++)
+            menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, mark_style() == i);
         ui_menu *c = menu_sub(tools, "Mark colour", "custom-colour");
         const preset *p = mark_style() == PT_MARK_HIGHLIGHT ? HIGHLIGHT_PRESETS : INK_PRESETS;
         unsigned char current[3];
         mark_colour(mark_style(), current);
-        for (int i = 0; i < 5; i++) menu_swatch_item(c, p[i].name, p[i].rgb, run, t, A_MARKC0 + i, !memcmp(current, p[i].rgb, 3));
+        for (int i = 0; i < 5; i++)
+            menu_swatch_item(c, p[i].name, p[i].rgb, run, t, A_MARKC0 + i, !memcmp(current, p[i].rgb, 3));
         menu_sep(c);
         menu_item(c, "Custom mark colour...", "custom-colour", NULL, run, t, A_MARK_COLOUR, 1, 0);
     }
@@ -269,7 +324,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(pages, "Untick all pages", "untick", NULL, run, t, A_UNTICK, doc, 0);
     }
     if (view) {
-        menu_item(view, "Show sidebar", "sidebar", "F9", run, t, A_SIDEBAR, 1, pt_settings_int(&app.settings, "show_sidebar"));
+        menu_item(view, "Show sidebar", "sidebar", "F9", run, t, A_SIDEBAR, 1,
+                  pt_settings_int(&app.settings, "show_sidebar"));
         menu_item(view, "Continuous", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
         menu_item(view, "Two pages", "two-pages", NULL, run, t, A_TWO_PAGES, doc, t->two_pages);
         menu_item(view, "Cover page alone", "file", NULL, run, t, A_COVER, doc && t->two_pages, t->cover_alone);
@@ -312,13 +368,35 @@ static void ask_goto(tab *t)
 void tab_shortcuts(tab *t)
 {
     if (dialogs_open() || menu_is_open()) return;
-    struct { int ctrl, shift, key; intptr_t action; } keys[] = {
-        {1, 0, KEY_F, A_FIND}, {1, 0, KEY_S, A_SAVE}, {1, 1, KEY_S, A_SAVE_AS}, {1, 0, KEY_E, A_EXPORT},
-        {1, 0, KEY_P, A_PRINT}, {1, 0, KEY_G, A_GOTO}, {1, 1, KEY_L, A_ROTATE_LEFT}, {1, 1, KEY_R, A_ROTATE_RIGHT}, {0, 0, KEY_F9, A_SIDEBAR},
-        {1, 0, KEY_Z, A_UNDO}, {1, 1, KEY_Z, A_REDO}, {1, 0, KEY_Y, A_REDO}, {1, 0, KEY_C, A_COPY},
-        {0, 0, KEY_DELETE, A_DELETE}, {1, 0, KEY_EQUAL, A_ZOOM_IN}, {1, 1, KEY_EQUAL, A_ZOOM_IN}, {1, 0, KEY_KP_ADD, A_ZOOM_IN},
-        {1, 0, KEY_MINUS, A_ZOOM_OUT}, {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT}, {1, 0, KEY_ZERO, A_FIT}, {1, 0, KEY_NINE, A_FIT_HEIGHT},
-        {0, 0, KEY_LEFT, A_PREV}, {0, 0, KEY_PAGE_UP, A_PREV}, {0, 0, KEY_RIGHT, A_NEXT}, {0, 0, KEY_PAGE_DOWN, A_NEXT},
+    struct {
+        int ctrl, shift, key;
+        intptr_t action;
+    } keys[] = {
+        {1, 0, KEY_F, A_FIND},
+        {1, 0, KEY_S, A_SAVE},
+        {1, 1, KEY_S, A_SAVE_AS},
+        {1, 0, KEY_E, A_EXPORT},
+        {1, 0, KEY_P, A_PRINT},
+        {1, 0, KEY_G, A_GOTO},
+        {1, 1, KEY_L, A_ROTATE_LEFT},
+        {1, 1, KEY_R, A_ROTATE_RIGHT},
+        {0, 0, KEY_F9, A_SIDEBAR},
+        {1, 0, KEY_Z, A_UNDO},
+        {1, 1, KEY_Z, A_REDO},
+        {1, 0, KEY_Y, A_REDO},
+        {1, 0, KEY_C, A_COPY},
+        {0, 0, KEY_DELETE, A_DELETE},
+        {1, 0, KEY_EQUAL, A_ZOOM_IN},
+        {1, 1, KEY_EQUAL, A_ZOOM_IN},
+        {1, 0, KEY_KP_ADD, A_ZOOM_IN},
+        {1, 0, KEY_MINUS, A_ZOOM_OUT},
+        {1, 0, KEY_KP_SUBTRACT, A_ZOOM_OUT},
+        {1, 0, KEY_ZERO, A_FIT},
+        {1, 0, KEY_NINE, A_FIT_HEIGHT},
+        {0, 0, KEY_LEFT, A_PREV},
+        {0, 0, KEY_PAGE_UP, A_PREV},
+        {0, 0, KEY_RIGHT, A_NEXT},
+        {0, 0, KEY_PAGE_DOWN, A_NEXT},
         {0, 0, KEY_F5, A_PRESENT},
     };
     for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
@@ -374,12 +452,14 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
     unsigned char picked[3];
     int hit = 0;
     if (t->tool == T_REDACT) {
-        if (draw && ui_button(bid(t, 30), (Rectangle){x, y, button_width("Snap", NULL, 0) + 4, h}, "Snap", NULL,
-                              t->snap_text ? B_CHECKED : B_FLAT, "Redact the text you drag over (off: a free rectangle)"))
+        if (draw &&
+            ui_button(bid(t, 30), (Rectangle){x, y, button_width("Snap", NULL, 0) + 4, h}, "Snap", NULL,
+                      t->snap_text ? B_CHECKED : B_FLAT, "Redact the text you drag over (off: a free rectangle)"))
             run(t, A_SNAP);
         x += button_width("Snap", NULL, 0) + 6;
-        if (draw && ui_button(bid(t, 31), (Rectangle){x, y, button_width("Auto fill", NULL, 0) + 4, h}, "Auto fill", NULL,
-                              t->auto_fill ? B_CHECKED : B_FLAT, "Fill each redaction with the colour sampled around it"))
+        if (draw &&
+            ui_button(bid(t, 31), (Rectangle){x, y, button_width("Auto fill", NULL, 0) + 4, h}, "Auto fill", NULL,
+                      t->auto_fill ? B_CHECKED : B_FLAT, "Fill each redaction with the colour sampled around it"))
             run(t, A_AUTO);
         x += button_width("Auto fill", NULL, 0) + 6;
         if (draw && ui_swatch_button(bid(t, 32), (Rectangle){x, y + (h - 28) / 2, 28, 28}, t->manual_rgb, 0,
@@ -396,7 +476,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         Rectangle sb = {x, y, 42, h};
         if (draw && ui_button(bid(t, 40), sb, NULL, MARK_ICONS[style], B_FLAT | B_MENU, NULL)) {
             ui_menu *m = menu_new();
-            for (int i = 0; i < 5; i++) menu_item(m, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, style == i);
+            for (int i = 0; i < 5; i++)
+                menu_item(m, MARK_LABELS[i], MARK_ICONS[i], NULL, run, t, A_STYLE0 + i, 1, style == i);
             menu_open_below(m, sb);
         }
         static char tip[64];
@@ -410,7 +491,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         for (int i = 0; i < 5; i++) {
             int on = !memcmp(current, p[i].rgb, 3);
             preset_hit |= on;
-            if (draw && ui_swatch_button(bid(t, 42 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, p[i].rgb, on, p[i].name))
+            if (draw &&
+                ui_swatch_button(bid(t, 42 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, p[i].rgb, on, p[i].name))
                 set_mark_colour(t, p[i].rgb);
             x += 30;
         }
@@ -432,9 +514,11 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         x += w + 2;
     } else if (t->tool == T_CROP) {
         float w1 = button_width("Crop to content", "crop", 0), w2 = button_width("Remove crop", "close", 0);
-        if (draw && ui_button(bid(t, 50), (Rectangle){x, y, w1, h}, "Crop to content", "crop", B_FLAT, NULL)) run(t, A_FIT_CONTENT);
+        if (draw && ui_button(bid(t, 50), (Rectangle){x, y, w1, h}, "Crop to content", "crop", B_FLAT, NULL))
+            run(t, A_FIT_CONTENT);
         x += w1 + 2;
-        if (draw && ui_button(bid(t, 51), (Rectangle){x, y, w2, h}, "Remove crop", "close", B_FLAT, NULL)) run(t, A_UNCROP);
+        if (draw && ui_button(bid(t, 51), (Rectangle){x, y, w2, h}, "Remove crop", "close", B_FLAT, NULL))
+            run(t, A_UNCROP);
         x += w2 + 2;
     } else if (t->tool == T_DRAW || t->tool == T_SHAPE) {
         /* shapes share the pen's colour and width */
@@ -442,7 +526,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
             Rectangle sb = {x, y, 42, h};
             if (draw && ui_button(bid(t, 64), sb, NULL, SHAPE_ICONS[t->shape], B_FLAT | B_MENU, NULL)) {
                 ui_menu *m = menu_new();
-                for (int i = 0; i < 4; i++) menu_item(m, SHAPE_LABELS[i], SHAPE_ICONS[i], NULL, run, t, A_SHAPE0 + i, 1, (int)t->shape == i);
+                for (int i = 0; i < 4; i++)
+                    menu_item(m, SHAPE_LABELS[i], SHAPE_ICONS[i], NULL, run, t, A_SHAPE0 + i, 1, (int)t->shape == i);
                 menu_open_below(m, sb);
             }
             static char tip[48];
@@ -454,7 +539,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         for (int i = 0; i < 6; i++) {
             int on = !memcmp(t->pen_rgb, PEN_COLOURS[i].rgb, 3);
             known |= on;
-            if (draw && ui_swatch_button(bid(t, 55 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, PEN_COLOURS[i].rgb, on, PEN_COLOURS[i].name))
+            if (draw && ui_swatch_button(bid(t, 55 + i), (Rectangle){x, y + (h - 28) / 2, 28, 28}, PEN_COLOURS[i].rgb,
+                                         on, PEN_COLOURS[i].name))
                 set_pen_colour(t, PEN_COLOURS[i].rgb);
             x += 30;
         }
@@ -482,8 +568,8 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
 
 static int tool_has_options(tab *t)
 {
-    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW || t->tool == T_SHAPE ||
-           t->tool == T_SIGN;
+    return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW ||
+           t->tool == T_SHAPE || t->tool == T_SIGN;
 }
 
 /* phone-sized windows: one picker for the tools, the rest in an overflow menu; tool options get their own row */
@@ -493,18 +579,24 @@ static void narrow_toolbar(tab *t, Rectangle area)
     int doc = t->doc != NULL;
     int dis = doc ? 0 : B_DISABLED;
     float x = area.x;
-    if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", t->side_target ? B_CHECKED : B_FLAT, "Show or hide the sidebar (F9)"))
+    if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", t->side_target ? B_CHECKED : B_FLAT,
+                  "Show or hide the sidebar (F9)"))
         run(t, A_SIDEBAR);
     x += 34;
-    if (ui_button(bid(t, 2), (Rectangle){x, y, 32, h}, NULL, "undo", B_FLAT | (doc && t->nhist ? 0 : B_DISABLED), "Undo (Ctrl+Z)")) run(t, A_UNDO);
+    if (ui_button(bid(t, 2), (Rectangle){x, y, 32, h}, NULL, "undo", B_FLAT | (doc && t->nhist ? 0 : B_DISABLED),
+                  "Undo (Ctrl+Z)"))
+        run(t, A_UNDO);
     x += 34;
-    if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
+    if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED),
+                  "Redo (Ctrl+Shift+Z)"))
+        run(t, A_REDO);
     x += 34;
     x = separator(x, y, h);
     Rectangle tb = {x, y, 32, h};
     if (ui_button(bid(t, 10), tb, NULL, TOOLS[t->tool].icon, B_CHECKED | dis, TOOLS[t->tool].tip)) {
         ui_menu *m = menu_new();
-        for (int i = 0; i < T_COUNT; i++) menu_item(m, TOOLS[i].label, TOOLS[i].icon, NULL, run, t, A_TOOL0 + i, doc, t->tool == (tool_id)i);
+        for (int i = 0; i < T_COUNT; i++)
+            menu_item(m, TOOLS[i].label, TOOLS[i].icon, NULL, run, t, A_TOOL0 + i, doc, t->tool == (tool_id)i);
         menu_open_below(m, tb);
     }
     float rx = area.x + area.width - 32;
@@ -531,10 +623,12 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_open_below(m, more);
     }
     rx -= 34;
-    if (ui_button(bid(t, 25), (Rectangle){rx, y, 32, h}, NULL, "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED), "Save (overwrite original) (Ctrl+S)"))
+    if (ui_button(bid(t, 25), (Rectangle){rx, y, 32, h}, NULL, "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
+                  "Save (overwrite original) (Ctrl+S)"))
         run(t, A_SAVE);
     rx -= 34;
-    if (ui_button(bid(t, 24), (Rectangle){rx, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis, "Find (Ctrl+F)")) {
+    if (ui_button(bid(t, 24), (Rectangle){rx, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis,
+                  "Find (Ctrl+F)")) {
         if (t->find_open) hide_find(t);
         else run(t, A_FIND);
     }
@@ -554,13 +648,17 @@ void tab_toolbar(tab *t, Rectangle area)
     float save_w = button_width("Save", "save", 0) + 22;
     float right = 34 * 4 + ZOOM_LABEL_W + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
     float x = area.x;
-    if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", pt_settings_int(&app.settings, "show_sidebar") ? B_CHECKED : B_FLAT,
-                  "Show or hide the sidebar (F9)"))
+    if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar",
+                  pt_settings_int(&app.settings, "show_sidebar") ? B_CHECKED : B_FLAT, "Show or hide the sidebar (F9)"))
         run(t, A_SIDEBAR);
     x += 34;
-    if (ui_button(bid(t, 2), (Rectangle){x, y, 32, h}, NULL, "undo", B_FLAT | (doc && t->nhist ? 0 : B_DISABLED), "Undo (Ctrl+Z)")) run(t, A_UNDO);
+    if (ui_button(bid(t, 2), (Rectangle){x, y, 32, h}, NULL, "undo", B_FLAT | (doc && t->nhist ? 0 : B_DISABLED),
+                  "Undo (Ctrl+Z)"))
+        run(t, A_UNDO);
     x += 34;
-    if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED), "Redo (Ctrl+Shift+Z)")) run(t, A_REDO);
+    if (ui_button(bid(t, 3), (Rectangle){x, y, 32, h}, NULL, "redo", B_FLAT | (doc && t->nfut ? 0 : B_DISABLED),
+                  "Redo (Ctrl+Shift+Z)"))
+        run(t, A_REDO);
     x += 34;
     x = separator(x, y, h);
     /* tool buttons drop their labels when there is no room for them */
@@ -572,7 +670,8 @@ void tab_toolbar(tab *t, Rectangle area)
     for (int i = 0; i < T_COUNT; i++) {
         float w = tool_button_width(t, i);
         int flags = (t->tool == (tool_id)i ? B_CHECKED : B_FLAT) | (t->toolbar_compact ? B_ICON_ONLY : 0) | dis;
-        if (ui_button(bid(t, 10 + i), (Rectangle){x, y, w, h}, TOOLS[i].label, TOOLS[i].icon, flags, TOOLS[i].tip)) tool_set(t, (tool_id)i);
+        if (ui_button(bid(t, 10 + i), (Rectangle){x, y, w, h}, TOOLS[i].label, TOOLS[i].icon, flags, TOOLS[i].tip))
+            tool_set(t, (tool_id)i);
         x += w + 2;
     }
     if (tool_has_options(t)) {
@@ -580,20 +679,22 @@ void tab_toolbar(tab *t, Rectangle area)
         tool_options(t, x, y, h, 1);
     }
     x = area.x + area.width - right;
-    if (ui_button(bid(t, 20), (Rectangle){x, y, 32, h}, NULL, "zoom-out", B_FLAT | dis, "Zoom out (Ctrl+-)")) run(t, A_ZOOM_OUT);
+    if (ui_button(bid(t, 20), (Rectangle){x, y, 32, h}, NULL, "zoom-out", B_FLAT | dis, "Zoom out (Ctrl+-)"))
+        run(t, A_ZOOM_OUT);
     x += 34;
     char zoom[16];
     snprintf(zoom, sizeof zoom, "%d%%", doc ? (int)lroundf(t->zoom * 100) : 0);
     if (doc) draw_text_in(zoom, (Rectangle){x, y, ZOOM_LABEL_W, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     x += ZOOM_LABEL_W;
-    if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis, "Zoom in (Ctrl++)")) run(t, A_ZOOM_IN);
+    if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis, "Zoom in (Ctrl++)"))
+        run(t, A_ZOOM_IN);
     x += 34;
-    if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit", (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis,
-                  "Fit width (Ctrl+0)"))
+    if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit",
+                  (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis, "Fit width (Ctrl+0)"))
         run(t, A_FIT);
     x += 34;
-    if (ui_button(bid(t, 27), (Rectangle){x, y, 32, h}, NULL, "fit-height", (doc && t->fit == FIT_HEIGHT ? B_CHECKED : B_FLAT) | dis,
-                  "Fit height (Ctrl+9)"))
+    if (ui_button(bid(t, 27), (Rectangle){x, y, 32, h}, NULL, "fit-height",
+                  (doc && t->fit == FIT_HEIGHT ? B_CHECKED : B_FLAT) | dis, "Fit height (Ctrl+9)"))
         run(t, A_FIT_HEIGHT);
     x += 34;
     x = separator(x, y, h);
@@ -601,14 +702,17 @@ void tab_toolbar(tab *t, Rectangle area)
                   "Scroll through all pages (off: one page at a time)"))
         run(t, A_CONTINUOUS);
     x += 34;
-    if (ui_button(bid(t, 24), (Rectangle){x, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis, "Find (Ctrl+F)")) {
+    if (ui_button(bid(t, 24), (Rectangle){x, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis,
+                  "Find (Ctrl+F)")) {
         if (t->find_open) hide_find(t);
         else run(t, A_FIND);
     }
     x += 34;
     x = separator(x, y, h);
     Rectangle save = {x, y, save_w - 20, h}, arrow = {x + save_w - 20, y, 20, h};
-    if (ui_button(bid(t, 25), save, "Save", "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED), "Save (overwrite original) (Ctrl+S)")) run(t, A_SAVE);
+    if (ui_button(bid(t, 25), save, "Save", "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
+                  "Save (overwrite original) (Ctrl+S)"))
+        run(t, A_SAVE);
     if (ui_button(bid(t, 26), arrow, NULL, NULL, B_FLAT | B_MENU | dis, NULL)) {
         ui_menu *m = menu_new();
         int n = tab_edit_count(t);
@@ -657,13 +761,15 @@ static void find_bar(tab *t, Rectangle r)
     }
     x += 36;
     if (regex) {
-        if (ui_button(bid(t, 107), (Rectangle){x, y, 34, h}, ".*", NULL, t->find_regex ? B_CHECKED : B_FLAT, "Regular expression (Python syntax)")) {
+        if (ui_button(bid(t, 107), (Rectangle){x, y, 34, h}, ".*", NULL, t->find_regex ? B_CHECKED : B_FLAT,
+                      "Regular expression (Python syntax)")) {
             t->find_regex = !t->find_regex;
             run_search(t);
         }
         x += 36;
     }
-    if (ui_button(bid(t, 102), (Rectangle){x, y, 30, h}, NULL, "prev", B_FLAT, "Previous match (Shift+Enter)")) step_match(t, -1);
+    if (ui_button(bid(t, 102), (Rectangle){x, y, 30, h}, NULL, "prev", B_FLAT, "Previous match (Shift+Enter)"))
+        step_match(t, -1);
     x += 32;
     if (ui_button(bid(t, 103), (Rectangle){x, y, 30, h}, NULL, "next", B_FLAT, "Next match (Enter)")) step_match(t, 1);
     x += 36;
@@ -691,7 +797,8 @@ static void find_bar(tab *t, Rectangle r)
     if (ui_button(bid(t, 105), (Rectangle){rx, y, aw, h}, all, NULL, m ? 0 : B_DISABLED, NULL)) redact_all_matches(t);
     float tw = button_width("Redact this", NULL, 0) + 8;
     rx -= tw + 6;
-    if (ui_button(bid(t, 106), (Rectangle){rx, y, tw, h}, "Redact this", NULL, m ? 0 : B_DISABLED, NULL)) redact_current_match(t);
+    if (ui_button(bid(t, 106), (Rectangle){rx, y, tw, h}, "Redact this", NULL, m ? 0 : B_DISABLED, NULL))
+        redact_current_match(t);
 }
 
 /* ---- the tab ---- */
@@ -762,8 +869,9 @@ void tab_frame(tab *t, Rectangle area)
 void tab_status(tab *t, Rectangle area)
 {
     if (!t->doc) {
-        draw_text_in("Open a PDF (Ctrl+O) or drop one on the window", (Rectangle){area.x + 8, area.y, area.width, area.height},
-                     FS_NORMAL, F_REGULAR, pal.window_text, -1);
+        draw_text_in("Open a PDF (Ctrl+O) or drop one on the window",
+                     (Rectangle){area.x + 8, area.y, area.width, area.height}, FS_NORMAL, F_REGULAR, pal.window_text,
+                     -1);
         return;
     }
     int n = tab_edit_count(t), pages = 0, ticked = 0;
@@ -1024,7 +1132,8 @@ static void crop_this(void *c, intptr_t arg)
     tab *t = mc.t;
     pt_ints pages = {0};
     if (arg == 0) pt_push(pages, mc.page);
-    else if (arg == 1) for (int i = 0; i < t->st.order.n; i++) pt_push(pages, t->st.order.v[i]);
+    else if (arg == 1)
+        for (int i = 0; i < t->st.order.n; i++) pt_push(pages, t->st.order.v[i]);
     else ticked_pages(t, &pages);
     fz_rect *rects = calloc((size_t)pages.n + 1, sizeof(fz_rect));
     for (int i = 0; i < pages.n; i++) rects[i] = mc.rect;
@@ -1085,13 +1194,15 @@ static int image_size(const unsigned char *data, size_t len, int *w, int *h)
     int ok = 0;
     fz_buffer *buf = NULL;
     fz_image *img = NULL;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         buf = fz_new_buffer_from_copied_data(CTX, data, len);
         img = fz_new_image_from_buffer(CTX, buf);
         *w = img->w, *h = img->h;
         ok = *w > 0 && *h > 0;
     }
-    fz_always(CTX) {
+    fz_always(CTX)
+    {
         fz_drop_image(CTX, img);
         fz_drop_buffer(CTX, buf);
     }
@@ -1099,7 +1210,11 @@ static int image_size(const unsigned char *data, size_t len, int *w, int *h)
     return ok;
 }
 
-typedef struct { tab *t; int page; fz_point pos; } sign_job;
+typedef struct {
+    tab *t;
+    int page;
+    fz_point pos;
+} sign_job;
 
 static void signature_chosen(void *ctx, const char *path)
 {
@@ -1126,7 +1241,12 @@ static void place_signature(tab *t, fz_point pos, int page)
     signature_dialog(pt_settings_str(&app.settings, "last_signature"), signature_chosen, job);
 }
 
-typedef struct { tab *t; int page; fz_rect box; int replace; } image_job;
+typedef struct {
+    tab *t;
+    int page;
+    fz_rect box;
+    int replace;
+} image_job;
 
 /* Bytes of the picked image (PNG and JPEG as they are, other formats as PNG). */
 static int load_picked_image(const char *path, pt_bytes *out, int *w, int *h)
@@ -1139,12 +1259,14 @@ static int load_picked_image(const char *path, pt_bytes *out, int *w, int *h)
         free(out->data);
         return 0;
     }
-    int png = out->len > 4 && !memcmp(out->data, "\x89PNG", 4), jpg = out->len > 2 && out->data[0] == 0xff && out->data[1] == 0xd8;
+    int png = out->len > 4 && !memcmp(out->data, "\x89PNG", 4),
+        jpg = out->len > 2 && out->data[0] == 0xff && out->data[1] == 0xd8;
     if (!png && !jpg) {
         fz_buffer *buf = NULL, *conv = NULL;
         fz_image *img = NULL;
         fz_pixmap *pix = NULL;
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             buf = fz_new_buffer_from_copied_data(CTX, out->data, out->len);
             img = fz_new_image_from_buffer(CTX, buf);
             pix = fz_get_pixmap_from_image(CTX, img, NULL, NULL, NULL, NULL);
@@ -1154,13 +1276,15 @@ static int load_picked_image(const char *path, pt_bytes *out, int *w, int *h)
             memcpy(out->data, conv->data, conv->len);
             out->len = conv->len;
         }
-        fz_always(CTX) {
+        fz_always(CTX)
+        {
             fz_drop_buffer(CTX, conv);
             fz_drop_pixmap(CTX, pix);
             fz_drop_image(CTX, img);
             fz_drop_buffer(CTX, buf);
         }
-        fz_catch(CTX) {
+        fz_catch(CTX)
+        {
             free(out->data);
             return 0;
         }
@@ -1248,7 +1372,8 @@ void on_click(tab *t, fz_point scene)
     if (page < 0 || !fz_is_point_inside_rect(scene, page_scene_rect(t, page))) return;
     fz_point pos = scene_to_src_point(t, page, scene);
     if (t->tool == T_TEXT) start_text(t, page, pos, 0, -1);
-    else if (t->tool == T_SIGN && cert_placing(t)) cert_place(t, page, fz_make_rect(pos.x, pos.y, pos.x + 200, pos.y + 70));
+    else if (t->tool == T_SIGN && cert_placing(t))
+        cert_place(t, page, fz_make_rect(pos.x, pos.y, pos.x + 200, pos.y + 70));
     else if (t->tool == T_SIGN) place_signature(t, pos, page);
     else if (t->tool == T_IMAGE) pick_image(t, page, fz_make_rect(pos.x, pos.y, pos.x, pos.y), -1);
     else if (t->tool == T_NOTE) place_note(t, pos, page);
@@ -1290,8 +1415,9 @@ void on_stroke(tab *t)
     pt_state snap;
     snapshot(t, &snap);
     int index = -1;
-    if (t->ink_page == page && ui.now - t->ink_time < INK_GROUP_S && t->ink_index >= 0 && t->ink_index < t->st.items.n &&
-        t->st.items.v[t->ink_index].kind == PT_INK && t->st.items.v[t->ink_index].page == page)
+    if (t->ink_page == page && ui.now - t->ink_time < INK_GROUP_S && t->ink_index >= 0 &&
+        t->ink_index < t->st.items.n && t->st.items.v[t->ink_index].kind == PT_INK &&
+        t->st.items.v[t->ink_index].page == page)
         index = t->ink_index;
     if (index >= 0) pt_push(t->st.items.v[index].strokes, points);
     else {
@@ -1357,7 +1483,11 @@ static void recolour(tab *t, int index, const unsigned char rgb[3])
     push_undo(t, &snap);
 }
 
-static void a_edit_text(void *c, intptr_t a) { (void)c, (void)a; edit_text_item(mc.t, mc.index); }
+static void a_edit_text(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    edit_text_item(mc.t, mc.index);
+}
 static void a_replace_image(void *c, intptr_t a)
 {
     (void)c, (void)a;
@@ -1401,7 +1531,11 @@ static void favourite_items(ui_menu *m, const unsigned char current[3])
         menu_swatch_item(m, name, fav[i], a_favourite_colour, NULL, i, !memcmp(current, fav[i], 3));
     }
 }
-static void a_item_clicked(void *c, intptr_t a) { (void)c, (void)a; item_clicked(mc.t, mc.kind, mc.page, mc.index); }
+static void a_item_clicked(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    item_clicked(mc.t, mc.kind, mc.page, mc.index);
+}
 static void a_restyle(void *c, intptr_t style)
 {
     (void)c;
@@ -1444,8 +1578,16 @@ static void a_fill(void *c, intptr_t white)
     unsigned char rgb[3] = {white ? 255 : 0, white ? 255 : 0, white ? 255 : 0};
     recolour(mc.t, mc.index, rgb);
 }
-static void a_delete_item(void *c, intptr_t a) { (void)c, (void)a; remove_item(mc.t, mc.index); }
-static void a_delete_annot(void *c, intptr_t a) { (void)c, (void)a; delete_annot(mc.t, (pt_key){mc.page, mc.index}); }
+static void a_delete_item(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    remove_item(mc.t, mc.index);
+}
+static void a_delete_annot(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    delete_annot(mc.t, (pt_key){mc.page, mc.index});
+}
 static void a_crop_content(void *c, intptr_t a)
 {
     (void)c, (void)a;
@@ -1464,13 +1606,41 @@ static void a_uncrop(void *c, intptr_t a)
 }
 
 /* page commands for mc.pages */
-static void a_rotate(void *c, intptr_t deg) { (void)c; rotate_pages(mc.t, &mc.pages, (int)deg); }
-static void a_page_crop_content(void *c, intptr_t a) { (void)c, (void)a; crop_to_content(mc.t, &mc.pages); }
-static void a_crop_tool(void *c, intptr_t a) { (void)c, (void)a; tool_set(mc.t, T_CROP); }
-static void a_page_uncrop(void *c, intptr_t a) { (void)c, (void)a; set_crops(mc.t, &mc.pages, NULL); }
-static void a_insert_after(void *c, intptr_t a) { (void)c, (void)a; insert_pages(mc.t, mc.pages.v[mc.pages.n - 1]); }
-static void a_blank_after(void *c, intptr_t a) { (void)c, (void)a; insert_blank_page(mc.t, mc.pages.v[mc.pages.n - 1]); }
-static void a_remove_pages(void *c, intptr_t a) { (void)c, (void)a; remove_pages(mc.t, &mc.pages); }
+static void a_rotate(void *c, intptr_t deg)
+{
+    (void)c;
+    rotate_pages(mc.t, &mc.pages, (int)deg);
+}
+static void a_page_crop_content(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    crop_to_content(mc.t, &mc.pages);
+}
+static void a_crop_tool(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    tool_set(mc.t, T_CROP);
+}
+static void a_page_uncrop(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    set_crops(mc.t, &mc.pages, NULL);
+}
+static void a_insert_after(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    insert_pages(mc.t, mc.pages.v[mc.pages.n - 1]);
+}
+static void a_blank_after(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    insert_blank_page(mc.t, mc.pages.v[mc.pages.n - 1]);
+}
+static void a_remove_pages(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    remove_pages(mc.t, &mc.pages);
+}
 
 void add_page_actions(tab *t, ui_menu *m, const pt_ints *pages)
 {
@@ -1515,20 +1685,27 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         else if (it->kind == PT_IMAGE) menu_item(m, "Replace image...", "image", NULL, a_replace_image, NULL, 0, 1, 0);
         else if (it->kind == PT_INK || it->kind == PT_SHAPE) {
             ui_menu *c = menu_sub(m, "Colour", "custom-colour");
-            for (int i = 0; i < 6; i++) menu_swatch_item(c, PEN_COLOURS[i].name, PEN_COLOURS[i].rgb, a_ink_colour, NULL, i, !memcmp(it->rgb, PEN_COLOURS[i].rgb, 3));
+            for (int i = 0; i < 6; i++)
+                menu_swatch_item(c, PEN_COLOURS[i].name, PEN_COLOURS[i].rgb, a_ink_colour, NULL, i,
+                                 !memcmp(it->rgb, PEN_COLOURS[i].rgb, 3));
             favourite_items(c, it->rgb);
             menu_sep(c);
             menu_item(c, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
             ui_menu *w = menu_sub(m, "Width", "draw");
-            for (int i = 0; i < 3; i++) menu_item(w, PEN_WIDTHS[i].name, "draw", NULL, a_ink_width, NULL, i, 1, it->pen_width == PEN_WIDTHS[i].width);
+            for (int i = 0; i < 3; i++)
+                menu_item(w, PEN_WIDTHS[i].name, "draw", NULL, a_ink_width, NULL, i, 1,
+                          it->pen_width == PEN_WIDTHS[i].width);
         } else if (it->kind == PT_NOTE) menu_item(m, "Edit note...", "note", NULL, a_item_clicked, NULL, 0, 1, 0);
         else if (it->kind == PT_HIGHLIGHT) {
             menu_item(m, "Comment...", "comment", NULL, a_item_clicked, NULL, 0, 1, 0);
             ui_menu *s = menu_sub(m, "Style", "highlight");
-            for (int i = 0; i < 5; i++) menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, a_restyle, NULL, i, 1, (int)it->style == i);
+            for (int i = 0; i < 5; i++)
+                menu_item(s, MARK_LABELS[i], MARK_ICONS[i], NULL, a_restyle, NULL, i, 1, (int)it->style == i);
             ui_menu *c = menu_sub(m, "Colour", "custom-colour");
             const preset *pal5 = palette_for(it->style);
-            for (int i = 0; i < 5; i++) menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_recolour_preset, NULL, i, !memcmp(it->rgb, pal5[i].rgb, 3));
+            for (int i = 0; i < 5; i++)
+                menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_recolour_preset, NULL, i,
+                                 !memcmp(it->rgb, pal5[i].rgb, 3));
             favourite_items(c, it->rgb);
             menu_sep(c);
             menu_item(c, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
@@ -1561,7 +1738,11 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
 }
 
 /* text selection menu */
-static void a_copy(void *c, intptr_t a) { (void)c, (void)a; copy_text(mc.t); }
+static void a_copy(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    copy_text(mc.t);
+}
 static void a_mark_sel(void *c, intptr_t style)
 {
     (void)c;
@@ -1611,7 +1792,8 @@ void on_context(tab *t, fz_point scene, Vector2 at)
     unsigned char current[3];
     mark_colour(mark_style(), current);
     const preset *pal5 = palette_for(mark_style());
-    for (int i = 0; i < 5; i++) menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_mark_colour, NULL, i, !memcmp(current, pal5[i].rgb, 3));
+    for (int i = 0; i < 5; i++)
+        menu_swatch_item(c, pal5[i].name, pal5[i].rgb, a_mark_colour, NULL, i, !memcmp(current, pal5[i].rgb, 3));
     menu_item(m, "Mark with comment...", "comment", NULL, a_mark_sel, NULL, -1, 1, 0);
     menu_sep(m);
     menu_item(m, "Redact", "redact", NULL, a_redact_sel, NULL, 0, 1, 0);
@@ -1641,7 +1823,8 @@ void end_change(tab *t, int moved, sel_kind kind, int page, int index)
 
 /* ---- popover ---- */
 
-static void open_popover(tab *t, pop_kind kind, int page, int index, fz_rect anchor, const char *title, const char *text)
+static void open_popover(tab *t, pop_kind kind, int page, int index, fz_rect anchor, const char *title,
+                         const char *text)
 {
     close_popover(t, 1);
     popover *p = &t->pop;
@@ -1668,7 +1851,8 @@ void item_clicked(tab *t, sel_kind kind, int page, int index)
         for (int i = 0; i < as->n; i++)
             if (as->v[i].xref == index) {
                 char *title = pt_format("%s (from the PDF)", pdf_string_from_annot_type(CTX, as->v[i].type));
-                open_popover(t, POP_ANNOT, page, index, disp_to_scene(t, page, as->v[i].rect), title, annot_comment(t, page, &as->v[i]));
+                open_popover(t, POP_ANNOT, page, index, disp_to_scene(t, page, as->v[i].rect), title,
+                             annot_comment(t, page, &as->v[i]));
                 free(title);
             }
     } else if (kind == SEL_ITEM) {
@@ -1765,7 +1949,8 @@ void popover_frame(tab *t)
     int res = ui_textfield(ui_id(p, 2), &p->edit, (Rectangle){r.x + 10, yy, 280, 96}, 1);
     yy += 96 + 8;
     int done = 0, cancel = 0, del = 0;
-    if (p->kind != POP_NEW_NOTE && ui_button(ui_id(p, 3), (Rectangle){r.x + 10, yy, 80, 30}, "Delete", NULL, 0, NULL)) del = 1;
+    if (p->kind != POP_NEW_NOTE && ui_button(ui_id(p, 3), (Rectangle){r.x + 10, yy, 80, 30}, "Delete", NULL, 0, NULL))
+        del = 1;
     if (ui_button(ui_id(p, 4), (Rectangle){r.x + r.width - 90, yy, 80, 30}, "Done", NULL, B_PRIMARY, NULL)) done = 1;
     if (res & TE_CTRL_SUBMIT) done = 1;
     if (res & TE_CANCEL) cancel = 1;
@@ -1785,7 +1970,8 @@ static void nearby_style(tab *t, int page, fz_point src, char **font, float *siz
     rgb[0] = rgb[1] = rgb[2] = 0;
     fz_point pos = src_to_disp(t, page, src);
     float best = -1;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
         fz_stext_options opts = {0};
         opts.flags = FZ_STEXT_PRESERVE_SPANS;
@@ -1796,7 +1982,8 @@ static void nearby_style(tab *t, int page, fz_point src, char **font, float *siz
                 for (fz_stext_char *c = l->first_char; c; c = c->next) {
                     if (c->c == ' ') continue;
                     fz_rect r = fz_rect_from_quad(c->quad);
-                    float dx = fmaxf(fmaxf(r.x0 - pos.x, 0), pos.x - r.x1), dy = fmaxf(fmaxf(r.y0 - pos.y, 0), pos.y - r.y1);
+                    float dx = fmaxf(fmaxf(r.x0 - pos.x, 0), pos.x - r.x1),
+                          dy = fmaxf(fmaxf(r.y0 - pos.y, 0), pos.y - r.y1);
                     float d = dx * dx + dy * dy;
                     if (best < 0 || d < best) {
                         best = d;
@@ -1845,7 +2032,8 @@ static void tb_hint(tab *t)
     text_box *b = &t->tb;
     pt_resolved_font rf;
     const char *s = text_get(&b->text);
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         pt_resolve_font(CTX, t->doc, b->obj.font, *s ? s : "x", &rf);
         snprintf(b->hint, sizeof b->hint, "%s", rf.desc);
         pt_drop_resolved_font(CTX, &rf);
@@ -1917,7 +2105,8 @@ void finish_text(tab *t)
     if (blank) {
         if (placed) {
             pt_item_free(&t->st.items.v[b->index]);
-            memmove(t->st.items.v + b->index, t->st.items.v + b->index + 1, sizeof(pt_item) * (size_t)(t->st.items.n - b->index - 1));
+            memmove(t->st.items.v + b->index, t->st.items.v + b->index + 1,
+                    sizeof(pt_item) * (size_t)(t->st.items.n - b->index - 1));
             t->st.items.n--;
         } else changed = 0;
     } else {
@@ -1926,7 +2115,8 @@ void finish_text(tab *t)
         obj.text = text;
         text = NULL;
         pt_resolved_font rf;
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             pt_resolve_font(CTX, t->doc, obj.font, obj.text, &rf);
             float w, h;
             pt_text_size(CTX, rf.font, obj.text, obj.size, obj.box_width, &w, &h);
@@ -1936,8 +2126,9 @@ void finish_text(tab *t)
         fz_catch(CTX) fz_ignore_error(CTX);
         if (placed) {
             pt_item *old = &t->st.items.v[b->index];
-            changed = strcmp(old->text ? old->text : "", obj.text) || strcmp(old->font ? old->font : "", obj.font ? obj.font : "") ||
-                      old->size != obj.size || memcmp(old->rgb, obj.rgb, 3);
+            changed = strcmp(old->text ? old->text : "", obj.text) ||
+                      strcmp(old->font ? old->font : "", obj.font ? obj.font : "") || old->size != obj.size ||
+                      memcmp(old->rgb, obj.rgb, 3);
             if (changed) {
                 pt_item_free(old);
                 *old = obj;
@@ -1958,7 +2149,9 @@ void finish_text(tab *t)
 }
 
 /* lines of the box as byte ranges of its text, wrapped like pt_wrap_lines */
-typedef struct { int start, end; } span;
+typedef struct {
+    int start, end;
+} span;
 PT_VEC(spans, span);
 
 static void wrap_offsets(fz_font *font, const char *s, float size, float width, spans *out)
@@ -2016,7 +2209,8 @@ void text_box_frame(tab *t)
     const char *text = text_get(&b->text);
     pt_resolved_font rf;
     int have_font = 0;
-    fz_try(CTX) {
+    fz_try(CTX)
+    {
         pt_resolve_font(CTX, t->doc, b->obj.font, *text ? text : "x", &rf);
         have_font = 1;
     }
@@ -2029,7 +2223,8 @@ void text_box_frame(tab *t)
     Rectangle box = scene_rect_to_screen(t, to_scene(t, b->page, src));
     ui.focus_rect = box;
     /* the text drawn by the PDF engine, as it will be saved */
-    char *key = pt_format("%s|%s|%g|%d%d%d|%g|%g", text, b->obj.font, size, b->obj.rgb[0], b->obj.rgb[1], b->obj.rgb[2], b->obj.box_width, UI_PX * t->zoom);
+    char *key = pt_format("%s|%s|%g|%d%d%d|%g|%g", text, b->obj.font, size, b->obj.rgb[0], b->obj.rgb[1], b->obj.rgb[2],
+                          b->obj.box_width, UI_PX * t->zoom);
     if (!b->preview_key || strcmp(key, b->preview_key)) {
         free(b->preview_key);
         b->preview_key = key;
@@ -2037,7 +2232,8 @@ void text_box_frame(tab *t)
         if (*text) {
             pdf_document *tmp = NULL;
             fz_pixmap *pix = NULL;
-            fz_try(CTX) {
+            fz_try(CTX)
+            {
                 tmp = pdf_create_document(CTX);
                 pdf_obj *res2 = pdf_new_dict(CTX, tmp, 1);
                 fz_buffer *empty = fz_new_buffer(CTX, 1);
@@ -2076,7 +2272,8 @@ void text_box_frame(tab *t)
                 b->preview_w = w, b->preview_h = h;
                 free(rgba);
             }
-            fz_always(CTX) {
+            fz_always(CTX)
+            {
                 fz_drop_pixmap(CTX, pix);
                 pdf_drop_document(CTX, tmp);
             }
@@ -2084,43 +2281,54 @@ void text_box_frame(tab *t)
         }
     } else free(key);
     if (b->preview_ok) {
-        Rectangle dst = scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(src.x0, src.y0, src.x0 + b->preview_w, src.y0 + b->preview_h)));
-        DrawTexturePro(b->preview, (Rectangle){0, 0, (float)b->preview.width, (float)b->preview.height}, dst, (Vector2){0, 0}, 0, WHITE);
+        Rectangle dst = scene_rect_to_screen(
+            t, to_scene(t, b->page, fz_make_rect(src.x0, src.y0, src.x0 + b->preview_w, src.y0 + b->preview_h)));
+        DrawTexturePro(b->preview, (Rectangle){0, 0, (float)b->preview.width, (float)b->preview.height}, dst,
+                       (Vector2){0, 0}, 0, WHITE);
     }
     /* selection and caret, measured in the real font */
     spans lines = {0};
     wrap_offsets(rf.font, text, size, b->obj.box_width, &lines);
     float asc = fz_font_ascender(CTX, rf.font), desc = fz_font_descender(CTX, rf.font);
-    int lo = b->text.caret < b->text.anchor ? b->text.caret : b->text.anchor, hi = b->text.caret < b->text.anchor ? b->text.anchor : b->text.caret;
+    int lo = b->text.caret < b->text.anchor ? b->text.caret : b->text.anchor,
+        hi = b->text.caret < b->text.anchor ? b->text.anchor : b->text.caret;
     for (int i = 0; i < lines.n; i++) {
         span L = lines.v[i];
         float top = src.y0 + i * size * PT_LINE_SPACING;
         if (lo != hi && hi >= L.start && lo <= L.end) {
             int a = lo > L.start ? lo : L.start, z = hi < L.end ? hi : L.end;
-            char *pa = pt_format("%.*s", a - L.start, text + L.start), *pz = pt_format("%.*s", z - L.start, text + L.start);
-            float xa = src.x0 + pt_text_length(CTX, rf.font, pa, size), xz = src.x0 + pt_text_length(CTX, rf.font, pz, size) + (hi > L.end ? 3 : 0);
-            Rectangle s = scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(xa, top, xz, top + size * (asc - desc))));
+            char *pa = pt_format("%.*s", a - L.start, text + L.start),
+                 *pz = pt_format("%.*s", z - L.start, text + L.start);
+            float xa = src.x0 + pt_text_length(CTX, rf.font, pa, size),
+                  xz = src.x0 + pt_text_length(CTX, rf.font, pz, size) + (hi > L.end ? 3 : 0);
+            Rectangle s =
+                scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(xa, top, xz, top + size * (asc - desc))));
             DrawRectangleRec(s, (Color){26, 115, 232, 80});
             free(pa), free(pz);
         }
-        int caret_here = b->text.caret >= L.start && b->text.caret <= L.end && (i + 1 == lines.n || b->text.caret < lines.v[i + 1].start);
+        int caret_here = b->text.caret >= L.start && b->text.caret <= L.end &&
+                         (i + 1 == lines.n || b->text.caret < lines.v[i + 1].start);
         if (caret_here && fmod(ui.now - b->text.blink, 1.0) < 0.6) {
             char *pre = pt_format("%.*s", b->text.caret - L.start, text + L.start);
             float x = src.x0 + pt_text_length(CTX, rf.font, pre, size);
             free(pre);
-            Rectangle c = scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(x, top, x, top + size * (asc - desc))));
-            DrawLineEx((Vector2){c.x, c.y}, (Vector2){c.x + (c.width > 1 ? c.width : 0), c.y + c.height}, 1.5f, rgb3(b->obj.rgb));
+            Rectangle c =
+                scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(x, top, x, top + size * (asc - desc))));
+            DrawLineEx((Vector2){c.x, c.y}, (Vector2){c.x + (c.width > 1 ? c.width : 0), c.y + c.height}, 1.5f,
+                       rgb3(b->obj.rgb));
         }
     }
     pt_vec_free(lines);
-    Rectangle frame = box.width > 4 ? (Rectangle){box.x - 2, box.y - 2, box.width + 4, box.height + 4} : (Rectangle){box.x - 2, box.y - 2, 12, box.height + 4};
+    Rectangle frame = box.width > 4 ? (Rectangle){box.x - 2, box.y - 2, box.width + 4, box.height + 4}
+                                    : (Rectangle){box.x - 2, box.y - 2, 12, box.height + 4};
     if (b->obj.box_width > 0) frame.width = fmaxf(frame.width, b->obj.box_width * t->zoom + 4);
     DrawRectangleLinesEx(frame, 1, FRAME_BLUE);
     pt_drop_resolved_font(CTX, &rf);
 
     /* the format bar above the box */
     float bw = 560, bh = 36;
-    Rectangle bar = {fmaxf(t->view.x + 4, fminf(box.x, t->view.x + t->view.width - bw - 4)), fmaxf(t->view.y + 4, box.y - bh - 8), bw, bh};
+    Rectangle bar = {fmaxf(t->view.x + 4, fminf(box.x, t->view.x + t->view.width - bw - 4)),
+                     fmaxf(t->view.y + 4, box.y - bh - 8), bw, bh};
     ui_layer_begin(ui_id(b, 2), bar, 0);
     set_cursor(CUR_ARROW);
     ui_panel(bar, pal.window, pal.border, 6);
@@ -2130,9 +2338,11 @@ void text_box_frame(tab *t)
     x += 176;
     if (ui_spinf(ui_id(b, 4), (Rectangle){x, y, 90, 28}, &b->obj.size, 4, 96, 0.5f, " pt")) tb_hint(t);
     x += 96;
-    if (ui_button(ui_id(b, 5), (Rectangle){x, y, 28, 28}, NULL, "bold", b->bold ? B_CHECKED : B_FLAT, "Bold")) b->bold = !b->bold, a_family(t);
+    if (ui_button(ui_id(b, 5), (Rectangle){x, y, 28, 28}, NULL, "bold", b->bold ? B_CHECKED : B_FLAT, "Bold"))
+        b->bold = !b->bold, a_family(t);
     x += 30;
-    if (ui_button(ui_id(b, 6), (Rectangle){x, y, 28, 28}, NULL, "italic", b->italic ? B_CHECKED : B_FLAT, "Italic")) b->italic = !b->italic, a_family(t);
+    if (ui_button(ui_id(b, 6), (Rectangle){x, y, 28, 28}, NULL, "italic", b->italic ? B_CHECKED : B_FLAT, "Italic"))
+        b->italic = !b->italic, a_family(t);
     x += 32;
     if (ui_swatch_button(ui_id(b, 7), (Rectangle){x, y, 28, 28}, b->obj.rgb, 0, "Text colour"))
         colour_dialog("Text colour", b->obj.rgb, tb_colour_chosen, t);
@@ -2305,16 +2515,19 @@ void run_search(tab *t)
     if (!t->doc || blank) return;
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
-        fz_try(CTX) {
+        fz_try(CTX)
+        {
             fz_page *page = fz_load_page(CTX, (fz_document *)t->doc, p);
             fz_stext_page *st = pt_stext(CTX, page);
             pt_rects rects = {0};
             int regex = t->find_regex && pt_have_regex();
-            fz_try(CTX) {
+            fz_try(CTX)
+            {
                 if (regex) pt_regex_rects(CTX, st, query, t->find_case, &rects);
                 else pt_search(CTX, st, query, &rects);
             }
-            fz_catch(CTX) {
+            fz_catch(CTX)
+            {
                 fz_ignore_error(CTX);
                 t->find_bad = 1;
             }
@@ -2330,7 +2543,8 @@ void run_search(tab *t)
                 pt_push(t->matches, (hit){p, rects.v[k]});
             }
             qsort(t->matches.v + first, (size_t)(t->matches.n - first), sizeof(hit), cmp_hit);
-            for (int k = first; k < t->matches.n; k++) t->matches.v[k].rect = rect_disp_to_src(t, p, t->matches.v[k].rect);
+            for (int k = first; k < t->matches.n; k++)
+                t->matches.v[k].rect = rect_disp_to_src(t, p, t->matches.v[k].rect);
             pt_vec_free(rects);
             fz_drop_stext_page(CTX, st);
             fz_drop_page(CTX, page);
@@ -2413,14 +2627,19 @@ void hide_find(tab *t)
 #define BADGE ((Color){217, 48, 37, 255})
 #define TAB_H 32.0f
 
-static const struct { const char *label, *icon; } EDIT_KINDS[] = {
-    [PT_E_REDACT] = {"Redaction", "redact"}, [PT_E_TEXT] = {"Text", "text"}, [PT_E_NOTE] = {"Note", "note"},
-    [PT_E_SIGN] = {"Signature", "sign"}, [PT_E_IMAGE] = {"Image", "image"}, [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
-    [PT_E_INK] = {"Drawing", "draw"}, [PT_E_SHAPE] = {"Shape", "shapes"}, [PT_E_FORM] = {"Field", "file"}, [PT_E_DELETED] = {"Removed", "remove"},
-    [PT_E_COMMENT] = {"Comment", "note"}, [PT_E_ROTATE] = {"Rotated", "rotate"}, [PT_E_CROP] = {"Cropped", "crop"},
-    [PT_E_REMOVE_PAGE] = {"Page removed", "remove"}, [PT_E_INSERT] = {"Inserted from", "add"},
-    [PT_E_REORDER] = {"Pages reordered", "sort"}, [PT_E_STAMP] = {"Watermark", "stamp"}, [PT_E_META] = {"Properties", "about"},
-    [PT_E_OUTLINE] = {"Outline", "outline"}, [PT_E_CERT] = {"Certificate signature", "certificate"},
+static const struct {
+    const char *label, *icon;
+} EDIT_KINDS[] = {
+    [PT_E_REDACT] = {"Redaction", "redact"},  [PT_E_TEXT] = {"Text", "text"},
+    [PT_E_NOTE] = {"Note", "note"},           [PT_E_SIGN] = {"Signature", "sign"},
+    [PT_E_IMAGE] = {"Image", "image"},        [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
+    [PT_E_INK] = {"Drawing", "draw"},         [PT_E_SHAPE] = {"Shape", "shapes"},
+    [PT_E_FORM] = {"Field", "file"},          [PT_E_DELETED] = {"Removed", "remove"},
+    [PT_E_COMMENT] = {"Comment", "note"},     [PT_E_ROTATE] = {"Rotated", "rotate"},
+    [PT_E_CROP] = {"Cropped", "crop"},        [PT_E_REMOVE_PAGE] = {"Page removed", "remove"},
+    [PT_E_INSERT] = {"Inserted from", "add"}, [PT_E_REORDER] = {"Pages reordered", "sort"},
+    [PT_E_STAMP] = {"Watermark", "stamp"},    [PT_E_META] = {"Properties", "about"},
+    [PT_E_OUTLINE] = {"Outline", "outline"},  [PT_E_CERT] = {"Certificate signature", "certificate"},
 };
 
 static char *shorten(const char *text, int limit)
@@ -2460,7 +2679,7 @@ float sidebar_width(tab *t)
             t->side_anim_t0 = 0;
             t->side_shown_w = t->side_anim_to;
         } else {
-            double e = 1 - pow(1 - k, 3);   /* OutCubic */
+            double e = 1 - pow(1 - k, 3); /* OutCubic */
             t->side_shown_w = (float)(t->side_anim_from + (t->side_anim_to - t->side_anim_from) * e);
             ui.dirty = 1;
         }
@@ -2508,7 +2727,8 @@ static void pages_panel(tab *t, Rectangle area)
         int p = t->st.order.v[i];
         float h = row_height(t, p);
         Rectangle row = {area.x + 2, y, w, h};
-        if (t->thumb_drag && ui.down && ui.mouse.y >= y && ui.mouse.y < y + h + 4) drop_at = ui.mouse.y < y + h / 2 ? i : i + 1;
+        if (t->thumb_drag && ui.down && ui.mouse.y >= y && ui.mouse.y < y + h + 4)
+            drop_at = ui.mouse.y < y + h / 2 ? i : i + 1;
         if (y + h < area.y || y > area.y + area.height) {
             y += h + 4;
             continue;
@@ -2528,7 +2748,9 @@ static void pages_panel(tab *t, Rectangle area)
         if (current) DrawRectangleRounded(card, 0.08f, 6, with_alpha(pal.highlight, 45));
         DrawRectangleRec(thumb, (Color){235, 235, 235, 255});
         Texture2D *tex = thumb_texture(t, p);
-        if (tex) DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, thumb, (Vector2){0, 0}, 0, WHITE);
+        if (tex)
+            DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, thumb, (Vector2){0, 0}, 0,
+                           WHITE);
         DrawRectangleLinesEx(thumb, current ? 2 : 1, current ? pal.highlight : (Color){128, 128, 128, 120});
         int ticked = t->ticked[p];
         if (ticked || any_ticked || hover) {
@@ -2548,7 +2770,8 @@ static void pages_panel(tab *t, Rectangle area)
         snprintf(num, sizeof num, "%d", i + 1);
         draw_text_in(num, label, FS_NORMAL, current ? F_BOLD : F_REGULAR, current ? pal.highlight : pal.text, 0);
         char tip[64];
-        snprintf(tip, sizeof tip, "Page %d%s", i + 1, edits ? (edits == 1 ? ", 1 unsaved edit" : ", unsaved edits") : "");
+        snprintf(tip, sizeof tip, "Page %d%s", i + 1,
+                 edits ? (edits == 1 ? ", 1 unsaved edit" : ", unsaved edits") : "");
         ui_tooltip(ui_id(t, 20000 + p), card, tip);
         Rectangle hit_check = {check.x - 4, check.y - 4, check.width + 8, check.height + 8};
         if (hover && ui.pressed) {
@@ -2589,7 +2812,10 @@ static void pages_panel(tab *t, Rectangle area)
             int to = n;
             for (int i = 0; i < n; i++) {
                 float h = row_height(t, t->st.order.v[i]);
-                if (ui.mouse.y < ly + h / 2 + 2) { to = i; break; }
+                if (ui.mouse.y < ly + h / 2 + 2) {
+                    to = i;
+                    break;
+                }
                 ly += h + 4;
             }
             int from = t->thumb_drag_from;
@@ -2607,12 +2833,20 @@ static void pages_panel(tab *t, Rectangle area)
         t->thumb_drag = 0;
     }
     ui_scissor_end();
-    ui_scrollbar(ui_id(t, 81), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height, scroll);
+    ui_scrollbar(ui_id(t, 81), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height,
+                 scroll);
 }
 
 /* ---- Annotations ---- */
 
-typedef struct { int page; sel_kind kind; int index; const char *label; char *quote, *comment; unsigned char rgb[3]; } annot_row;
+typedef struct {
+    int page;
+    sel_kind kind;
+    int index;
+    const char *label;
+    char *quote, *comment;
+    unsigned char rgb[3];
+} annot_row;
 PT_VEC(annot_rows, annot_row);
 
 static void collect_annotations(tab *t, int page, annot_rows *rows)
@@ -2620,19 +2854,28 @@ static void collect_annotations(tab *t, int page, annot_rows *rows)
     static const unsigned char NOTE_RGB[3] = {255, 213, 79};
     for (int i = 0; i < t->st.items.n; i++) {
         pt_item *it = &t->st.items.v[i];
-        if (it->page != page || (it->kind != PT_HIGHLIGHT && it->kind != PT_NOTE && it->kind != PT_INK && it->kind != PT_SHAPE)) continue;
+        if (it->page != page ||
+            (it->kind != PT_HIGHLIGHT && it->kind != PT_NOTE && it->kind != PT_INK && it->kind != PT_SHAPE))
+            continue;
         static const char *SHAPES[4] = {"Rectangle", "Ellipse", "Line", "Arrow"};
-        const char *label = it->kind == PT_HIGHLIGHT ? MARK_LABELS[it->style] : it->kind == PT_NOTE ? "Note"
-                          : it->kind == PT_SHAPE ? SHAPES[it->shape] : "Drawing";
-        annot_row r = {page, SEL_ITEM, i, label,
-                       pt_strdup(it->quote ? it->quote : ""), pt_strdup(it->text ? it->text : ""), {0}};
+        const char *label = it->kind == PT_HIGHLIGHT ? MARK_LABELS[it->style]
+                            : it->kind == PT_NOTE    ? "Note"
+                            : it->kind == PT_SHAPE   ? SHAPES[it->shape]
+                                                     : "Drawing";
+        annot_row r = {
+            page, SEL_ITEM, i, label, pt_strdup(it->quote ? it->quote : ""), pt_strdup(it->text ? it->text : ""), {0}};
         memcpy(r.rgb, it->kind == PT_NOTE ? NOTE_RGB : it->rgb, 3);
         pt_push(*rows, r);
     }
     annot_infos *as = page_annots(t, page);
     for (int i = 0; i < as->n; i++) {
-        annot_row r = {page, SEL_ANNOT, as->v[i].xref, pdf_string_from_annot_type(CTX, as->v[i].type),
-                       pt_strdup(as->v[i].quote ? as->v[i].quote : ""), pt_strdup(annot_comment(t, page, &as->v[i])), {0}};
+        annot_row r = {page,
+                       SEL_ANNOT,
+                       as->v[i].xref,
+                       pdf_string_from_annot_type(CTX, as->v[i].type),
+                       pt_strdup(as->v[i].quote ? as->v[i].quote : ""),
+                       pt_strdup(annot_comment(t, page, &as->v[i])),
+                       {0}};
         memcpy(r.rgb, as->v[i].rgb, 3);
         pt_push(*rows, r);
     }
@@ -2645,7 +2888,8 @@ static int count_annotations(tab *t)
         int p = t->st.order.v[k];
         for (int i = 0; i < t->st.items.n; i++) {
             pt_kind kind = t->st.items.v[i].kind;
-            n += t->st.items.v[i].page == p && (kind == PT_HIGHLIGHT || kind == PT_NOTE || kind == PT_INK || kind == PT_SHAPE);
+            n += t->st.items.v[i].page == p &&
+                 (kind == PT_HIGHLIGHT || kind == PT_NOTE || kind == PT_INK || kind == PT_SHAPE);
         }
         n += page_annots(t, p)->n;
     }
@@ -2697,7 +2941,9 @@ static void annotations_panel(tab *t, Rectangle area)
                 free(lines[l]);
             }
             ui_separator_h(row.x, row.x + row.width, row.y + row.height);
-            char *tip = *r->quote || *r->comment ? pt_format("%s%s%s", r->quote, *r->quote && *r->comment ? "\n\n" : "", r->comment) : pt_strdup(r->label);
+            char *tip = *r->quote || *r->comment
+                            ? pt_format("%s%s%s", r->quote, *r->quote && *r->comment ? "\n\n" : "", r->comment)
+                            : pt_strdup(r->label);
             static char tipbuf[512];
             snprintf(tipbuf, sizeof tipbuf, "%s", tip);
             free(tip);
@@ -2727,7 +2973,8 @@ static void annotations_panel(tab *t, Rectangle area)
     }
     ui_scissor_end();
     float total = y + *scroll - area.y;
-    ui_scrollbar(ui_id(t, 82), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height, scroll);
+    ui_scrollbar(ui_id(t, 82), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height,
+                 scroll);
 }
 
 /* ---- Edits ---- */
@@ -2745,7 +2992,8 @@ static const char *annot_type_fn(void *opaque, pt_key key)
 static unsigned long state_signature(tab *t)
 {
     unsigned long h = 1469598103934665603ul;
-#define MIX(p, n) for (size_t _i = 0; _i < (n); _i++) h = (h ^ ((const unsigned char *)(p))[_i]) * 1099511628211ul
+#define MIX(p, n) \
+    for (size_t _i = 0; _i < (n); _i++) h = (h ^ ((const unsigned char *)(p))[_i]) * 1099511628211ul
     for (int i = 0; i < t->st.items.n; i++) {
         pt_item *it = &t->st.items.v[i];
         MIX(&it->page, sizeof it->page);
@@ -2773,14 +3021,19 @@ static unsigned long state_signature(tab *t)
 }
 
 /* the Edits list is rebuilt only when the edits change */
-static struct { tab *t; unsigned long sig; pt_entries entries; } edits_cache;
+static struct {
+    tab *t;
+    unsigned long sig;
+    pt_entries entries;
+} edits_cache;
 
 static pt_entries *current_entries(tab *t)
 {
     unsigned long sig = state_signature(t);
     if (edits_cache.t != t || edits_cache.sig != sig) {
         pt_entries_free(&edits_cache.entries);
-        fz_try(CTX) pt_edit_entries(CTX, (fz_document *)t->doc, &t->st, t->own, form_name_fn, annot_type_fn, t, &edits_cache.entries);
+        fz_try(CTX) pt_edit_entries(CTX, (fz_document *)t->doc, &t->st, t->own, form_name_fn, annot_type_fn, t,
+                                    &edits_cache.entries);
         fz_catch(CTX) fz_ignore_error(CTX);
         edits_cache.t = t;
         edits_cache.sig = sig;
@@ -2802,7 +3055,8 @@ static void edit_label(const pt_entry *e, char *out, size_t n)
         snprintf(out, n, "%s", MARK_LABELS[s < 0 ? 0 : s]);
     } else if (e->kind == PT_E_INSERT && !*e->detail) snprintf(out, n, "Blank page inserted");
     else if (e->kind == PT_E_STAMP && !strcmp(e->name, "bates")) snprintf(out, n, "Bates numbers");
-    else if (*e->name && (e->kind == PT_E_FORM || e->kind == PT_E_DELETED)) snprintf(out, n, "%s %s", EDIT_KINDS[e->kind].label, e->name);
+    else if (*e->name && (e->kind == PT_E_FORM || e->kind == PT_E_DELETED))
+        snprintf(out, n, "%s %s", EDIT_KINDS[e->kind].label, e->name);
     else snprintf(out, n, "%s", EDIT_KINDS[e->kind].label);
 }
 
@@ -2903,11 +3157,13 @@ static void edits_panel(tab *t, Rectangle area)
         snprintf(head, sizeof head, "%s  (%d)", title, count);
         Rectangle hr = {area.x + 4, y, w, 30};
         int hhover = ui_hover(hr);
-        draw_text_in(head, (Rectangle){hr.x + 4, hr.y, hr.width - 30, hr.height}, FS_NORMAL, F_BOLD, pal.window_text, -1);
+        draw_text_in(head, (Rectangle){hr.x + 4, hr.y, hr.width - 30, hr.height}, FS_NORMAL, F_BOLD, pal.window_text,
+                     -1);
         if (hhover) {
             static char tip[128];
             snprintf(tip, sizeof tip, "Discard all edits under %s", title);
-            if (ui_button(ui_id(t, 40000 + g), (Rectangle){hr.x + hr.width - 26, hr.y + 4, 22, 22}, NULL, "close", B_DANGER | B_ICON_ONLY, NULL))
+            if (ui_button(ui_id(t, 40000 + g), (Rectangle){hr.x + hr.width - 26, hr.y + 4, 22, 22}, NULL, "close",
+                          B_DANGER | B_ICON_ONLY, NULL))
                 for (int i = 0; i < entries->n; i++)
                     if (entries->v[i].page == page) pt_push(to_discard, entries->v[i].ref);
             ui_tooltip(ui_id(t, 41000 + g), (Rectangle){hr.x + hr.width - 26, hr.y + 4, 22, 22}, tip);
@@ -2937,7 +3193,8 @@ static void edits_panel(tab *t, Rectangle area)
             int on_x = 0;
             if (hover) {
                 on_x = ui_hover(x);
-                if (ui_button(ui_id(t, 42000 + i), x, NULL, "close", B_DANGER | B_ICON_ONLY, "Discard this edit")) pt_push(to_discard, e->ref);
+                if (ui_button(ui_id(t, 42000 + i), x, NULL, "close", B_DANGER | B_ICON_ONLY, "Discard this edit"))
+                    pt_push(to_discard, e->ref);
             }
             if (*e->detail) ui_tooltip(ui_id(t, 43000 + i), row, e->detail);
             if (hover && ui.released && !on_x) activate = &e->ref;
@@ -2948,7 +3205,8 @@ static void edits_panel(tab *t, Rectangle area)
     }
     ui_scissor_end();
     float total = y + *scroll - area.y;
-    ui_scrollbar(ui_id(t, 83), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height, scroll);
+    ui_scrollbar(ui_id(t, 83), (Rectangle){area.x + area.width - 10, area.y, 10, area.height}, total, area.height,
+                 scroll);
     pt_ref act = activate ? *activate : (pt_ref){0};
     int has_act = activate != NULL;
     if (to_discard.n) discard(t, to_discard.v, to_discard.n);
@@ -3045,7 +3303,8 @@ static void outline_action(void *ctx, intptr_t action)
         fz_point top = screen_to_scene(t, (Vector2){t->view.x, t->view.y});
         fz_rect page = page_scene_rect(t, t->pno);
         float y = fmaxf(0, top.y - page.y0);
-        pt_bookmark e = {i >= 0 ? b->v[i].level : 0, pt_strdup("New entry"), t->pno, disp_to_src(t, t->pno, fz_make_point(0, y)).y};
+        pt_bookmark e = {i >= 0 ? b->v[i].level : 0, pt_strdup("New entry"), t->pno,
+                         disp_to_src(t, t->pno, fz_make_point(0, y)).y};
         int at = i >= 0 ? subtree_end(b, i) : b->n;
         pt_push(*b, e);
         memmove(b->v + at + 1, b->v + at, sizeof(pt_bookmark) * (size_t)(b->n - 1 - at));
@@ -3117,9 +3376,11 @@ static void outline_panel(tab *t, Rectangle area)
         Rectangle label = {row.x + indent, row.y, row.width - indent - nw - 16, row.height};
         const char *title = r->title ? r->title : "";
         char *shown = elide_right(title, label.width, FS_NORMAL, r->level ? F_REGULAR : F_BOLD);
-        draw_text_in(shown, label, FS_NORMAL, r->level ? F_REGULAR : F_BOLD, k >= 0 ? pal.window_text : pal.disabled_text, -1);
+        draw_text_in(shown, label, FS_NORMAL, r->level ? F_REGULAR : F_BOLD,
+                     k >= 0 ? pal.window_text : pal.disabled_text, -1);
         free(shown);
-        draw_text_in(num, (Rectangle){row.x + row.width - nw - 8, row.y, nw, row.height}, FS_NORMAL, F_REGULAR, pal.disabled_text, 1);
+        draw_text_in(num, (Rectangle){row.x + row.width - nw - 8, row.y, nw, row.height}, FS_NORMAL, F_REGULAR,
+                     pal.disabled_text, 1);
         ui_tooltip(ui_id(t, 40000 + i), row, title);
         if (hover && ui.pressed) {
             t->outline_sel = i;
@@ -3135,7 +3396,8 @@ static void outline_panel(tab *t, Rectangle area)
             menu_item(m, "Delete", "remove", NULL, outline_action, t, O_DELETE, 1, 0);
             menu_open(m, ui.mouse);
         }
-        if (hover && ui.released && t->outline_drag == i && fabsf(ui.mouse.y - t->outline_drag_y) < CLICK_SLOP_PX && k >= 0) {
+        if (hover && ui.released && t->outline_drag == i && fabsf(ui.mouse.y - t->outline_drag_y) < CLICK_SLOP_PX &&
+            k >= 0) {
             fz_point at = src_to_disp(t, r->page, fz_make_point(0, r->y));
             link_info l = {fz_empty_rect, r->page, 0, at.y, NULL};
             follow_link(t, &l);
@@ -3165,19 +3427,29 @@ static void outline_panel(tab *t, Rectangle area)
             }
         }
     }
-    if (!rows->n) draw_text_in("No outline. Add an entry for the current page.", list, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
+    if (!rows->n)
+        draw_text_in("No outline. Add an entry for the current page.", list, FS_NORMAL, F_REGULAR, pal.disabled_text,
+                     0);
     ui_scissor_end();
     /* the edit bar */
     ui_separator_h(area.x, area.x + area.width, list.y + list.height);
     float bx = area.x + 4, by = list.y + list.height + 3;
     int sel = t->outline_sel >= 0 ? 0 : B_DISABLED;
-    struct { const char *icon, *tip; int action, flags; } buttons[] = {
-        {"add", "Add an entry for the current page", O_ADD, 0}, {"text", "Rename", O_RENAME, sel},
-        {"remove", "Delete", O_DELETE, sel}, {"up", "Move up", O_UP, sel}, {"down", "Move down", O_DOWN, sel},
-        {"prev", "Move out a level", O_OUT, sel}, {"next", "Move in a level", O_IN, sel},
+    struct {
+        const char *icon, *tip;
+        int action, flags;
+    } buttons[] = {
+        {"add", "Add an entry for the current page", O_ADD, 0},
+        {"text", "Rename", O_RENAME, sel},
+        {"remove", "Delete", O_DELETE, sel},
+        {"up", "Move up", O_UP, sel},
+        {"down", "Move down", O_DOWN, sel},
+        {"prev", "Move out a level", O_OUT, sel},
+        {"next", "Move in a level", O_IN, sel},
     };
     for (size_t k = 0; k < sizeof buttons / sizeof *buttons && bx + 32 <= area.x + area.width; k++, bx += 34)
-        if (ui_button(ui_id(t, 42000 + (int)k), (Rectangle){bx, by, 32, 32}, NULL, buttons[k].icon, B_FLAT | buttons[k].flags, buttons[k].tip))
+        if (ui_button(ui_id(t, 42000 + (int)k), (Rectangle){bx, by, 32, 32}, NULL, buttons[k].icon,
+                      B_FLAT | buttons[k].flags, buttons[k].tip))
             outline_action(t, buttons[k].action);
 }
 

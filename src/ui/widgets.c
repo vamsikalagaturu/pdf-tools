@@ -29,7 +29,11 @@ float ui_px(void) { return (ui.scale > 0 ? ui.scale : 1) * (ui.density > 0 ? ui.
 
 /* Each font is rasterised at the exact pixel size it is drawn at (logical size times UI_PX), so glyphs map
  * 1:1 onto framebuffer pixels instead of being filtered down from a larger atlas. */
-typedef struct { int px; font_kind kind; Font font; } sized_font;
+typedef struct {
+    int px;
+    font_kind kind;
+    Font font;
+} sized_font;
 #define FONT_CACHE 48
 static sized_font font_cache[FONT_CACHE];
 static int nfonts;
@@ -170,7 +174,11 @@ int text_index_at(const char *s, int len, float x, float size, font_kind f)
 /* ---- frame and layers ---- */
 
 #define MAX_LAYERS 64
-typedef struct { unsigned id; Rectangle r; int modal; } layer;
+typedef struct {
+    unsigned id;
+    Rectangle r;
+    int modal;
+} layer;
 static layer prev_layers[MAX_LAYERS], cur_layers[MAX_LAYERS];
 static int nprev, ncur;
 static unsigned layer_stack[16];
@@ -208,11 +216,15 @@ void *glfwGetCurrentContext(void);
 
 static glfw_mouse_fn raylib_mouse;
 static glfw_key_fn raylib_key;
-static struct { int button, action; } mouse_events[64];
+static struct {
+    int button, action;
+} mouse_events[64];
 static int nmouse;
-static struct { int key, mods; } key_events[64], frame_keys[64];
+static struct {
+    int key, mods;
+} key_events[64], frame_keys[64];
 static int nkeys, nframe_keys;
-static int frame_mods;   /* modifiers held when this frame's keys were pressed (they may be up by now) */
+static int frame_mods; /* modifiers held when this frame's keys were pressed (they may be up by now) */
 static int left_down;
 
 static void on_mouse(void *window, int button, int action, int mods)
@@ -350,7 +362,8 @@ void ui_begin_frame(void)
     ui.pinch_at = (Vector2){(pinch_screen.x - inset_l) / ui.scale, (pinch_screen.y - inset_t) / ui.scale};
     pinch_acc = 1;
     ui.double_tap = double_tap;
-    ui.double_tap_at = (Vector2){(double_tap_screen.x - inset_l) / ui.scale, (double_tap_screen.y - inset_t) / ui.scale};
+    ui.double_tap_at =
+        (Vector2){(double_tap_screen.x - inset_l) / ui.scale, (double_tap_screen.y - inset_t) / ui.scale};
     double_tap = 0;
     if (nframe_keys) {
         ui.ctrl = (frame_mods & GLFW_MOD_CONTROL) != 0;
@@ -407,10 +420,7 @@ void ui_layer_begin(unsigned id, Rectangle r, int modal)
     ui.layer = id;
 }
 
-void ui_layer_end(void)
-{
-    ui.layer = depth ? layer_stack[--depth] : 0;
-}
+void ui_layer_end(void) { ui.layer = depth ? layer_stack[--depth] : 0; }
 
 /* Touch: a one-finger drag pans unless it starts where the last frame drew a drag area (a drawing tool's page,
  * the signature pad) and nothing lies on top of it there. */
@@ -446,19 +456,14 @@ static int touch_area_at(float screen_x, float screen_y, int kind)
             break;
         }
     for (int i = 0; i < nprev_drags; i++)
-        if (prev_drags[i].modal == kind && prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r)) return 1;
+        if (prev_drags[i].modal == kind && prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r))
+            return 1;
     return 0;
 }
 
-int ui_hover(Rectangle r)
-{
-    return ui.layer == ui.mouse_layer && CheckCollisionPointRec(ui.mouse, r);
-}
+int ui_hover(Rectangle r) { return ui.layer == ui.mouse_layer && CheckCollisionPointRec(ui.mouse, r); }
 
-int ui_clicked(Rectangle r)
-{
-    return ui.released && ui_hover(r);
-}
+int ui_clicked(Rectangle r) { return ui.released && ui_hover(r); }
 
 void ui_tooltip(unsigned id, Rectangle r, const char *text)
 {
@@ -501,7 +506,8 @@ static void draw_tooltip(void)
     DrawRectangleLinesEx(r, 1, pal.border);
     for (int i = 0; i < lines.n; i++) {
         char *t = elide_right(lines.v[i], w - 14, FS_SMALL, F_REGULAR);
-        draw_text_in(t, (Rectangle){r.x + 7, r.y + 4 + i * lh, r.width - 14, lh}, FS_SMALL, F_REGULAR, pal.window_text, -1);
+        draw_text_in(t, (Rectangle){r.x + 7, r.y + 4 + i * lh, r.width - 14, lh}, FS_SMALL, F_REGULAR, pal.window_text,
+                     -1);
         free(t);
     }
     pt_strs_free(&lines);
@@ -527,8 +533,8 @@ static int nscissors;
 
 static void apply_scissor(Rectangle r)
 {
-    BeginScissorMode((int)floorf(inset_l + r.x * ui.scale), (int)floorf(inset_t + r.y * ui.scale), (int)ceilf(r.width * ui.scale),
-                     (int)ceilf(r.height * ui.scale));
+    BeginScissorMode((int)floorf(inset_l + r.x * ui.scale), (int)floorf(inset_t + r.y * ui.scale),
+                     (int)ceilf(r.width * ui.scale), (int)ceilf(r.height * ui.scale));
 }
 
 void ui_scissor_begin(Rectangle r)
@@ -598,7 +604,8 @@ float button_width(const char *label, const char *icon, int flags)
 {
     float w = 12;
     if (icon) w += 18;
-    if (label && *label && !(flags & B_ICON_ONLY)) w += text_width(label, FS_NORMAL, (flags & B_PRIMARY) ? F_BOLD : F_REGULAR) + (icon ? 6 : 0);
+    if (label && *label && !(flags & B_ICON_ONLY))
+        w += text_width(label, FS_NORMAL, (flags & B_PRIMARY) ? F_BOLD : F_REGULAR) + (icon ? 6 : 0);
     if (flags & B_MENU) w += 14;
     return w;
 }
@@ -666,8 +673,9 @@ int ui_checkbox(unsigned id, Rectangle r, const char *label, int *value, int dis
         DrawLineEx((Vector2){box.x + 3.5f, box.y + 8}, (Vector2){box.x + 6.5f, box.y + 12}, 2, c);
         DrawLineEx((Vector2){box.x + 6.5f, box.y + 12}, (Vector2){box.x + 13, box.y + 4}, 2, c);
     }
-    if (label) draw_text_in(label, (Rectangle){r.x + 22, r.y, r.width - 22, r.height}, FS_NORMAL, F_REGULAR,
-                            disabled ? pal.disabled_text : pal.window_text, -1);
+    if (label)
+        draw_text_in(label, (Rectangle){r.x + 22, r.y, r.width - 22, r.height}, FS_NORMAL, F_REGULAR,
+                     disabled ? pal.disabled_text : pal.window_text, -1);
     return changed;
 }
 
@@ -790,7 +798,11 @@ void text_select_all(ui_text *t)
 
 static void text_delete(ui_text *t, int a, int b)
 {
-    if (a > b) { int x = a; a = b; b = x; }
+    if (a > b) {
+        int x = a;
+        a = b;
+        b = x;
+    }
     memmove(t->buf + a, t->buf + b, (size_t)(t->len - b + 1));
     t->len -= b - a;
     t->caret = t->anchor = a;
@@ -843,7 +855,9 @@ static int word_right(const char *s, int len, int i)
 }
 
 /* Wrapped lines of a multi-line field: start offsets, the end of each is the next start (or len). */
-typedef struct { int start, end; } tline;
+typedef struct {
+    int start, end;
+} tline;
 PT_VEC(tlines, tline);
 
 static void layout_lines(const ui_text *t, float width, tlines *out)
@@ -928,7 +942,8 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         if (li < 0) li = 0;
         if (li >= lines.n) li = lines.n - 1;
         tline L = lines.v[li];
-        int off = L.start + text_index_at(s + L.start, L.end - L.start, ui.mouse.x - inner.x + t->scroll_x, t->size, F_REGULAR);
+        int off = L.start +
+                  text_index_at(s + L.start, L.end - L.start, ui.mouse.x - inner.x + t->scroll_x, t->size, F_REGULAR);
         if (t->password) off = off / 3, off = byte_of_char(t->buf, off);
         if (ui.pressed) {
             t->caret = off;
@@ -968,17 +983,24 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         int lo = t->caret < t->anchor ? t->caret : t->anchor, hi = t->caret < t->anchor ? t->anchor : t->caret;
         if (KEY(KEY_BACKSPACE) && !t->readonly) {
             if (lo != hi) text_delete(t, lo, hi);
-            else if (t->caret > 0) text_delete(t, ui.ctrl ? word_left(t->buf, t->caret) : utf8_prev(t->buf, t->caret), t->caret);
+            else if (t->caret > 0)
+                text_delete(t, ui.ctrl ? word_left(t->buf, t->caret) : utf8_prev(t->buf, t->caret), t->caret);
             result |= TE_CHANGED;
         }
         if (KEY(KEY_DELETE) && !t->readonly) {
             if (lo != hi) text_delete(t, lo, hi);
-            else if (t->caret < t->len) text_delete(t, t->caret, ui.ctrl ? word_right(t->buf, t->len, t->caret) : utf8_next(t->buf, t->len, t->caret));
+            else if (t->caret < t->len)
+                text_delete(t, t->caret,
+                            ui.ctrl ? word_right(t->buf, t->len, t->caret) : utf8_next(t->buf, t->len, t->caret));
             result |= TE_CHANGED;
         }
         int moved = -1;
-        if (KEY(KEY_LEFT)) moved = !ui.shift && lo != hi ? lo : ui.ctrl ? word_left(t->buf, t->caret) : utf8_prev(t->buf, t->caret);
-        if (KEY(KEY_RIGHT)) moved = !ui.shift && lo != hi ? hi : ui.ctrl ? word_right(t->buf, t->len, t->caret) : utf8_next(t->buf, t->len, t->caret);
+        if (KEY(KEY_LEFT))
+            moved = !ui.shift && lo != hi ? lo : ui.ctrl ? word_left(t->buf, t->caret) : utf8_prev(t->buf, t->caret);
+        if (KEY(KEY_RIGHT))
+            moved = !ui.shift && lo != hi ? hi
+                    : ui.ctrl             ? word_right(t->buf, t->len, t->caret)
+                                          : utf8_next(t->buf, t->len, t->caret);
         if (t->multiline && (KEY(KEY_UP) || KEY(KEY_DOWN))) {
             tlines real = {0};
             if (!t->password) layout_lines(t, inner.width, &real);
@@ -1080,7 +1102,8 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         float cy = cl * lh;
         if (cy - t->scroll_y > inner.height - lh) t->scroll_y = cy - inner.height + lh;
         if (cy - t->scroll_y < 0) t->scroll_y = cy;
-        if (hover && ui.wheel) t->scroll_y = fmaxf(0, fminf(t->scroll_y - ui.wheel * lh * 3, fmaxf(0, lines.n * lh - inner.height)));
+        if (hover && ui.wheel)
+            t->scroll_y = fmaxf(0, fminf(t->scroll_y - ui.wheel * lh * 3, fmaxf(0, lines.n * lh - inner.height)));
     }
     ui_scissor_begin((Rectangle){inner.x - 1, inner.y - 1, inner.width + 2, inner.height + 2});
     int lo = caret < anchor ? caret : anchor, hi = caret < anchor ? anchor : caret;
@@ -1096,7 +1119,8 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
             DrawRectangleRec((Rectangle){sx, y, ex - sx, lh}, with_alpha(pal.highlight, 150));
         }
         char *seg = pt_format("%.*s", L.end - L.start, s + L.start);
-        draw_text(seg, x0, text_top(y + lh / 2, t->size), t->size, F_REGULAR, t->readonly ? pal.disabled_text : pal.text);
+        draw_text(seg, x0, text_top(y + lh / 2, t->size), t->size, F_REGULAR,
+                  t->readonly ? pal.disabled_text : pal.text);
         free(seg);
     }
     if (!t->len && t->placeholder && !focused) {
@@ -1143,7 +1167,8 @@ int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float s
     } else {
         char buf[64];
         snprintf(buf, sizeof buf, step < 1 ? "%.1f%s" : "%.0f%s", *value, suffix ? suffix : "");
-        draw_text_in(buf, (Rectangle){field.x + 6, field.y, field.width - 6, field.height}, FS_NORMAL, F_REGULAR, pal.text, -1);
+        draw_text_in(buf, (Rectangle){field.x + 6, field.y, field.width - 6, field.height}, FS_NORMAL, F_REGULAR,
+                     pal.text, -1);
         if (ui_hover(field) && ui.pressed) {
             spin_editing = id;
             char num[32];
@@ -1185,7 +1210,8 @@ int ui_spin(unsigned id, Rectangle r, int *value, int lo, int hi, int step, cons
         float pv = v;
         int c = ui_spinf(id, r, &pv, (float)lo, (float)hi, (float)step, NULL);
         ui_panel(field, pal.base, BLANK, 0);
-        draw_text_in(buf, (Rectangle){field.x + 6, field.y, field.width - 6, field.height}, FS_NORMAL, F_REGULAR, pal.text, -1);
+        draw_text_in(buf, (Rectangle){field.x + 6, field.y, field.width - 6, field.height}, FS_NORMAL, F_REGULAR,
+                     pal.text, -1);
         if (c) *value = (int)pv, changed = 1;
         return changed;
     }
@@ -1207,7 +1233,8 @@ int ui_combo(unsigned id, Rectangle r, const char **items, int n, int *index)
     const char *label = *index >= 0 && *index < n ? items[*index] : "";
     if (ui_button(id, r, label, NULL, B_MENU, NULL)) {
         ui_menu *m = menu_new();
-        for (int i = 0; i < n; i++) menu_item(m, items[i], NULL, NULL, combo_pick, (void *)(uintptr_t)id, i, 1, i == *index);
+        for (int i = 0; i < n; i++)
+            menu_item(m, items[i], NULL, NULL, combo_pick, (void *)(uintptr_t)id, i, 1, i == *index);
         menu_open_below(m, r);
     }
     if (combo_changed == id) {
@@ -1258,10 +1285,11 @@ ui_menu *menu_new(void)
     return m;
 }
 
-void menu_item(ui_menu *m, const char *label, const char *icon, const char *shortcut, ui_action fn, void *ctx, intptr_t arg,
-               int enabled, int checked)
+void menu_item(ui_menu *m, const char *label, const char *icon, const char *shortcut, ui_action fn, void *ctx,
+               intptr_t arg, int enabled, int checked)
 {
-    pt_push(m->items, (menu_entry){pt_strdup(label), pt_strdup(shortcut), icon, 0, enabled, checked, 0, {0}, fn, ctx, arg, NULL});
+    pt_push(m->items,
+            (menu_entry){pt_strdup(label), pt_strdup(shortcut), icon, 0, enabled, checked, 0, {0}, fn, ctx, arg, NULL});
 }
 
 void menu_swatch_item(ui_menu *m, const char *label, const unsigned char rgb[3], ui_action fn, void *ctx, intptr_t arg,
@@ -1309,7 +1337,10 @@ static Rectangle menu_size(ui_menu *m)
     float w = 160, h = 8, shortcut_w = 0;
     for (int i = 0; i < m->items.n; i++) {
         menu_entry *e = &m->items.v[i];
-        if (e->sep) { h += MENU_SEP; continue; }
+        if (e->sep) {
+            h += MENU_SEP;
+            continue;
+        }
         h += MENU_ROW;
         float lw = text_width(e->label, FS_NORMAL, F_REGULAR) + 64;
         if (e->shortcut) shortcut_w = fmaxf(shortcut_w, text_width(e->shortcut, FS_NORMAL, F_REGULAR) + 24);
@@ -1330,7 +1361,10 @@ static void place(ui_menu *m, float x, float y, float alt_x)
 void menu_open(ui_menu *m, Vector2 at)
 {
     menus_close();
-    if (menu_empty(m)) { menu_free(m); return; }
+    if (menu_empty(m)) {
+        menu_free(m);
+        return;
+    }
     open_menus[0] = m;
     nopen = 1;
     menu_at = at;
@@ -1458,7 +1492,8 @@ void dialogs_frame(void)
         float w = fminf(d->w, ui.w - 20), h = fminf(d->h, ui.h - 20);
         Rectangle box = {(ui.w - w) / 2, (ui.h - h) / 2, w, h};
         ui_panel(box, pal.window, pal.border, 8);
-        draw_text_in(d->title, (Rectangle){box.x + 16, box.y + 6, box.width - 32, 30}, FS_NORMAL, F_BOLD, pal.window_text, -1);
+        draw_text_in(d->title, (Rectangle){box.x + 16, box.y + 6, box.width - 32, 30}, FS_NORMAL, F_BOLD,
+                     pal.window_text, -1);
         Rectangle body = {box.x + 16, box.y + 40, box.width - 32, box.height - 56};
         int done = 0;
         if (i == ndialogs - 1) {
@@ -1532,15 +1567,19 @@ static int msg_frame(dialog *d, Rectangle body)
 {
     msg_data *m = d->data;
     static const char *icons[] = {"about", "about", "about", "about"};
-    Color tint = m->kind == MSG_ERROR ? (Color){217, 48, 37, 255} : m->kind == MSG_WARNING ? (Color){230, 160, 0, 255} : pal.highlight;
+    Color tint = m->kind == MSG_ERROR     ? (Color){217, 48, 37, 255}
+                 : m->kind == MSG_WARNING ? (Color){230, 160, 0, 255}
+                                          : pal.highlight;
     draw_icon(icons[m->kind], (Rectangle){body.x, body.y + 2, 28, 28}, tint);
     pt_strs lines = {0};
     wrap(m->text, body.width - 44, FS_NORMAL, &lines);
-    for (int i = 0; i < lines.n; i++) draw_text(lines.v[i], body.x + 44, body.y + i * 20, FS_NORMAL, F_REGULAR, pal.window_text);
+    for (int i = 0; i < lines.n; i++)
+        draw_text(lines.v[i], body.x + 44, body.y + i * 20, FS_NORMAL, F_REGULAR, pal.window_text);
     pt_strs_free(&lines);
     float bw = fmaxf(84, button_width(m->yes, NULL, B_PRIMARY) + 16);
     Rectangle yes = {body.x + body.width - bw, body.y + body.height - 30, bw, 30};
-    if (ui_button(ui_id(d, 1), yes, m->yes, NULL, B_PRIMARY, NULL) || key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER)) {
+    if (ui_button(ui_id(d, 1), yes, m->yes, NULL, B_PRIMARY, NULL) || key_pressed(KEY_ENTER) ||
+        key_pressed(KEY_KP_ENTER)) {
         m->answered = 1;
         if (m->done) m->done(m->ctx, 1);
         return 1;
@@ -1557,7 +1596,8 @@ static int msg_frame(dialog *d, Rectangle body)
     return 0;
 }
 
-static void push_message(int kind, const char *title, const char *text, const char *yes, const char *no, ui_answer done, void *ctx)
+static void push_message(int kind, const char *title, const char *text, const char *yes, const char *no, ui_answer done,
+                         void *ctx)
 {
     dialog *d = calloc(1, sizeof *d);
     msg_data *m = calloc(1, sizeof *m);
@@ -1576,7 +1616,8 @@ static void push_message(int kind, const char *title, const char *text, const ch
 
 void message_box(int kind, const char *title, const char *text, ui_answer done, void *ctx)
 {
-    if (kind == MSG_ERROR || kind == MSG_WARNING) pt_log(kind == MSG_ERROR ? PT_LOG_ERROR : PT_LOG_WARN, "%s: %s", title, text);
+    if (kind == MSG_ERROR || kind == MSG_WARNING)
+        pt_log(kind == MSG_ERROR ? PT_LOG_ERROR : PT_LOG_WARN, "%s: %s", title, text);
     push_message(kind, title, text, "OK", NULL, done, ctx);
 }
 
@@ -1607,7 +1648,8 @@ static int input_frame(dialog *d, Rectangle body)
     input_data *in = d->data;
     pt_strs lines = {0};
     wrap(in->prompt, body.width, FS_NORMAL, &lines);
-    for (int i = 0; i < lines.n; i++) draw_text(lines.v[i], body.x, body.y + i * 20, FS_NORMAL, F_REGULAR, pal.window_text);
+    for (int i = 0; i < lines.n; i++)
+        draw_text(lines.v[i], body.x, body.y + i * 20, FS_NORMAL, F_REGULAR, pal.window_text);
     float y = body.y + lines.n * 20 + 8;
     pt_strs_free(&lines);
     if (in->first) {
@@ -1733,7 +1775,9 @@ static int colour_frame(dialog *d, Rectangle body)
         snprintf(h, sizeof h, "#%02x%02x%02x", picked[0], picked[1], picked[2]);
         text_set(&c->hex, h);
     }
-    if (!used) draw_text_in("None yet: pick a colour and add it", (Rectangle){body.x, y, body.width, 28}, FS_NORMAL, F_REGULAR, pal.disabled_text, -1);
+    if (!used)
+        draw_text_in("None yet: pick a colour and add it", (Rectangle){body.x, y, body.width, 28}, FS_NORMAL, F_REGULAR,
+                     pal.disabled_text, -1);
     y = body.y + body.height - 70;
     draw_text("Hex:", body.x, y + 6, FS_NORMAL, F_REGULAR, pal.window_text);
     if (ui_textfield(ui_id(d, 4), &c->hex, (Rectangle){body.x + 40, y, 120, 30}, 1) & (TE_CHANGED | TE_SUBMIT)) {
@@ -1785,21 +1829,45 @@ void theme_apply(const char *mode)
 {
     if (mode && !strcmp(mode, "light")) {
         pal = (ui_palette){
-            .window = hex_colour(0xefefef), .window_text = hex_colour(0x1a1a1a), .base = hex_colour(0xffffff),
-            .text = hex_colour(0x1a1a1a), .button = hex_colour(0xe3e3e3), .button_text = hex_colour(0x1a1a1a),
-            .mid = hex_colour(0xb8b8b8), .light = hex_colour(0xffffff), .dark = hex_colour(0x9f9f9f),
-            .highlight = hex_colour(0x308cc6), .highlighted_text = hex_colour(0xffffff), .disabled_text = hex_colour(0x8c8c8c),
-            .placeholder = hex_colour(0x8c8c8c), .link = hex_colour(0x0b57d0), .tooltip = hex_colour(0xffffdc),
-            .page_bg = hex_colour(0x5f6368), .border = hex_colour(0xc4c4c4), .dark_mode = 0,
+            .window = hex_colour(0xefefef),
+            .window_text = hex_colour(0x1a1a1a),
+            .base = hex_colour(0xffffff),
+            .text = hex_colour(0x1a1a1a),
+            .button = hex_colour(0xe3e3e3),
+            .button_text = hex_colour(0x1a1a1a),
+            .mid = hex_colour(0xb8b8b8),
+            .light = hex_colour(0xffffff),
+            .dark = hex_colour(0x9f9f9f),
+            .highlight = hex_colour(0x308cc6),
+            .highlighted_text = hex_colour(0xffffff),
+            .disabled_text = hex_colour(0x8c8c8c),
+            .placeholder = hex_colour(0x8c8c8c),
+            .link = hex_colour(0x0b57d0),
+            .tooltip = hex_colour(0xffffdc),
+            .page_bg = hex_colour(0x5f6368),
+            .border = hex_colour(0xc4c4c4),
+            .dark_mode = 0,
         };
     } else {
         pal = (ui_palette){
-            .window = hex_colour(0x2b2b2b), .window_text = hex_colour(0xe6e6e6), .base = hex_colour(0x1f1f1f),
-            .text = hex_colour(0xe6e6e6), .button = hex_colour(0x353535), .button_text = hex_colour(0xe6e6e6),
-            .mid = hex_colour(0x2f2f2f), .light = hex_colour(0x4a4a4a), .dark = hex_colour(0x1a1a1a),
-            .highlight = hex_colour(0x2f6fd0), .highlighted_text = hex_colour(0xffffff), .disabled_text = hex_colour(0x7a7a7a),
-            .placeholder = hex_colour(0x8a8a8a), .link = hex_colour(0x6ab0ff), .tooltip = hex_colour(0x2b2b2b),
-            .page_bg = hex_colour(0x5f6368), .border = hex_colour(0x4a4a4a), .dark_mode = 1,
+            .window = hex_colour(0x2b2b2b),
+            .window_text = hex_colour(0xe6e6e6),
+            .base = hex_colour(0x1f1f1f),
+            .text = hex_colour(0xe6e6e6),
+            .button = hex_colour(0x353535),
+            .button_text = hex_colour(0xe6e6e6),
+            .mid = hex_colour(0x2f2f2f),
+            .light = hex_colour(0x4a4a4a),
+            .dark = hex_colour(0x1a1a1a),
+            .highlight = hex_colour(0x2f6fd0),
+            .highlighted_text = hex_colour(0xffffff),
+            .disabled_text = hex_colour(0x7a7a7a),
+            .placeholder = hex_colour(0x8a8a8a),
+            .link = hex_colour(0x6ab0ff),
+            .tooltip = hex_colour(0x2b2b2b),
+            .page_bg = hex_colour(0x5f6368),
+            .border = hex_colour(0x4a4a4a),
+            .dark_mode = 1,
         };
     }
     /* the user's accent for this theme, with black or white text on it, whichever contrasts more (Rec. 709 luma) */
@@ -1826,7 +1894,10 @@ Color rgb3(const unsigned char rgb[3]) { return (Color){rgb[0], rgb[1], rgb[2], 
 
 /* GLFW's custom-cursor calls. raylib's GetWindowHandle() is the native (X11/Wayland) handle, not the GLFWwindow,
  * which is the current GL context. */
-typedef struct { int width, height; unsigned char *pixels; } GLFWimage;
+typedef struct {
+    int width, height;
+    unsigned char *pixels;
+} GLFWimage;
 void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot);
 void glfwSetCursor(void *window, void *cursor);
 void glfwDestroyCursor(void *cursor);
@@ -1835,29 +1906,97 @@ static fz_context *ictx;
 
 /* app name -> Lucide file */
 static const char *LUCIDE[][2] = {
-    {"menu", "menu"}, {"back", "chevron-left"}, {"prev", "chevron-left"}, {"next", "chevron-right"}, {"close", "x"},
-    {"undo", "undo-2"}, {"redo", "redo-2"}, {"view", "mouse-pointer-2"}, {"redact", "eraser"},
-    {"highlight", "highlighter"}, {"note", "sticky-note"}, {"text", "type"}, {"sign", "signature"},
-    {"zoom-out", "zoom-out"}, {"zoom-in", "zoom-in"}, {"fit", "move-horizontal"}, {"fit-height", "move-vertical"},{"continuous", "gallery-vertical"},
-    {"find", "search"}, {"save", "save"}, {"open", "folder-open"}, {"export", "file-output"}, {"merge", "files"},
-    {"add", "plus"}, {"remove", "trash-2"}, {"sort", "arrow-down-a-z"}, {"underline", "underline"},
-    {"strikeout", "strikethrough"}, {"squiggly", "spline"}, {"textcolour", "baseline"}, {"custom-colour", "palette"},
-    {"file", "file-text"}, {"sidebar", "panel-left"}, {"copy", "copy"}, {"print", "printer"}, {"about", "info"},
-    {"rotate", "rotate-cw"}, {"rotate-left", "rotate-ccw"}, {"crop", "crop"}, {"lock", "lock"}, {"unlock", "lock-open"},
-    {"split", "scissors"}, {"bold", "bold"}, {"italic", "italic"}, {"image", "image"}, {"draw", "pencil"},
-    {"more", "ellipsis-vertical"}, {"shapes", "shapes"}, {"shape-rect", "square"}, {"shape-ellipse", "circle"},
-    {"shape-line", "slash"}, {"shape-arrow", "arrow-up-right"}, {"two-pages", "book-open"}, {"presentation", "presentation"},
-    {"compare", "git-compare"}, {"bates", "hash"}, {"stamp", "stamp"}, {"export-images", "file-image"}, {"ocr", "scan-text"},
-    {"pii", "scan-search"}, {"outline", "list-tree"}, {"up", "arrow-up"}, {"down", "arrow-down"}, {"certificate", "file-badge"},
-    {"window", "app-window"}, {"home", "house"}, {"quit", "log-out"}, {"light", "sun"}, {"dark", "moon"},
-    {"new-window", "external-link"}, {"snap", "magnet"}, {"fill", "paint-bucket"}, {"tick", "square-check"},
-    {"untick", "square"}, {"goto", "corner-down-right"}, {"comment", "message-square"}, {"tools", "wrench"},
-    {"pages", "layers"}, {"eye", "eye"}, {"appearance", "sun-moon"}, {"recent", "history"}, {"edit", "pencil-line"},
+    {"menu", "menu"},
+    {"back", "chevron-left"},
+    {"prev", "chevron-left"},
+    {"next", "chevron-right"},
+    {"close", "x"},
+    {"undo", "undo-2"},
+    {"redo", "redo-2"},
+    {"view", "mouse-pointer-2"},
+    {"redact", "eraser"},
+    {"highlight", "highlighter"},
+    {"note", "sticky-note"},
+    {"text", "type"},
+    {"sign", "signature"},
+    {"zoom-out", "zoom-out"},
+    {"zoom-in", "zoom-in"},
+    {"fit", "move-horizontal"},
+    {"fit-height", "move-vertical"},
+    {"continuous", "gallery-vertical"},
+    {"find", "search"},
+    {"save", "save"},
+    {"open", "folder-open"},
+    {"export", "file-output"},
+    {"merge", "files"},
+    {"add", "plus"},
+    {"remove", "trash-2"},
+    {"sort", "arrow-down-a-z"},
+    {"underline", "underline"},
+    {"strikeout", "strikethrough"},
+    {"squiggly", "spline"},
+    {"textcolour", "baseline"},
+    {"custom-colour", "palette"},
+    {"file", "file-text"},
+    {"sidebar", "panel-left"},
+    {"copy", "copy"},
+    {"print", "printer"},
+    {"about", "info"},
+    {"rotate", "rotate-cw"},
+    {"rotate-left", "rotate-ccw"},
+    {"crop", "crop"},
+    {"lock", "lock"},
+    {"unlock", "lock-open"},
+    {"split", "scissors"},
+    {"bold", "bold"},
+    {"italic", "italic"},
+    {"image", "image"},
+    {"draw", "pencil"},
+    {"more", "ellipsis-vertical"},
+    {"shapes", "shapes"},
+    {"shape-rect", "square"},
+    {"shape-ellipse", "circle"},
+    {"shape-line", "slash"},
+    {"shape-arrow", "arrow-up-right"},
+    {"two-pages", "book-open"},
+    {"presentation", "presentation"},
+    {"compare", "git-compare"},
+    {"bates", "hash"},
+    {"stamp", "stamp"},
+    {"export-images", "file-image"},
+    {"ocr", "scan-text"},
+    {"pii", "scan-search"},
+    {"outline", "list-tree"},
+    {"up", "arrow-up"},
+    {"down", "arrow-down"},
+    {"certificate", "file-badge"},
+    {"window", "app-window"},
+    {"home", "house"},
+    {"quit", "log-out"},
+    {"light", "sun"},
+    {"dark", "moon"},
+    {"new-window", "external-link"},
+    {"snap", "magnet"},
+    {"fill", "paint-bucket"},
+    {"tick", "square-check"},
+    {"untick", "square"},
+    {"goto", "corner-down-right"},
+    {"comment", "message-square"},
+    {"tools", "wrench"},
+    {"pages", "layers"},
+    {"eye", "eye"},
+    {"appearance", "sun-moon"},
+    {"recent", "history"},
+    {"edit", "pencil-line"},
 };
 #define NLUCIDE (int)(sizeof LUCIDE / sizeof *LUCIDE)
 #define ICON_PX 48
 
-typedef struct { const char *name; Texture2D tex; int loaded; } icon_tex;
+typedef struct {
+    const char *name;
+    Texture2D tex;
+    int loaded;
+} icon_tex;
 static icon_tex cache[192];
 static int ncache;
 static Texture2D logo;
@@ -1897,7 +2036,8 @@ static unsigned char *render_svg(const char *svg, int size, fz_matrix ctm)
     fz_pixmap *pix = NULL;
     fz_device *dev = NULL;
     fz_var(rgba);
-    fz_try(ictx) {
+    fz_try(ictx)
+    {
         buf = fz_new_buffer_from_copied_data(ictx, (const unsigned char *)svg, strlen(svg));
         stm = fz_open_buffer(ictx, buf);
         doc = fz_open_document_with_stream(ictx, "image/svg+xml", stm);
@@ -1920,7 +2060,8 @@ static unsigned char *render_svg(const char *svg, int size, fz_matrix ctm)
             }
         }
     }
-    fz_always(ictx) {
+    fz_always(ictx)
+    {
         fz_drop_device(ictx, dev);
         fz_drop_pixmap(ictx, pix);
         fz_drop_page(ictx, page);
@@ -1928,7 +2069,8 @@ static unsigned char *render_svg(const char *svg, int size, fz_matrix ctm)
         fz_drop_stream(ictx, stm);
         fz_drop_buffer(ictx, buf);
     }
-    fz_catch(ictx) {
+    fz_catch(ictx)
+    {
         free(rgba);
         rgba = NULL;
     }
@@ -1994,7 +2136,12 @@ void draw_icon(const char *name, Rectangle r, Color tint)
 
 /* ---- cursors ---- */
 
-typedef struct { const char *file; float hx, hy; int filled; float turn; } cursor_spec;
+typedef struct {
+    const char *file;
+    float hx, hy;
+    int filled;
+    float turn;
+} cursor_spec;
 static const cursor_spec SPECS[CUR_COUNT] = {
     /* Lucide's arrowhead is symmetric about the diagonal; turned 24.4 degrees about its tip its left edge stands
      * upright and the other edge lies at ~44 degrees, the classic pointer shape */
@@ -2049,12 +2196,14 @@ static void make_cursors(void)
         fz_matrix ctm = fz_scale(s, s);
         if (c->turn) {
             /* the hotspot moves to (4, 3) so the turned shape and its outline stay inside the cursor image */
-            ctm = fz_concat(fz_concat(fz_concat(fz_translate(-hx, -hy), fz_rotate(c->turn)), fz_translate(4, 3)), fz_scale(s, s));
+            ctm = fz_concat(fz_concat(fz_concat(fz_translate(-hx, -hy), fz_rotate(c->turn)), fz_translate(4, 3)),
+                            fz_scale(s, s));
             hx = 4, hy = 3;
         }
         unsigned char *layers[2] = {0};
         /* the icon's own 2-unit stroke, laid over a wider white one that gives the outline */
-        static const char *colour[2] = {"#ffffff", "#000000"}, *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
+        static const char *colour[2] = {"#ffffff", "#000000"},
+                          *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
         for (int k = 0; k < 2; k++) {
             char *a = replace_all(src, "currentColor", colour[k]);
             char *b = replace_all(a, "stroke-width=\"2\"", width[k]);
@@ -2072,8 +2221,7 @@ static void make_cursors(void)
         for (int p = 0; p < size * size; p++) {
             unsigned char *w = layers[0] + p * 4, *bk = layers[1] + p * 4;
             float ab = bk[3] / 255.0f, aw = w[3] / 255.0f, a = ab + aw * (1 - ab);
-            for (int k = 0; k < 3; k++)
-                w[k] = a > 0 ? (unsigned char)((bk[k] * ab + w[k] * aw * (1 - ab)) / a) : 0;
+            for (int k = 0; k < 3; k++) w[k] = a > 0 ? (unsigned char)((bk[k] * ab + w[k] * aw * (1 - ab)) / a) : 0;
             w[3] = (unsigned char)(a * 255);
         }
         GLFWimage img = {size, size, layers[0]};

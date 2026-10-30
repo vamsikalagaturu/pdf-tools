@@ -23,7 +23,8 @@ void pt_raylib_follow_window(void)
     EGLint w = 0, h = 0;
     eglQuerySurface(platform.device, platform.surface, EGL_WIDTH, &w);
     eglQuerySurface(platform.device, platform.surface, EGL_HEIGHT, &h);
-    if (w <= 0 || h <= 0 || ((unsigned)w == CORE.Window.screen.width && (unsigned)h == CORE.Window.screen.height)) return;
+    if (w <= 0 || h <= 0 || ((unsigned)w == CORE.Window.screen.width && (unsigned)h == CORE.Window.screen.height))
+        return;
     CORE.Window.display.width = CORE.Window.screen.width = CORE.Window.currentFbo.width = (unsigned)w;
     CORE.Window.display.height = CORE.Window.screen.height = CORE.Window.currentFbo.height = (unsigned)h;
     CORE.Window.renderOffset.x = CORE.Window.renderOffset.y = 0;

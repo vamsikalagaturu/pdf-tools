@@ -51,7 +51,7 @@ static char *safe_name(const char *uri)
 
 typedef struct {
     char *path, *uri;
-    long long mtime, size;        /* the copy as last written back (or copied in); -2: never */
+    long long mtime, size; /* the copy as last written back (or copied in); -2: never */
     long long seen_mtime, seen_size;
     double seen_at;
 } doc;
@@ -162,7 +162,7 @@ char *pt_android_open_uri(const char *uri)
     free(real);
     char *path = copy_path(uri);
     doc *d = by_path(path);
-    if (d && unsynced(d)) return path;   /* edits not yet written back: keep them */
+    if (d && unsynced(d)) return path; /* edits not yet written back: keep them */
     char *err = pt_java("copyIn", 2, uri, path);
     if (err) {
         LOG("copy %s: %s", uri, err);
@@ -178,7 +178,8 @@ char *pt_android_open_uri(const char *uri)
 
 /* ---- writing back ---- */
 
-static void pick_start(int mode, const char *mimes, const char *name, ui_files_done done, void *ctx, const char *reexport);
+static void pick_start(int mode, const char *mimes, const char *name, ui_files_done done, void *ctx,
+                       const char *reexport);
 
 static void reexport_answer(void *ctx, int yes)
 {
@@ -212,16 +213,25 @@ static void sync_doc(doc *d, int force)
     LOG("write back %s: %s", d->uri, err);
     free(err);
     char *msg = pt_format("%s could not be written back where it came from (no write access).\n\n"
-                          "The saved version is kept in the app. Choose a place for it?", pt_basename(d->path));
+                          "The saved version is kept in the app. Choose a place for it?",
+                          pt_basename(d->path));
     question_box(APP_NAME, msg, "Choose...", "Not now", reexport_answer, pt_strdup(d->path));
     free(msg);
 }
 
 /* ---- folders picked for "Save N files in" ---- */
 
-typedef struct { char *name; long long mtime, size; double seen_at; int exported; } out_file;
+typedef struct {
+    char *name;
+    long long mtime, size;
+    double seen_at;
+    int exported;
+} out_file;
 PT_VEC(out_files, out_file);
-typedef struct { char *dir, *tree; out_files files; } out_dir;
+typedef struct {
+    char *dir, *tree;
+    out_files files;
+} out_dir;
 PT_VEC(out_dirs, out_dir);
 static out_dirs outs;
 
@@ -229,7 +239,8 @@ static void export_file(out_dir *o, out_file *f)
 {
     char *path = pt_join(o->dir, f->name);
     const char *dot = strrchr(f->name, '.');
-    char *uri = pt_java("createIn", 3, o->tree, f->name, dot && !strcasecmp(dot, ".pdf") ? "application/pdf" : "application/octet-stream");
+    char *uri = pt_java("createIn", 3, o->tree, f->name,
+                        dot && !strcasecmp(dot, ".pdf") ? "application/pdf" : "application/octet-stream");
     char *err = uri ? pt_java("copyOut", 2, path, uri) : pt_strdup("could not create the file");
     f->exported = 1;
     if (err) {
@@ -282,7 +293,8 @@ static struct {
     char *reexport;
 } pick;
 
-static void pick_start(int mode, const char *mimes, const char *name, ui_files_done done, void *ctx, const char *reexport)
+static void pick_start(int mode, const char *mimes, const char *name, ui_files_done done, void *ctx,
+                       const char *reexport)
 {
     if (pick.active) return;
     const char *kind = mode == FD_OPEN ? "open" : mode == FD_OPEN_MANY ? "many" : mode == FD_DIR ? "dir" : "save";
@@ -327,7 +339,9 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
     if (pick.active) return;
     char types[128];
     mime_types(patterns, types);
-    if (mode == FD_SAVE) snprintf(types, sizeof types, "%s", strstr(types, "application/pdf") ? "application/pdf" : "application/octet-stream");
+    if (mode == FD_SAVE)
+        snprintf(types, sizeof types, "%s",
+                 strstr(types, "application/pdf") ? "application/pdf" : "application/octet-stream");
     pick_start(mode, types, mode == FD_SAVE && start ? pt_basename(start) : NULL, done, ctx, NULL);
 }
 
@@ -367,7 +381,8 @@ static void picked(int mode, ui_files_done done, void *ctx, char *reexport, pt_s
         if (real && writable_dir(real)) pt_push(paths, real);
         else {
             free(real);
-            char *dir = pt_format("%s/saf-out/%016llx-%lld", pt_android_cache_dir, fnv(uris->v[0]), (long long)time(NULL));
+            char *dir =
+                pt_format("%s/saf-out/%016llx-%lld", pt_android_cache_dir, fnv(uris->v[0]), (long long)time(NULL));
             pt_mkdirs(dir);
             pt_push(outs, (out_dir){pt_strdup(dir), pt_strdup(uris->v[0]), {0}});
             o = &outs.v[outs.n - 1];
@@ -397,7 +412,8 @@ void file_dialogs_poll(void)
         if (result) {
             pt_strs uris = {0};
             char *save = NULL;
-            for (char *u = strtok_r(result, "\n", &save); u; u = strtok_r(NULL, "\n", &save)) pt_push(uris, pt_strdup(u));
+            for (char *u = strtok_r(result, "\n", &save); u; u = strtok_r(NULL, "\n", &save))
+                pt_push(uris, pt_strdup(u));
             free(result);
             int mode = pick.mode;
             ui_files_done done = pick.done;

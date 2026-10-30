@@ -50,8 +50,8 @@ static int record(const char *s, char *kind, long v[7], int *full)
     if (!*s || !strchr("([hvxgk$", *s)) return 0;
     *kind = *s++;
     if (*s < '0' || *s > '9') return 0;
-    if (!number(&s, &v[0]) || *s++ != ',' || !number(&s, &v[1]) || *s++ != ':' || !number(&s, &v[2]) ||
-        *s++ != ',' || !number(&s, &v[3]))
+    if (!number(&s, &v[0]) || *s++ != ',' || !number(&s, &v[1]) || *s++ != ':' || !number(&s, &v[2]) || *s++ != ',' ||
+        !number(&s, &v[3]))
         return 0;
     *full = 0;
     if (s[0] == ':') {
@@ -73,7 +73,8 @@ void pt_synctex_load(fz_context *ctx, pt_synctex *s, const char *pdf)
     double unit = 1, x_off = 0, y_off = 0;
     int page = -1;
     char line[8192];
-    fz_try(ctx) {
+    fz_try(ctx)
+    {
         stm = n > 3 && !strcmp(s->path + n - 3, ".gz") ? fz_open_flated(ctx, file, 15 + 16) : fz_keep_stream(ctx, file);
         while (fz_read_line(ctx, stm, line, sizeof line)) {
             size_t len = strlen(line);
@@ -103,7 +104,8 @@ void pt_synctex_load(fz_context *ctx, pt_synctex *s, const char *pdf)
             }
         }
     }
-    fz_always(ctx) {
+    fz_always(ctx)
+    {
         fz_drop_stream(ctx, stm);
         fz_drop_stream(ctx, file);
     }
@@ -243,8 +245,7 @@ void pt_synctex_forward(const pt_synctex *s, const char *source, int line, pt_sy
                 fz_rect r;
                 if (!line_box(s, p, n->rect.x0, n->rect.y1, &r)) r = n->rect;
                 int dup = 0;
-                for (int h = 0; h < out->n; h++)
-                    dup |= !memcmp(&out->v[h].rect, &r, sizeof r);
+                for (int h = 0; h < out->n; h++) dup |= !memcmp(&out->v[h].rect, &r, sizeof r);
                 if (!dup) pt_push(*out, (pt_sync_hit){p, r});
             }
         if (first >= 0) break;

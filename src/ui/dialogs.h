@@ -9,7 +9,7 @@ typedef void (*export_done)(void *ctx, const char *ranges, int flat, int dpi);
 void export_dialog(int n_pages, const char *ranges, int flat, int dpi, export_done done, void *ctx);
 typedef void (*password_done)(void *ctx, const char *password);
 void password_dialog(password_done done, void *ctx);
-typedef void (*signature_done)(void *ctx, const char *path);   /* path of the chosen signature PNG */
+typedef void (*signature_done)(void *ctx, const char *path); /* path of the chosen signature PNG */
 void signature_dialog(const char *last, signature_done done, void *ctx);
 
 void pii_dialog(tab *t);
@@ -18,7 +18,7 @@ void watermark_dialog(tab *t);
 void properties_dialog(tab *t);
 void export_images_dialog(tab *t);
 void cert_sign_start(tab *t);
-int cert_placing(tab *t);          /* the next band on the page is the signature box */
+int cert_placing(tab *t); /* the next band on the page is the signature box */
 void cert_place(tab *t, int page, fz_rect src);
 void cert_draw(tab *t);
 /* takes `pdf` (the saved bytes, encrypted with `password` if any) and returns them signed, or NULL on failure */

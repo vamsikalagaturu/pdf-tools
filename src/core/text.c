@@ -88,7 +88,9 @@ char *pt_page_text(fz_context *ctx, fz_page *page)
     return s;
 }
 
-typedef struct { pt_rects *out; } search_acc;
+typedef struct {
+    pt_rects *out;
+} search_acc;
 
 static int on_hit(fz_context *ctx, void *opaque, int n, fz_quad *quads)
 {
@@ -147,9 +149,8 @@ int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int 
     pt_page_chars(st, &chars);
     /* byte offset -> char index */
     size_t cap = (size_t)chars.n * 4 + 2, len = 0;
-    char *text = malloc(cap);
-    int *owner = malloc(cap * sizeof(int));
-    if (!text || !owner) abort();
+    char *text = pt_realloc(NULL, cap);
+    int *owner = pt_realloc(NULL, cap * sizeof(int));
     for (int i = 0; i < chars.n; i++) {
         int k = fz_runetochar(text + len, chars.v[i].c);
         for (int b = 0; b < k; b++) owner[len + b] = i;
@@ -200,7 +201,10 @@ int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int 
 #define MIN_COLUMN_GAP 1.0f
 #define MIN_BLOCK_GAP 0.5f
 
-static int is_space(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xa0 || c == 0x3000 || (c >= 0x2000 && c <= 0x200a); }
+static int is_space(int c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xa0 || c == 0x3000 || (c >= 0x2000 && c <= 0x200a);
+}
 
 static void flush(pt_chars *cur, pt_words *out)
 {
@@ -241,7 +245,9 @@ void pt_words_free(pt_words *w)
     pt_vec_free(*w);
 }
 
-typedef struct { float lo, hi; } span;
+typedef struct {
+    float lo, hi;
+} span;
 
 static int cmp_span(const void *a, const void *b)
 {
@@ -364,6 +370,7 @@ void pt_reading_order_words(fz_stext_page *st, pt_words *out)
         }
         b = e + 1;
     }
+    sort_words = NULL;
     pt_vec_free(blocks);
     free(idx);
     free(heights);
@@ -400,8 +407,12 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
     position(words, start, &lw, &lo);
     position(words, end, &hw, &ho);
     if (hw < lw || (hw == lw && ho < lo)) {
-        int t = lw; lw = hw; hw = t;
-        t = lo; lo = ho; ho = t;
+        int t = lw;
+        lw = hw;
+        hw = t;
+        t = lo;
+        lo = ho;
+        ho = t;
     }
     pt_ints runes = {0};
     int line = -1;
@@ -515,8 +526,13 @@ static int date_ok(const char *s, int n)
 void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
 {
 #ifdef PT_USE_PCRE2
-    char *month_day = pt_format("\\b\\d{1,2}\\.?\\s+%s\\.?,?\\s+\\d{4}\\b|\\b%s\\.?\\s+\\d{1,2},?\\s+\\d{4}\\b", MONTHS, MONTHS);
-    const struct { pt_pii_kind kind; const char *re; int caseless; } RULES[] = {
+    char *month_day =
+        pt_format("\\b\\d{1,2}\\.?\\s+%s\\.?,?\\s+\\d{4}\\b|\\b%s\\.?\\s+\\d{1,2},?\\s+\\d{4}\\b", MONTHS, MONTHS);
+    const struct {
+        pt_pii_kind kind;
+        const char *re;
+        int caseless;
+    } RULES[] = {
         {PT_PII_IBAN, "\\b[A-Z]{2}\\d{2}(?: ?[A-Z0-9]){11,30}", 0},
         {PT_PII_CARD, "\\b\\d(?:[ -]?\\d){12,18}\\b", 0},
         {PT_PII_EMAIL, "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}\\b", 0},
@@ -532,17 +548,15 @@ void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
     /* the page text, '\n' after each line; owner maps bytes back to characters (-1: the line breaks) */
     pt_chars chars = {0};
     size_t len = 0, cap = 64;
-    char *text = malloc(cap);
-    int *owner = malloc(cap * sizeof(int));
-    if (!text || !owner) abort();
+    char *text = pt_realloc(NULL, cap);
+    int *owner = pt_realloc(NULL, cap * sizeof(int));
     for (fz_stext_block *b = st->first_block; b; b = b->next) {
         if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
         for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
             for (fz_stext_char *c = l->first_char; c; c = c->next) {
                 if (len + 8 > cap) {
                     cap *= 2;
-                    text = realloc(text, cap), owner = realloc(owner, cap * sizeof(int));
-                    if (!text || !owner) abort();
+                    text = pt_realloc(text, cap), owner = pt_realloc(owner, cap * sizeof(int));
                 }
                 int k = fz_runetochar(text + len, c->c);
                 for (int i = 0; i < k; i++) owner[len + (size_t)i] = chars.n;
@@ -551,8 +565,7 @@ void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
             }
             if (len + 8 > cap) {
                 cap *= 2;
-                text = realloc(text, cap), owner = realloc(owner, cap * sizeof(int));
-                if (!text || !owner) abort();
+                text = pt_realloc(text, cap), owner = pt_realloc(owner, cap * sizeof(int));
             }
             text[len] = '\n', owner[len++] = -1;
         }
