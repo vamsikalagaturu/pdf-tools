@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 enum { OK = 0, FAILED = 1, LEAKED = 2, NO_MATCH = 3 };
 
