@@ -6,5 +6,6 @@
 *.pdf
 *.png
 !platform/android/res/**/*.png
+!assets/screenshots/*.png
 /compile_commands.json
 *.apk

@@ -1,6 +1,6 @@
-.TH PDF-TOOLS 1 2026-10-28 "PDF Tools" "User Commands"
+.TH PDF-TOOLS 1 2026-10-30 "PDF Tools" "User Commands"
 .SH NAME
-pdf-tools \- view, redact, fill, annotate, sign, crop and merge PDF files
+pdf-tools \- view, redact, fill, annotate, sign, OCR, compare, crop and merge PDF files
 .SH SYNOPSIS
 .B pdf-tools
 .RB [ \-\-new\-window ]
@@ -59,6 +59,9 @@ Drag over text to redact it, or draw a free rectangle with Alt+drag or with
 turned off.
 .B Auto fill
 paints each box in the colour around it.
+.B Find personal data
+lists e-mail addresses, phone numbers, IBANs, card numbers, dates and ID numbers
+on all pages; tick what to mark for redaction.
 .TP
 .BR Highlight " (H)"
 Drag over text to mark it: highlight, underline, strikethrough, squiggly line or
@@ -75,6 +78,10 @@ Esc or clicking elsewhere finishes; double-click a box to edit it again.
 .TP
 .BR Sign " (S)"
 Click to place a saved signature, or draw or import a new one.
+.B Sign with certificate
+places a box for a digital signature with a PKCS#12 certificate (.p12, .pfx);
+the document is signed when you save, after asking for the certificate's
+password, which is never stored.
 .TP
 .BR Image " (I)"
 Click, or drag a box, to place a picture (PNG, JPEG, WebP and other common
@@ -84,6 +91,9 @@ formats) in full colour; drag it or its corner to move or resize it.
 Draw freehand with a pen colour and width.
 Strokes made in quick succession form one drawing, saved as a PDF ink
 annotation that other viewers show and can remove.
+.TP
+.BR Shape " (O)"
+Drag a rectangle, ellipse, line or arrow, saved as a PDF annotation.
 .TP
 .BR Crop " (C)"
 Drag a rectangle, then crop this page, all pages or the ticked pages to it, or
@@ -108,13 +118,48 @@ just that change.
 The
 .B Annotations
 tab lists the notes and marks in the document.
+The
+.B Outline
+tab shows the bookmarks; add, rename, delete and drag them to reorder or nest.
+.SS More tools
+.TP
+.B Bates numbering
+Stamps PREFIX000001SUFFIX on a corner of each (ticked) page.
+.TP
+.B Watermark
+Stamps text diagonally across, in the centre or on a corner of the pages, with
+an opacity.
+.TP
+.B Recognize text (OCR)
+Runs Tesseract on scanned pages and opens a copy with an invisible, searchable
+text layer.
+The language data
+.RI ( lang .traineddata)
+is looked up in
+.BR $TESSDATA_PREFIX ,
+.IR $XDG_DATA_HOME/pdf-tools/tessdata ,
+next to the program and in the system's data folders.
+.TP
+.B Compare with...
+Opens a tab with two PDFs side by side and the words that differ marked on each.
+.TP
+.B Document properties
+Edits the title, author, subject and keywords.
+.SS View
+Fit width (Ctrl+0) or fit height (Ctrl+9), continuous or single pages, two
+pages side by side (optionally with the cover alone), and presentation mode
+(F5: full screen, one page, arrows or clicks to step, Esc to leave).
+The accent colour can be chosen per theme under
+.BR "View > Appearance" .
 .SS Saving
 .B Save
 replaces the file and moves the original to the trash.
 .B Save As
 writes a copy,
 .B Export pages
-writes a copy of some pages (optionally flattened to images), and
+writes a copy of some pages (optionally flattened to images),
+.B Export pages as images
+saves PNG or JPEG files, and
 .B Protect with password
 writes an AES-256 encrypted copy.
 A password protected file asks for its password when opened and keeps it when
@@ -144,6 +189,8 @@ Ctrl+C	copy the selected text
 Delete	remove the selected edit or pages
 Ctrl++, Ctrl+\-	zoom in, zoom out
 Ctrl+0	fit the width
+Ctrl+9	fit the height
+F5	presentation
 Left, PgUp	previous page
 Right, PgDn	next page
 Ctrl+Shift+L, Ctrl+Shift+R	rotate left, right
@@ -266,6 +313,91 @@ Print the source file and line typeset at that point.
 .TP
 .BI "synctex " "input.pdf " "\-\-source " file.tex " \-\-line " n
 Print the page and boxes where that source line is typeset.
+.TP
+.BI "search " input.pdf " \-\-text " string
+Print the pages and boxes of each match
+.RB ( \-\-pages ,
+.BR \-\-case\-sensitive ).
+.TP
+.BI "inspect " input.pdf
+List annotations, with their index on each page, and form fields.
+.TP
+.BI "render " "input.pdf " \-o " page.png"
+Render one page
+.RB ( \-\-page ,
+.BR \-\-dpi ).
+.TP
+.BI "export\-images " "input.pdf " \-d " folder"
+Save pages as
+.IR name \-page N .png
+.RB ( \-\-pages ,
+.BR \-\-format " png|jpeg,"
+.BR \-\-dpi ).
+.TP
+.BI "ocr " "input.pdf " \-o " output.pdf"
+Add an invisible, searchable text layer to scanned pages with Tesseract
+.RB ( \-\-pages ,
+.BI \-\-language " deu+eng" ,
+.BI \-\-tessdata " folder" ).
+.TP
+.BI "compare " "a.pdf b.pdf"
+Print, per page, the boxes of words only in the first and only in the second
+file
+.RB ( \-\-password2
+for the second).
+.TP
+.BI "bates " "input.pdf " \-o " output.pdf"
+Stamp Bates numbers
+.RB ( \-\-prefix ,
+.BR \-\-suffix ,
+.BR \-\-start ,
+.BR \-\-digits ,
+.BR \-\-position ,
+.BR \-\-size ,
+.BR \-\-pages ,
+.BR \-\-color ).
+.TP
+.BI "watermark " "input.pdf " \-o " output.pdf " \-\-text " text"
+Stamp text diagonally or at a position
+.RB ( \-\-position ,
+.BR \-\-size ,
+.BR \-\-opacity ,
+.BR \-\-pages ,
+.BR \-\-color ).
+.TP
+.BI "annotate " "input.pdf " \-o " output.pdf " \-\-page " n " \-\-type " type " \-\-rect " x0,y0,x1,y1"
+Add a highlight, underline, strikeout, squiggly or text-colour mark, or a note
+.RB ( \-\-text ,
+.BR \-\-color ).
+.TP
+.BI "draw " "input.pdf " \-o " output.pdf " \-\-page " n " \-\-points " x,y;x,y;..."
+Add a freehand ink drawing
+.RB ( \-\-width ,
+.BR \-\-color ).
+.TP
+.BI "insert\-text " "input.pdf " \-o " output.pdf " \-\-page " n " \-\-at " x,y " \-\-text " text"
+Write text into the page
+.RB ( \-\-size ,
+.BR \-\-font ,
+.BR \-\-width ,
+.BR \-\-color ).
+.TP
+.BI "insert\-image " "input.pdf " \-o " output.pdf " \-\-page " n " \-\-image " file " \-\-rect " box"
+Place a picture, keeping its proportions.
+.TP
+.BI "sign " "input.pdf " \-o " output.pdf " \-\-page " n " \-\-rect " box"
+With
+.BI \-\-image " file"
+place a signature picture; with
+.BI \-\-cert " file.p12"
+and
+.B \-\-cert\-password
+sign digitally (PKCS#7, incremental save;
+.B \-\-reason
+is shown with the signature).
+.TP
+.BI "scrub " "input.pdf " \-o " output.pdf"
+Remove metadata, attachments, scripts, hidden text and thumbnails.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
@@ -310,6 +442,17 @@ Saved signatures.
 .IB name .synctex.gz
 SyncTeX data written by TeX next to
 .IR name .pdf.
+.TP
+.I ~/.local/share/pdf-tools/tessdata/
+Tesseract language data for OCR.
+.SH ENVIRONMENT
+.TP
+.B PDF_TOOLS_LOG
+Log level:
+.BR error ", " warn " (default), " info " or " debug .
+.TP
+.B TESSDATA_PREFIX
+Folder with Tesseract language data.
 .SH EXAMPLES
 Remove a name and every IBAN from a statement:
 .PP

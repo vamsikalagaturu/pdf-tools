@@ -36,10 +36,37 @@ Notes:
   (including invisible OCR layers) and thumbnails. Check `matches` and
   `text_left_under_redactions` in the output.
 - `--text` is matched without regard to case unless `--case-sensitive`; `--regex` uses
-  Python syntax over each page's text in reading order.
+  PCRE2 (Perl-compatible) syntax over each page's text in reading order.
 - `pages`: `--order` lists the pages to keep in their new order (`5-1` counts down);
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
 - Field names for `fill` come from `info` (`fields[].name`); checkboxes take `true`/`false`.
+
+## More commands
+
+```sh
+pdf-tools search in.pdf --text "total" [--pages 1-3] [--case-sensitive]   # -> pages and boxes of each match
+pdf-tools inspect in.pdf                                     # annotations (with per-page index) and form fields
+pdf-tools render in.pdf -o page.png [--page 1] [--dpi 150]
+pdf-tools export-images in.pdf -d outdir/ [--pages 1-3] [--format png|jpeg] [--dpi 150]   # outdir/in-page1.png, ...
+pdf-tools ocr in.pdf -o out.pdf [--pages 1-3] [--language deu+eng] [--tessdata DIR]       # invisible, searchable text layer
+pdf-tools compare a.pdf b.pdf [--password2 PW]               # -> per page: boxes only_in_first / only_in_second
+pdf-tools bates in.pdf -o out.pdf [--prefix ABC] [--suffix X] [--start 1] [--digits 6] [--position bottom-right] [--pages 1-3]
+pdf-tools watermark in.pdf -o out.pdf --text CONFIDENTIAL [--position diagonal] [--opacity 0.3] [--pages 1-3]
+pdf-tools annotate in.pdf -o out.pdf --page 1 --type highlight --rect x0,y0,x1,y1 [--text "comment"] [--color '#ffd400']
+pdf-tools draw in.pdf -o out.pdf --page 1 --points '10,10;50,60;90,20' [--width 2]
+pdf-tools insert-text in.pdf -o out.pdf --page 1 --at 72,72 --text "Hello" [--size 11] [--font Helvetica] [--width 300]
+pdf-tools insert-image in.pdf -o out.pdf --page 1 --image logo.png --rect x0,y0,x1,y1
+pdf-tools sign in.pdf -o out.pdf --page 1 --rect x0,y0,x1,y1 --image signature.png
+pdf-tools sign in.pdf -o out.pdf --page 1 --rect x0,y0,x1,y1 --cert me.p12 --cert-password PW [--reason "Approved"]
+pdf-tools scrub in.pdf -o out.pdf                            # metadata, attachments, scripts, hidden text, thumbnails
+```
+
+- `ocr` needs Tesseract's `LANG.traineddata` (in `--tessdata`, `$TESSDATA_PREFIX`,
+  `$XDG_DATA_HOME/pdf-tools/tessdata` or the system's data folders); `characters_added` in
+  the output is 0 when the pages already had text.
+- `sign --cert` writes a PKCS#7 digital signature (incremental save); `--image` alone only
+  places a picture, which is not a cryptographic signature.
+- `bates` numbers count only the selected pages; the output gives `first` and `last`.
 
 ## Windowed use
 
