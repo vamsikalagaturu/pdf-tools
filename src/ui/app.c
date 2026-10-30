@@ -274,6 +274,38 @@ static void reset_accent(void)
     theme_apply(pt_settings_str(&app.settings, "theme"));
 }
 
+#ifndef __ANDROID__
+static float interface_size_setting(void)
+{
+    float v = (float)atof(pt_settings_str(&app.settings, "ui_scale"));
+    return v >= 0.75f && v <= 3 ? v : 0;
+}
+
+/* 0 = automatic */
+static void set_interface_size(float size)
+{
+    char value[16];
+    if (size > 0) snprintf(value, sizeof value, "%g", size);
+    pt_settings_set_str(&app.settings, "ui_scale", size > 0 ? value : "auto");
+    ui.scale_choice = size;
+    ui.scale = 0;
+    ui.dirty = 1;
+}
+
+static void step_interface_size(int dir)
+{
+    float now = ui.scale_choice > 0 ? ui.scale_choice : ui.scale;
+    float next = (floorf(now * 4 + 0.01f) + dir) / 4;
+    set_interface_size(fminf(3, fmaxf(0.75f, next)));
+}
+
+static void m_size(void *ctx, intptr_t percent)
+{
+    (void)ctx;
+    set_interface_size(percent / 100.0f);
+}
+#endif
+
 void app_about(void)
 {
     message_box(MSG_INFO, "About " APP_NAME,
@@ -432,6 +464,18 @@ ui_menu *app_build_menu(tab *t)
     menu_item(a, "Dark", "dark", NULL, m_action, NULL, 9, 1, dark);
     menu_item(a, "Light", "light", NULL, m_action, NULL, 10, 1, !dark);
     menu_sep(a);
+#ifndef __ANDROID__
+    ui_menu *size = menu_sub(a, "Interface size", "interface-size");
+    menu_item(size, "Auto", "interface-size", "Ctrl+Alt+0", m_size, NULL, 0, 1, ui.scale_choice == 0);
+    static const int PERCENT[] = {75, 100, 125, 150, 175, 200};
+    for (int i = 0; i < (int)(sizeof PERCENT / sizeof *PERCENT); i++) {
+        char label[8];
+        snprintf(label, sizeof label, "%d%%", PERCENT[i]);
+        menu_item(size, label, "interface-size", NULL, m_size, NULL, PERCENT[i], 1,
+                  fabsf(ui.scale_choice * 100 - PERCENT[i]) < 0.5f);
+    }
+    menu_sep(a);
+#endif
     menu_item(a, "Accent colour...", "custom-colour", NULL, m_action, NULL, 12, 1, 0);
     menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()),
               0);
@@ -698,6 +742,13 @@ static void global_shortcuts(void)
     if (ui_shortcut(1, 1, KEY_W)) app_quit_request();
     if (ui_shortcut(1, 0, KEY_TAB) && app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
     if (ui_shortcut(1, 1, KEY_TAB) && app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
+#ifndef __ANDROID__
+    if (ui_shortcut_alt(1, 0, 1, KEY_EQUAL) || ui_shortcut_alt(1, 1, 1, KEY_EQUAL) ||
+        ui_shortcut_alt(1, 0, 1, KEY_KP_ADD))
+        step_interface_size(1);
+    if (ui_shortcut_alt(1, 0, 1, KEY_MINUS) || ui_shortcut_alt(1, 0, 1, KEY_KP_SUBTRACT)) step_interface_size(-1);
+    if (ui_shortcut_alt(1, 0, 1, KEY_ZERO) || ui_shortcut_alt(1, 0, 1, KEY_KP_0)) set_interface_size(0);
+#endif
 }
 
 static void handle_drops(void)
@@ -912,6 +963,9 @@ int pt_app_main(int argc, char **argv)
     pt_migrate_legacy();
     pt_settings_load(&app.settings, NULL);
     theme_apply(pt_settings_str(&app.settings, "theme"));
+#ifndef __ANDROID__
+    ui.scale_choice = interface_size_setting();
+#endif
 
     static const int RAYLIB_LEVEL[] = {LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR};
     SetTraceLogLevel(RAYLIB_LEVEL[pt_log_threshold()]);

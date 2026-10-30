@@ -80,6 +80,8 @@ Commands print one JSON object and exit with a meaningful code; `AGENTS.md` docu
   system's data folders; the AppImage, the macOS app and the APK include English.
 - LaTeX: compile with `-synctex=1`. Ctrl+click in the PDF opens the source line in your editor;
   `pdf-tools --forward file.pdf LINE file.tex` shows a source line in the PDF.
+- Interface size: View > Appearance > Interface size, or Ctrl+Alt++ / Ctrl+Alt+- (Ctrl+Alt+0: automatic); saved as
+  `ui_scale` in the settings.
 - Logging: `PDF_TOOLS_LOG=error|warn|info|debug`.
 
 ## Safety

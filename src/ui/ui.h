@@ -73,8 +73,9 @@ void cursor_commit(void);
 
 /* ---- immediate-mode state ---- */
 typedef struct {
-    float scale, w, h; /* logical window size */
-    float density;     /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
+    float scale, w, h;  /* logical window size */
+    float density;      /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
+    float scale_choice; /* interface size from the settings; 0 = automatic */
     Vector2 mouse;
     int pressed, released, down, rpressed, rreleased, dclick, mpressed;
     float wheel, wheel_x;
@@ -134,6 +135,7 @@ void ui_scissor_begin(Rectangle r);
 void ui_scissor_end(void);
 int ui_key(int key); /* pressed (or repeating), unless a text field took it */
 int ui_shortcut(int ctrl, int shift, int key);
+int ui_shortcut_alt(int ctrl, int shift, int alt, int key);
 int ui_key_eaten(void);
 
 /* ---- widgets ---- */

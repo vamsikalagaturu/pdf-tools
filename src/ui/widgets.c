@@ -221,6 +221,9 @@ typedef void (*glfw_key_fn)(void *window, int key, int scancode, int action, int
 glfw_mouse_fn glfwSetMouseButtonCallback(void *window, glfw_mouse_fn fn);
 glfw_key_fn glfwSetKeyCallback(void *window, glfw_key_fn fn);
 void *glfwGetCurrentContext(void);
+int glfwGetPlatform(void);
+void glfwGetWindowContentScale(void *window, float *x, float *y);
+#define GLFW_PLATFORM_WAYLAND 0x00060003
 #define GLFW_RELEASE 0
 #define GLFW_PRESS 1
 #define GLFW_MOD_SHIFT 1
@@ -304,25 +307,33 @@ int key_pressed(int key)
     return 0;
 }
 
-static int key_with_mods(int key, int ctrl, int shift)
+static int key_with_mods(int key, int ctrl, int shift, int alt)
 {
     for (int i = 0; i < nframe_keys; i++)
         if (frame_keys[i].key == key && !!(frame_keys[i].mods & GLFW_MOD_CONTROL) == ctrl &&
-            !!(frame_keys[i].mods & GLFW_MOD_SHIFT) == shift && (ctrl || !(frame_keys[i].mods & GLFW_MOD_ALT)))
+            !!(frame_keys[i].mods & GLFW_MOD_SHIFT) == shift && !!(frame_keys[i].mods & GLFW_MOD_ALT) == alt)
             return 1;
     return 0;
 }
 
-/* The UI scale: PDF_TOOLS_SCALE, else the window system's content scale when it reports one, else the physical
- * DPI of the window's monitor over 96 (XWayland reports a content scale of 1 even on fractionally scaled
- * outputs), in quarter steps, never below 1. */
+/* The UI scale: PDF_TOOLS_SCALE, else the chosen interface size, else the window system's content scale when it
+ * reports one (Wayland always does), else the physical DPI of the window's monitor over 96 (XWayland reports a
+ * content scale of 1 even on fractionally scaled outputs), in quarter steps, never below 1. */
 float ui_detect_scale(void)
 {
     const char *env = getenv("PDF_TOOLS_SCALE");
     if (env && atof(env) > 0.3) return (float)atof(env);
+    if (ui.scale_choice > 0) return ui.scale_choice;
 #ifdef __APPLE__
     /* macOS lays windows out in points; a Retina screen shows up as ui.density instead */
     return 1;
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        float x = 1, y = 1;
+        glfwGetWindowContentScale(glfwGetCurrentContext(), &x, &y);
+        return x > 1 ? x : 1;
+    }
 #endif
     Vector2 content = GetWindowScaleDPI();
     if (content.x > 1.01f) return content.x;
@@ -598,12 +609,14 @@ int ui_key(int key)
     return key_pressed(key);
 }
 
-int ui_shortcut(int ctrl, int shift, int key)
+int ui_shortcut_alt(int ctrl, int shift, int alt, int key)
 {
     if (ui.focus && editing_key(ctrl, key)) return 0;
     if (dialogs_open() || menu_is_open()) return 0;
-    return key_with_mods(key, ctrl, shift);
+    return key_with_mods(key, ctrl, shift, alt);
 }
+
+int ui_shortcut(int ctrl, int shift, int key) { return ui_shortcut_alt(ctrl, shift, 0, key); }
 
 int ui_key_eaten(void) { return ui.focus != NULL; }
 
@@ -1958,6 +1971,7 @@ static const char *LUCIDE[][2] = {
     {"pages", "layers"},
     {"eye", "eye"},
     {"appearance", "sun-moon"},
+    {"interface-size", "type"},
     {"recent", "history"},
     {"edit", "pencil-line"},
 };

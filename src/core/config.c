@@ -12,6 +12,7 @@
 
 const pt_setting_def pt_settings_defs[] = {
     {"theme", PT_SET_STR, "dark", 0, "dark | light"},
+    {"ui_scale", PT_SET_STR, "auto", 0, "Interface size: auto, or a factor from 0.75 to 3 (e.g. 1.25)"},
     {"view_mode", PT_SET_STR, "continuous", 0, "continuous | single"},
     {"show_sidebar", PT_SET_BOOL, NULL, 1, "Show the Pages / Annotations / Edits panel"},
     {"export_flatten", PT_SET_BOOL, NULL, 0, "Export pages as images without selectable text"},
