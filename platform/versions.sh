@@ -1,5 +1,11 @@
-# The third-party sources every build script uses, in one place: versions and SHA-256 checksums.
-# Sourced by platform/{linux,macos,android}/build.sh; the CI workflow runs those scripts.
+# The third-party sources every build script uses, in one place: versions and SHA-256 checksums, and the size
+# settings all of them are compiled with. Sourced by platform/{linux,macos,android}/build.sh; the CI workflow runs
+# those scripts.
+
+# optimised for speed, each function and object in its own section, so the final link drops what nothing uses
+SIZE_CFLAGS="-O2 -ffunction-sections -fdata-sections"
+# build folders named after the settings, so a change rebuilds everything with them
+BUILD_TAG=o2
 
 MUPDF_VERSION=1.28.5
 MUPDF_SHA256=98a5c10cda20c3992cdf76ff6b2a1149c32bd79cc796d3f703230b1185b7e934
