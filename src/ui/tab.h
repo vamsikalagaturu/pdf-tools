@@ -310,6 +310,7 @@ struct tab {
 void tab_reset(tab *t);
 void reload_display(tab *t);
 void tab_invalidate_pages(tab *t);
+void tab_release_renders(tab *t);
 fz_rect page_bounds(tab *t, int page); /* display page size, origin 0,0 */
 int page_rotation(tab *t, int page);   /* degrees the tab adds */
 fz_point src_to_disp(tab *t, int page, fz_point p);

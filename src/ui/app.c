@@ -623,9 +623,12 @@ static void frame(void)
     global_shortcuts();
     ui_end_frame();
     cursor_commit();
-    /* other tabs keep watching their files */
+    /* other tabs keep watching their files, and give their page renders back */
     for (int i = 0; i < app.tabs.n; i++)
-        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) tab_poll(app.tabs.v[i].doc);
+        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) {
+            tab_poll(app.tabs.v[i].doc);
+            tab_release_renders(app.tabs.v[i].doc);
+        }
     char title[600];
     if (t && t->path)
         snprintf(title, sizeof title, "%s%s - %s", tab_edit_count(t) ? "* " : "", pt_basename(t->path), APP_NAME);

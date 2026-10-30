@@ -76,7 +76,8 @@ static void free_history(pt_state **v, int *n)
 static unsigned render_new_gen(void);
 static void render_forget(unsigned gen);
 
-void tab_invalidate_pages(tab *t)
+/* the page renders: textures, the render thread's copy of the document and the renders still on their way */
+static void release_renders(tab *t)
 {
     for (int i = 0; i < PIX_CACHE; i++)
         if (t->pix[i].ok) UnloadTexture(t->pix[i].tex), t->pix[i].ok = 0;
@@ -87,6 +88,21 @@ void tab_invalidate_pages(tab *t)
     fz_drop_buffer(CTX, t->render_bytes);
     t->render_bytes = NULL;
     t->render_gen = render_new_gen();
+}
+
+/* A tab out of view gives its renders back (they come again when it is shown): every visited tab kept ~20 MB, and
+ * 50 open documents grew to 1.5 GB. */
+void tab_release_renders(tab *t)
+{
+    int any = t->render_bytes != NULL;
+    for (int i = 0; i < PIX_CACHE && !any; i++) any = t->pix[i].ok;
+    for (int i = 0; i < TILE_CACHE && !any; i++) any = t->tiles[i].ok;
+    if (any) release_renders(t);
+}
+
+void tab_invalidate_pages(tab *t)
+{
+    release_renders(t);
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
         if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]);
