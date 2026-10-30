@@ -1817,103 +1817,6 @@ void colour_dialog(const char *title, const unsigned char rgb[3], ui_colour_done
     dialog_push(d);
 }
 
-/* ---- dark and light themes: the colours every widget draws with ---- */
-
-ui_palette pal;
-
-static Color hex_colour(unsigned v) { return (Color){(v >> 16) & 255, (v >> 8) & 255, v & 255, 255}; }
-
-void theme_apply(const char *mode)
-{
-    if (mode && !strcmp(mode, "light")) {
-        pal = (ui_palette){
-            .window = hex_colour(0xefefef),
-            .window_text = hex_colour(0x1a1a1a),
-            .base = hex_colour(0xffffff),
-            .text = hex_colour(0x1a1a1a),
-            .button = hex_colour(0xe3e3e3),
-            .button_text = hex_colour(0x1a1a1a),
-            .mid = hex_colour(0xb8b8b8),
-            .light = hex_colour(0xffffff),
-            .dark = hex_colour(0x9f9f9f),
-            .highlight = hex_colour(0x308cc6),
-            .highlighted_text = hex_colour(0xffffff),
-            .disabled_text = hex_colour(0x8c8c8c),
-            .placeholder = hex_colour(0x8c8c8c),
-            .link = hex_colour(0x0b57d0),
-            .tooltip = hex_colour(0xffffdc),
-            .page_bg = hex_colour(0x5f6368),
-            .border = hex_colour(0xc4c4c4),
-            .scroll_lane = hex_colour(0xe0e0e0),
-            .scroll_thumb = hex_colour(0xa0a0a0),
-            .scroll_thumb_hot = hex_colour(0x787878),
-            .dark_mode = 0,
-        };
-    } else {
-        pal = (ui_palette){
-            .window = hex_colour(0x2b2b2b),
-            .window_text = hex_colour(0xe6e6e6),
-            .base = hex_colour(0x1f1f1f),
-            .text = hex_colour(0xe6e6e6),
-            .button = hex_colour(0x353535),
-            .button_text = hex_colour(0xe6e6e6),
-            .mid = hex_colour(0x2f2f2f),
-            .light = hex_colour(0x4a4a4a),
-            .dark = hex_colour(0x1a1a1a),
-            .highlight = hex_colour(0x2f6fd0),
-            .highlighted_text = hex_colour(0xffffff),
-            .disabled_text = hex_colour(0x7a7a7a),
-            .placeholder = hex_colour(0x8a8a8a),
-            .link = hex_colour(0x6ab0ff),
-            .tooltip = hex_colour(0x2b2b2b),
-            .page_bg = hex_colour(0x5f6368),
-            .border = hex_colour(0x4a4a4a),
-            .scroll_lane = hex_colour(0x262626),
-            .scroll_thumb = hex_colour(0x6e6e6e),
-            .scroll_thumb_hot = hex_colour(0x969696),
-            .dark_mode = 1,
-        };
-    }
-    pal.selection = hex_colour(0x1a73e8);
-    pal.find_match = with_alpha(hex_colour(0xffe100), 110);
-    pal.find_current = with_alpha(hex_colour(0xff8c00), 130);
-    pal.sync_mark = with_alpha(hex_colour(0xffc800), 110);
-    pal.redact_preview = with_alpha(hex_colour(0x000000), 90);
-    pal.field_bg = hex_colour(0xdce8ff);
-    pal.field_mark = hex_colour(0x1e1e1e);
-    pal.crop_dim = with_alpha(hex_colour(0x202124), 150);
-    pal.note_fill = hex_colour(0xffd54f);
-    pal.note_line = hex_colour(0x8a6d00);
-    pal.danger = hex_colour(0xd93025);
-    pal.warning = hex_colour(0xe6a000);
-    pal.success = hex_colour(0x1e8e3e);
-    pal.thumb_bg = hex_colour(0xebebeb);
-    pal.thumb_frame = with_alpha(hex_colour(0x808080), 120);
-    pal.check_bg = with_alpha(hex_colour(0xffffff), 230);
-    pal.check_border = hex_colour(0x6e6e6e);
-    pal.pad_guide = hex_colour(0xc8c8c8);
-    pal.paper = hex_colour(0xffffff);
-    pal.shadow = hex_colour(0x000000);
-    pal.scrim = hex_colour(0x000000);
-    pal.field_text = hex_colour(0x000000);
-    pal.field_frame = hex_colour(0x505050);
-    pal.on_danger = hex_colour(0xffffff);
-    pal.on_backdrop = hex_colour(0xffffff);
-    pal.present_bg = hex_colour(0x000000);
-    pal.present_label = with_alpha(hex_colour(0x000000), 160);
-    pal.swatch_line = hex_colour(0x000000);
-    static const unsigned SOURCE[6] = {0x1a73e8, 0xd93025, 0x1e8e3e, 0xf9ab00, 0xa142f4, 0x0096a0};
-    for (int i = 0; i < 6; i++) pal.source[i] = hex_colour(SOURCE[i]);
-    /* the user's accent for this theme, with black or white text on it, whichever contrasts more (Rec. 709 luma) */
-    const char *accent = pt_settings_str(&app.settings, pal.dark_mode ? "accent_colour_dark" : "accent_colour_light");
-    unsigned v;
-    if (accent && accent[0] == '#' && strlen(accent) == 7 && sscanf(accent + 1, "%6x", &v) == 1) {
-        pal.highlight = hex_colour(v);
-        float luma = 0.2126f * pal.highlight.r + 0.7152f * pal.highlight.g + 0.0722f * pal.highlight.b;
-        pal.highlighted_text = luma > 150 ? hex_colour(0x111111) : hex_colour(0xffffff);
-    }
-}
-
 Color with_alpha(Color c, int a)
 {
     c.a = (unsigned char)a;
@@ -1925,6 +1828,10 @@ Color rgb3(const unsigned char rgb[3]) { return (Color){rgb[0], rgb[1], rgb[2], 
 /* ---- icons and cursors ----
  * Lucide icons (ISC, assets/icons) rendered by MuPDF as white masks and tinted when drawn, and the app's mouse
  * cursors, drawn from the same icons so they do not depend on the desktop's cursor theme. */
+
+#define ICON_MASK_COLOUR "#ffffff"
+#define CURSOR_COLOUR "#000000"
+#define CURSOR_OUTLINE_COLOUR "#ffffff"
 
 /* GLFW's custom-cursor calls. raylib's GetWindowHandle() is the native (X11/Wayland) handle, not the GLFWwindow,
  * which is the current GL context. */
@@ -2154,7 +2061,7 @@ static icon_tex *icon_for(const char *name)
         if (!strcmp(LUCIDE[i][0], name)) file = LUCIDE[i][1];
     const pt_icon_data *d = lucide_file(file);
     if (!d) return it;
-    char *svg = replace_all((const char *)d->data, "currentColor", "#ffffff");
+    char *svg = replace_all((const char *)d->data, "currentColor", ICON_MASK_COLOUR);
     unsigned char *rgba = render_svg(svg, ICON_PX, fz_scale(ICON_PX / 24.0f, ICON_PX / 24.0f));
     free(svg);
     if (rgba) {
@@ -2226,7 +2133,7 @@ static void make_cursors(void)
         if (!d) continue;
         char *src = pt_strdup((const char *)d->data);
         if (c->filled) {
-            char *f = replace_all(src, "fill=\"none\"", "fill=\"#000000\"");
+            char *f = replace_all(src, "fill=\"none\"", "fill=\"" CURSOR_COLOUR "\"");
             free(src);
             src = f;
         }
@@ -2240,7 +2147,7 @@ static void make_cursors(void)
         }
         unsigned char *layers[2] = {0};
         /* the icon's own 2-unit stroke, laid over a wider white one that gives the outline */
-        static const char *colour[2] = {"#ffffff", "#000000"},
+        static const char *colour[2] = {CURSOR_OUTLINE_COLOUR, CURSOR_COLOUR},
                           *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
         for (int k = 0; k < 2; k++) {
             char *a = replace_all(src, "currentColor", colour[k]);

@@ -1069,8 +1069,11 @@ void home_frame(Rectangle area)
         ui_scissor_end();
         y += list_h + 10;
     }
+#ifndef __ANDROID__
+    /* files cannot be dropped onto a phone's window */
     draw_text_in("or drop a PDF anywhere in this window", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR,
                  pal.disabled_text, 0);
+#endif
     pt_vec_free(shown);
 }
 
