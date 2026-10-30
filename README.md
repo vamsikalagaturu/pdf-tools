@@ -16,10 +16,6 @@ A PDF viewer and editor for Linux, macOS and Android, with a command line for sc
   password, print. Undo and redo, find with regular expressions, two pages side by side, presentation mode (F5).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
 
-| Find personal data | Marked for redaction |
-| --- | --- |
-| ![Find personal data](assets/screenshots/find-personal-data.png) | ![Marked for redaction](assets/screenshots/redaction-marks.png) |
-
 ## Install
 
 Each push builds a Linux AppImage and a macOS `.dmg` on GitHub Actions (artifacts `PDF-Tools-Linux` and
@@ -35,13 +31,16 @@ platform/macos/build.sh      # PDF Tools.app and .dmg
 platform/android/build.sh    # APK (details: platform/android/README.md)
 ```
 
-The scripts download and build the pinned dependencies (MuPDF with Tesseract, PCRE2, OpenSSL, raylib) and run
-the tests. On Debian/Ubuntu the Linux script needs `build-essential cmake pkg-config curl git libfontconfig-dev
+The scripts download and build the pinned dependencies ([MuPDF](https://mupdf.com) with
+[Tesseract](https://github.com/tesseract-ocr/tesseract), [PCRE2](https://github.com/PCRE2Project/pcre2),
+[OpenSSL](https://www.openssl.org), [raylib](https://www.raylib.com) and [raygui](https://github.com/raysan5/raygui))
+and run the tests. On Debian/Ubuntu the Linux script needs `build-essential cmake pkg-config curl git libfontconfig-dev
 libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev
 libwayland-dev wayland-protocols`.
 
-With your own dependencies (found through pkg-config: `mupdf` 1.28, `libpcre2-8`, `fontconfig`, `libcrypto`;
-raylib 6.2 through `CMAKE_PREFIX_PATH`):
+With your own dependencies (found through pkg-config: `mupdf` 1.28, `libpcre2-8`,
+[`fontconfig`](https://www.freedesktop.org/wiki/Software/fontconfig/), `libcrypto`; raylib 6.2 through
+`CMAKE_PREFIX_PATH`):
 
 ```sh
 cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/raylib && cmake --build build && ctest --test-dir build
@@ -75,4 +74,4 @@ Commands print one JSON object and exit with a meaningful code; `AGENTS.md` docu
 Check redacted files before sharing them. A picture signature is not a cryptographic one; use a certificate for
 that. Passwords given on the command line can show in process listings.
 
-**License:** AGPL-3.0-or-later, as MuPDF.
+**License:** AGPL-3.0-or-later, as [MuPDF](https://mupdf.com/licensing).
