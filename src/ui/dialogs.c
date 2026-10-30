@@ -226,7 +226,7 @@ static int pad_frame(dialog *d, Rectangle b)
     }
     draw_text("Sign above the line with the mouse or a pen.", b.x, b.y, FS_NORMAL, F_REGULAR, pal.window_text);
     Rectangle surface = {b.x, b.y + 26, b.width, b.width * PAD_H / PAD_W};
-    DrawRectangleRec(surface, WHITE);
+    DrawRectangleRec(surface, pal.paper);
     float ly = surface.y + surface.height * 0.75f;
     for (float x = surface.x + 20; x < surface.x + surface.width - 20; x += 8)
         DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1, pal.pad_guide);
@@ -399,7 +399,7 @@ static int library_frame(dialog *d, Rectangle b)
         if (i == l->current) DrawRectangleRounded(cell, 0.06f, 4, with_alpha(pal.highlight, 70));
         else if (hover) DrawRectangleRounded(cell, 0.06f, 4, with_alpha(pal.highlight, 30));
         Rectangle img = {cell.x + 8, cell.y + 6, 240 - 16, 80 - 6};
-        DrawRectangleRec(img, WHITE);
+        DrawRectangleRec(img, pal.paper);
         if (s->ok) {
             float sc = fminf(img.width / s->w, img.height / s->h);
             Rectangle dst = {img.x + (img.width - s->w * sc) / 2, img.y + (img.height - s->h * sc) / 2, s->w * sc,

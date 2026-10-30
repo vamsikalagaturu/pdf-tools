@@ -574,6 +574,11 @@ static void handle_input(tab *t, Rectangle area)
         if (ui_key(KEY_UP)) t->scroll_y -= 40;
         if (ui_key(KEY_DOWN)) t->scroll_y += 40;
     }
+    /* the scrollbars belong to themselves: no tool cursor, gesture or click on the page under them */
+    Rectangle vbar = {area.x + area.width - 12, area.y, 12, area.height};
+    Rectangle hbar = {area.x, area.y + area.height - 12, area.width, 12};
+    if ((t->scene_h * t->zoom > area.height && ui_hover(vbar)) || (t->scene_w * t->zoom > area.width && ui_hover(hbar)))
+        over = 0;
     hit_obj h = over ? hit_test(t) : (hit_obj){SEL_NONE, -1, -1, 0};
     int field = over && on_field(t);
 
@@ -726,20 +731,77 @@ static void handle_input(tab *t, Rectangle area)
     }
 }
 
+/* the zoom at which page p is rendered whole; above it, tiles draw over that render */
+static float base_scale(tab *t, int p)
+{
+    fz_rect b = page_bounds(t, p);
+    return fminf(t->zoom * UI_PX, BASE_MAX_PX / fmaxf(b.x1 - b.x0, b.y1 - b.y0));
+}
+
+/* distance in device pixels from the middle of the view to the nearest point of r (screen units): 0 when visible */
+static float view_distance(tab *t, Rectangle r)
+{
+    float cx = t->view.x + t->view.width / 2, cy = t->view.y + t->view.height / 2;
+    float dx = fmaxf(0, fmaxf(r.x - cx, cx - (r.x + r.width))), dy = fmaxf(0, fmaxf(r.y - cy, cy - (r.y + r.height)));
+    return hypotf(dx, dy) * UI_PX;
+}
+
+/* Tiles of page p (on screen at r) that meet `want` (screen units): drawn when `draw`, else only requested, nearest
+ * the middle of the view first. They render at the zoom level just above the zoom and are drawn k <= 1 times that,
+ * each edge on a whole device pixel (between pixels text shimmered while scrolling); a new tile fades in. */
+static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
+{
+    float px = UI_PX, zoom = t->zoom * px, level = tile_level(zoom), k = zoom / level;
+    fz_irect all = page_pixels(t, p, level);
+    int w = all.x1 - all.x0, h = all.y1 - all.y0;
+    float ox = roundf(r.x * px), oy = roundf(r.y * px);
+    float x0 = fmaxf(0, (want.x * px - ox) / k), x1 = fminf(w, ((want.x + want.width) * px - ox) / k);
+    float y0 = fmaxf(0, (want.y * px - oy) / k), y1 = fminf(h, ((want.y + want.height) * px - oy) / k);
+    if (x1 <= x0 || y1 <= y0) return;
+    /* tiles of other levels, scaled, until this level's arrive: only the soft whole-page render showed while
+     * pinching */
+    if (draw)
+        for (int i = 0; i < TILE_CACHE; i++) {
+            if (!t->tiles[i].ok || t->tiles[i].page != p || fabsf(t->tiles[i].scale - level) < 0.001f) continue;
+            float kk = zoom / t->tiles[i].scale;
+            Texture2D *tex = &t->tiles[i].tex;
+            DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height},
+                           (Rectangle){(ox + t->tiles[i].tx * TILE_PX * kk) / px,
+                                       (oy + t->tiles[i].ty * TILE_PX * kk) / px, tex->width * kk / px,
+                                       tex->height * kk / px},
+                           (Vector2){0, 0}, 0, WHITE);
+        }
+    for (int ty = (int)(y0 / TILE_PX); ty * TILE_PX < y1; ty++)
+        for (int tx = (int)(x0 / TILE_PX); tx * TILE_PX < x1; tx++) {
+            float ax = roundf(ox + tx * TILE_PX * k), bx = roundf(ox + fminf((tx + 1) * TILE_PX, w) * k);
+            float ay = roundf(oy + ty * TILE_PX * k), by = roundf(oy + fminf((ty + 1) * TILE_PX, h) * k);
+            Rectangle d = {ax / px, ay / px, (bx - ax) / px, (by - ay) / px};
+            double born = 0;
+            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), &born);
+            if (!draw || !tex) continue;
+            float a = fminf(1, (float)((ui.now - born) / TILE_FADE_S));
+            if (a < 1) ui.dirty = 1;
+            DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, d, (Vector2){0, 0}, 0,
+                           Fade(WHITE, a));
+        }
+}
+
 static void draw_page(tab *t, int p)
 {
     fz_rect sr = page_scene_rect(t, p);
     Rectangle r = scene_rect_to_screen(t, sr);
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
-    DrawRectangleRec(r, WHITE);
-    Texture2D *tex = page_texture(t, p, t->zoom * UI_PX);
-    if (!tex) return;
-    /* a texture rendered for this zoom goes on whole device pixels at its own size: placed between pixels, its
-     * text was resampled differently in every frame of a scroll and shimmered */
-    float px = UI_PX;
-    if (fabsf(tex->width - r.width * px) < 2 && fabsf(tex->height - r.height * px) < 2)
-        r = (Rectangle){roundf(r.x * px) / px, roundf(r.y * px) / px, tex->width / px, tex->height / px};
-    DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, r, (Vector2){0, 0}, 0, WHITE);
+    DrawRectangleRec(r, pal.paper);
+    float px = UI_PX, base = base_scale(t, p);
+    Texture2D *tex = page_texture(t, p, base, view_distance(t, r));
+    if (tex) {
+        /* the same pixel-snapped origin as the tiles, so a stretched render sits exactly under them */
+        Rectangle d = {roundf(r.x * px) / px, roundf(r.y * px) / px, r.width, r.height};
+        if (fabsf(tex->width - r.width * px) < 2 && fabsf(tex->height - r.height * px) < 2)
+            d.width = tex->width / px, d.height = tex->height / px;
+        DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, d, (Vector2){0, 0}, 0, WHITE);
+    }
+    if (base < t->zoom * px - 0.001f) page_tiles(t, p, r, t->view, 1);
 }
 
 static void draw_crop(tab *t, int i)
@@ -854,10 +916,14 @@ void view_frame(tab *t, Rectangle area)
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
         if (t->off_y[p] < -1e8f) continue;
-        /* pages within a screen of the view render ahead, so a scroll finds them ready */
+        /* pages (and tiles) within half a screen of the view render ahead, so a scroll finds them ready */
         Rectangle pr = scene_rect_to_screen(t, page_scene_rect(t, p));
-        if (pr.y + pr.height > area.y - area.height && pr.y < area.y + 2 * area.height)
-            page_texture(t, p, t->zoom * UI_PX);
+        Rectangle near = {area.x, area.y - area.height / 2, area.width, area.height * 2};
+        if (pr.y + pr.height > near.y && pr.y < near.y + near.height) {
+            float base = base_scale(t, p);
+            page_texture(t, p, base, view_distance(t, pr));
+            if (base < t->zoom * UI_PX - 0.001f) page_tiles(t, p, pr, near, 0);
+        }
         draw_page(t, p);
         /* touch: one finger draws on the pages, and pans beside them */
         if (t->tool != T_VIEW)
@@ -1116,7 +1182,7 @@ void fields_frame(tab *t, int page)
             float px = fit_text(f, e, f->rect);
             /* black on light blue in both themes, as on paper */
             ui_palette saved = pal;
-            pal.base = pal.field_bg, pal.text = BLACK, pal.border = BLANK, pal.placeholder = DARKGRAY;
+            pal.base = pal.field_bg, pal.text = pal.field_text, pal.border = BLANK, pal.placeholder = pal.field_frame;
             DrawRectangleRec(r, pal.field_bg);
             e->text.size = px * t->zoom;
             int res = ui_textfield(id, &e->text, r, 0);
@@ -1134,16 +1200,18 @@ void fields_frame(tab *t, int page)
             if (f->type == PDF_WIDGET_TYPE_RADIOBUTTON) {
                 Vector2 c = {box.x + side / 2, box.y + side / 2};
                 DrawCircleV(c, side / 2, pal.field_bg);
-                DrawCircleLinesV(c, side / 2, DARKGRAY);
+                DrawCircleLinesV(c, side / 2, pal.field_frame);
                 if (on) DrawCircleV(c, side / 4, pal.field_mark);
             } else {
                 DrawRectangleRec(box, pal.field_bg);
-                DrawRectangleLinesEx(box, 1, DARKGRAY);
+                DrawRectangleLinesEx(box, 1, pal.field_frame);
                 if (on) {
                     DrawLineEx((Vector2){box.x + side * 0.2f, box.y + side * 0.55f},
-                               (Vector2){box.x + side * 0.42f, box.y + side * 0.78f}, fmaxf(1.5f, side / 8), BLACK);
+                               (Vector2){box.x + side * 0.42f, box.y + side * 0.78f}, fmaxf(1.5f, side / 8),
+                               pal.field_text);
                     DrawLineEx((Vector2){box.x + side * 0.42f, box.y + side * 0.78f},
-                               (Vector2){box.x + side * 0.82f, box.y + side * 0.22f}, fmaxf(1.5f, side / 8), BLACK);
+                               (Vector2){box.x + side * 0.82f, box.y + side * 0.22f}, fmaxf(1.5f, side / 8),
+                               pal.field_text);
                 }
             }
             if (hover && ui.pressed) ui.active = id;
@@ -1159,10 +1227,10 @@ void fields_frame(tab *t, int page)
             DrawRectangleRec(r, pal.field_bg);
             float px = fmaxf(MIN_FIELD_PX, fminf(12, roundf((f->rect.y1 - f->rect.y0) * 0.75f))) * t->zoom;
             char *shown = elide_right(e->choice >= 0 ? f->choices.v[e->choice] : current, r.width - 22, px, F_REGULAR);
-            draw_text(shown, r.x + 3, text_top(r.y + r.height / 2, px), px, F_REGULAR, BLACK);
+            draw_text(shown, r.x + 3, text_top(r.y + r.height / 2, px), px, F_REGULAR, pal.field_text);
             free(shown);
             float ax = r.x + r.width - 10, cy = r.y + r.height / 2;
-            DrawTriangle((Vector2){ax - 4, cy - 2}, (Vector2){ax, cy + 3}, (Vector2){ax + 4, cy - 2}, DARKGRAY);
+            DrawTriangle((Vector2){ax - 4, cy - 2}, (Vector2){ax, cy + 3}, (Vector2){ax + 4, cy - 2}, pal.field_frame);
             int before = e->choice;
             /* ui_combo draws its own button; only its dropdown is wanted here */
             if (ui_hover(r)) set_cursor(CUR_HAND);
@@ -1223,12 +1291,12 @@ void present_frame(void)
         return;
     }
     double changed_at = presentation.page_changed_at;
-    ClearBackground(BLACK);
+    ClearBackground(pal.present_bg);
     int n = t->st.order.n, page = t->st.order.v[pos];
     fz_rect b = page_bounds(t, page);
     float zoom = fminf(ui.w / b.x1, ui.h / b.y1);
     Rectangle dst = {(ui.w - b.x1 * zoom) / 2, (ui.h - b.y1 * zoom) / 2, b.x1 * zoom, b.y1 * zoom};
-    Texture2D *tex = page_texture(t, page, zoom * UI_PX);
+    Texture2D *tex = page_texture(t, page, zoom * UI_PX, 0);
     if (tex)
         DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, dst, (Vector2){0, 0}, 0, WHITE);
     /* a click or tap on the left third goes back, anywhere else forward */
@@ -1245,8 +1313,8 @@ void present_frame(void)
         snprintf(label, sizeof label, "%d / %d", pos + 1, n);
         float w = text_width(label, FS_NORMAL, F_REGULAR) + 20;
         Rectangle r = {ui.w - w - 16, ui.h - 44, w, 28};
-        DrawRectangleRounded(r, 0.5f, 8, with_alpha(BLACK, 160));
-        draw_text_in(label, r, FS_NORMAL, F_REGULAR, WHITE, 0);
+        DrawRectangleRounded(r, 0.5f, 8, pal.present_label);
+        draw_text_in(label, r, FS_NORMAL, F_REGULAR, pal.on_backdrop, 0);
         ui.dirty = 1;
     }
     presentation.position = pos, presentation.page_changed_at = changed_at;
@@ -1329,10 +1397,10 @@ static void pane(compare *c, int side, Rectangle r, Color mark)
 {
     DrawRectangleRec(r, pal.page_bg);
     char *t = elide_middle(pt_basename(c->path[side]), r.width - 16, FS_NORMAL, F_BOLD);
-    draw_text_in(t, (Rectangle){r.x + 8, r.y + 2, r.width - 16, 26}, FS_NORMAL, F_BOLD, WHITE, -1);
+    draw_text_in(t, (Rectangle){r.x + 8, r.y + 2, r.width - 16, 26}, FS_NORMAL, F_BOLD, pal.on_backdrop, -1);
     free(t);
     if (!c->tex_ok[side]) {
-        draw_text_in("No such page", r, FS_NORMAL, F_REGULAR, WHITE, 0);
+        draw_text_in("No such page", r, FS_NORMAL, F_REGULAR, pal.on_backdrop, 0);
         return;
     }
     fz_rect s = c->size[side];
@@ -1651,9 +1719,6 @@ void ocr_dialog(tab *t)
 #define THUMBS_PER_FRAME 6
 
 static const char *IMAGE_SUFFIXES[] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", NULL};
-/* one band colour per source file, distinguishable in both themes */
-static const Color SOURCE_COLOURS[] = {{26, 115, 232, 255}, {217, 48, 37, 255},  {30, 142, 62, 255},
-                                       {249, 171, 0, 255},  {161, 66, 244, 255}, {0, 150, 160, 255}};
 
 typedef struct {
     pdf_document *doc;
@@ -2216,7 +2281,7 @@ void workspace_frame(workspace *w, Rectangle area)
             if (cell.y > grid.y + grid.height || cell.y + cell.height < grid.y) continue;
             int hover_strip = ui_hover(strip) && i > 0, hover_card = ui_hover(cardr);
             if (c->selected) DrawRectangleRounded(cardr, 0.05f, 6, with_alpha(pal.highlight, 60));
-            DrawRectangleRec((Rectangle){cardr.x + 6, cardr.y + 2, cardr.width - 12, 3}, SOURCE_COLOURS[c->src % 6]);
+            DrawRectangleRec((Rectangle){cardr.x + 6, cardr.y + 2, cardr.width - 12, 3}, pal.source[c->src % 6]);
             Rectangle thumb = {cardr.x + (cardr.width - CARD_THUMB_W) / 2, cardr.y + 8, CARD_THUMB_W, CARD_THUMB_H};
             if (c->thumb_ok && c->thumb.id) {
                 float s = fminf(CARD_THUMB_W / c->tw, CARD_THUMB_H / c->th);

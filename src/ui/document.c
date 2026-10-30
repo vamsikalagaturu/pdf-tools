@@ -72,11 +72,18 @@ static void free_history(pt_state **v, int *n)
 }
 
 static unsigned render_new_gen(void);
+static void render_forget(unsigned gen);
 
 void tab_invalidate_pages(tab *t)
 {
     for (int i = 0; i < PIX_CACHE; i++)
         if (t->pix[i].ok) UnloadTexture(t->pix[i].tex), t->pix[i].ok = 0;
+    for (int i = 0; i < TILE_CACHE; i++)
+        if (t->tiles[i].ok) UnloadTexture(t->tiles[i].tex), t->tiles[i].ok = 0;
+    t->tile_bytes = 0;
+    render_forget(t->render_gen);
+    fz_drop_buffer(CTX, t->render_bytes);
+    t->render_bytes = NULL;
     t->render_gen = render_new_gen();
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
@@ -714,6 +721,7 @@ void tab_fit(tab *t, fit_mode fit)
 
 static Texture2D texture_from_pixmap(fz_pixmap *pix)
 {
+    if (!pix) return (Texture2D){0};
     Image img = {pix->samples, pix->w, pix->h, 1,
                  pix->n == 4 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : PIXELFORMAT_UNCOMPRESSED_R8G8B8};
     Texture2D tex = LoadTextureFromImage(img);
@@ -722,31 +730,50 @@ static Texture2D texture_from_pixmap(fz_pixmap *pix)
 }
 
 /* ---- page renders on a worker thread ----
- * Rasterizing a page took 10-30 ms, several frames at 120 Hz, so a scroll jerked whenever a page came into view.
- * The main thread records a page as a display list (MuPDF objects are not shared across threads); a worker with a
- * cloned context rasterizes it, newest request first; finished pixmaps become textures on the main thread, one
- * per frame. Until then the view shows the page at another zoom, its thumbnail, or white. */
+ * Interpreting and rasterizing a page took 10-30 ms, several frames at 120 Hz, so a scroll jerked whenever a page
+ * came into view. A MuPDF document is used by one thread at a time, so the worker opens its own copy (the tab's
+ * document written to memory once, see render_bytes) in a cloned context, records each page's display list once and
+ * rasterizes a whole page or one tile of it, newest request first. Finished pixmaps become textures on the main
+ * thread within a few ms per frame; until then the view shows the page at another zoom, its thumbnail, or white. */
 
 typedef struct render_job {
     unsigned gen;
-    int page;
-    float scale;
-    fz_display_list *list;
+    int page, tile;
+    float scale, prio; /* prio: distance from the middle of the view; nearest first */
+    fz_irect box;      /* a tile's device pixels */
+    fz_buffer *bytes;  /* the document of `gen` */
     fz_pixmap *pix;
     double done_at;
     struct render_job *next;
 } render_job;
 
-#define RENDER_QUEUE_MAX 6
+#define RENDER_QUEUE_MAX 32
+#define UPLOAD_BUDGET_S 0.004
+#define LIST_CACHE 8
+
+/* a screenful of tiles renders in parallel; each worker has its own context, open copy and display lists */
+#define RENDER_WORKERS_MAX 3
+
+typedef struct {
+    pthread_t thread;
+    fz_context *ctx;
+    render_job *busy;
+    unsigned doc_gen;
+    fz_document *doc;
+    struct {
+        int page;
+        fz_display_list *list;
+        double used;
+    } lists[LIST_CACHE];
+} render_worker_state;
 
 static struct {
     pthread_mutex_t lock;
     pthread_cond_t wake;
-    pthread_t thread;
-    fz_context *ctx;
-    render_job *queue, *busy, *done; /* queue: newest first */
-    int started, quit;
+    render_job *queue, *done; /* queue: newest first */
+    int started, quit, nworkers;
     unsigned gen;
+    render_worker_state workers[RENDER_WORKERS_MAX];
 } R = {.lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER};
 
 static pthread_mutex_t mupdf_mutex[FZ_LOCK_MAX];
@@ -767,9 +794,48 @@ static unsigned render_new_gen(void) { return ++R.gen; }
 
 static void job_free(fz_context *ctx, render_job *j)
 {
-    fz_drop_display_list(ctx, j->list);
+    fz_drop_buffer(ctx, j->bytes);
     fz_drop_pixmap(ctx, j->pix);
     free(j);
+}
+
+static void worker_drop_doc(render_worker_state *w)
+{
+    for (int i = 0; i < LIST_CACHE; i++) fz_drop_display_list(w->ctx, w->lists[i].list), w->lists[i].list = NULL;
+    fz_drop_document(w->ctx, w->doc);
+    w->doc = NULL;
+}
+
+/* the worker's display list of a page of job j's document, opening that document first if it is another */
+static fz_display_list *worker_list(render_worker_state *w, render_job *j)
+{
+    fz_context *ctx = w->ctx;
+    if (j->gen != w->doc_gen || !w->doc) {
+        worker_drop_doc(w);
+        fz_stream *s = fz_open_buffer(ctx, j->bytes);
+        fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
+        fz_always(ctx) fz_drop_stream(ctx, s);
+        fz_catch(ctx) fz_rethrow(ctx);
+        w->doc_gen = j->gen;
+    }
+    int slot = 0;
+    for (int i = 0; i < LIST_CACHE; i++)
+        if (w->lists[i].list && w->lists[i].page == j->page) {
+            w->lists[i].used = GetTime();
+            return w->lists[i].list;
+        }
+    for (int i = 0; i < LIST_CACHE; i++)
+        if (!w->lists[i].list ? w->lists[slot].list != NULL
+                              : w->lists[slot].list && w->lists[i].used < w->lists[slot].used)
+            slot = i;
+    fz_page *p = fz_load_page(ctx, w->doc, j->page);
+    fz_display_list *list = NULL;
+    fz_try(ctx) list = fz_new_display_list_from_page(ctx, p);
+    fz_always(ctx) fz_drop_page(ctx, p);
+    fz_catch(ctx) fz_rethrow(ctx);
+    fz_drop_display_list(ctx, w->lists[slot].list);
+    w->lists[slot].page = j->page, w->lists[slot].list = list, w->lists[slot].used = GetTime();
+    return list;
 }
 
 static void jobs_free(render_job *j)
@@ -783,23 +849,41 @@ static void jobs_free(render_job *j)
 
 static void *render_worker(void *arg)
 {
-    (void)arg;
+    render_worker_state *w = arg;
+    fz_context *ctx = w->ctx;
     pthread_mutex_lock(&R.lock);
     while (!R.quit) {
         if (!R.queue) {
             pthread_cond_wait(&R.wake, &R.lock);
             continue;
         }
-        render_job *j = R.busy = R.queue;
-        R.queue = j->next;
+        /* the request nearest the middle of the view */
+        render_job **best = &R.queue;
+        for (render_job **q = &R.queue; *q; q = &(*q)->next)
+            if ((*q)->prio < (*best)->prio) best = q;
+        render_job *j = w->busy = *best;
+        *best = j->next;
         pthread_mutex_unlock(&R.lock);
-        fz_try(R.ctx) j->pix =
-            fz_new_pixmap_from_display_list(R.ctx, j->list, fz_scale(j->scale, j->scale), fz_device_rgb(R.ctx), 0);
-        fz_catch(R.ctx) j->pix = NULL;
-        fz_drop_display_list(R.ctx, j->list);
-        j->list = NULL;
+        fz_device *dev = NULL;
+        fz_var(dev);
+        fz_try(ctx)
+        {
+            fz_display_list *list = worker_list(w, j);
+            fz_matrix ctm = fz_scale(j->scale, j->scale);
+            fz_irect box = j->tile ? j->box : fz_round_rect(fz_transform_rect(fz_bound_display_list(ctx, list), ctm));
+            /* RGBA (opaque white under the page), the format GL textures take without conversion */
+            j->pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), box, NULL, 1);
+            fz_clear_pixmap_with_value(ctx, j->pix, 255);
+            dev = fz_new_draw_device(ctx, fz_identity, j->pix);
+            fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(box), NULL);
+            fz_close_device(ctx, dev);
+        }
+        fz_always(ctx) fz_drop_device(ctx, dev);
+        fz_catch(ctx) fz_drop_pixmap(ctx, j->pix), j->pix = NULL;
+        fz_drop_buffer(ctx, j->bytes);
+        j->bytes = NULL;
         pthread_mutex_lock(&R.lock);
-        R.busy = NULL;
+        w->busy = NULL;
         j->done_at = GetTime();
         j->next = R.done, R.done = j;
     }
@@ -807,66 +891,152 @@ static void *render_worker(void *arg)
     return NULL;
 }
 
+static void render_start(void)
+{
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int want = cores > 1 ? (int)fminf((float)cores - 1, RENDER_WORKERS_MAX) : 1;
+    for (int i = 0; i < want; i++) {
+        render_worker_state *w = &R.workers[R.nworkers];
+        if (!(w->ctx = fz_clone_context(CTX))) break;
+        if (pthread_create(&w->thread, NULL, render_worker, w)) {
+            fz_drop_context(w->ctx);
+            break;
+        }
+        R.nworkers++;
+    }
+    R.started = R.nworkers > 0;
+}
+
 void render_stop(void)
 {
     if (!R.started) return;
     pthread_mutex_lock(&R.lock);
     R.quit = 1;
-    pthread_cond_signal(&R.wake);
+    pthread_cond_broadcast(&R.wake);
     pthread_mutex_unlock(&R.lock);
-    pthread_join(R.thread, NULL);
+    for (int i = 0; i < R.nworkers; i++) pthread_join(R.workers[i].thread, NULL);
     jobs_free(R.queue);
     jobs_free(R.done);
     R.queue = R.done = NULL;
-    fz_drop_context(R.ctx);
-    R.started = 0;
+    for (int i = 0; i < R.nworkers; i++) worker_drop_doc(&R.workers[i]), fz_drop_context(R.workers[i].ctx);
+    R.nworkers = R.started = 0;
+}
+
+/* a tab's old document is gone: its queued and finished renders go too, so they do not reopen it or displace work */
+static void render_forget(unsigned gen)
+{
+    if (!gen) return;
+    render_job *dropped = NULL;
+    pthread_mutex_lock(&R.lock);
+    render_job **lists[2] = {&R.queue, &R.done};
+    for (int i = 0; i < 2; i++)
+        for (render_job **q = lists[i]; *q;) {
+            render_job *k = *q;
+            if (k->gen == gen) *q = k->next, k->next = dropped, dropped = k;
+            else q = &k->next;
+        }
+    pthread_mutex_unlock(&R.lock);
+    jobs_free(dropped);
+}
+
+static int same_job(const render_job *a, const render_job *b)
+{
+    return a->gen == b->gen && a->page == b->page && a->tile == b->tile && fabsf(a->scale - b->scale) < 0.001f &&
+           a->box.x0 == b->box.x0 && a->box.y0 == b->box.y0;
 }
 
 /* queued, being drawn or drawn but not yet taken: the caller holds R.lock */
-static int render_known(unsigned gen, int page, float scale)
+static int render_known(const render_job *want)
 {
-    render_job *lists[3] = {R.queue, R.busy, R.done};
-    for (int i = 0; i < 3; i++)
-        for (render_job *j = lists[i]; j; j = i == 1 ? NULL : j->next)
-            if (j->gen == gen && j->page == page && fabsf(j->scale - scale) < 0.001f) return 1;
+    /* a waiting request takes the distance it has now: the view moved since it was made */
+    for (render_job *j = R.queue; j; j = j->next)
+        if (same_job(j, want)) return j->prio = want->prio, 1;
+    for (render_job *j = R.done; j; j = j->next)
+        if (same_job(j, want)) return 1;
+    for (int i = 0; i < R.nworkers; i++)
+        if (R.workers[i].busy && same_job(R.workers[i].busy, want)) return 1;
     return 0;
 }
 
-static void render_request(tab *t, int page, float scale)
+/* The tab's document as the worker opens it: written once per (re)load, since the tab's document is only changed by
+ * being rebuilt (reload_display), which starts a new render_gen. Unencrypted, in memory only. */
+static fz_buffer *render_bytes(tab *t)
 {
-    if (!R.started) {
-        R.ctx = fz_clone_context(CTX);
-        if (!R.ctx || pthread_create(&R.thread, NULL, render_worker, NULL)) return;
-        R.started = 1;
-    }
-    pthread_mutex_lock(&R.lock);
-    int known = render_known(t->render_gen, page, scale);
-    pthread_mutex_unlock(&R.lock);
-    if (known) return;
-    fz_display_list *list = NULL;
+    if (t->render_bytes) return t->render_bytes;
+    fz_buffer *buf = NULL;
+    fz_output *out = NULL;
+    fz_var(buf), fz_var(out);
     fz_try(CTX)
     {
-        fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
-        fz_try(CTX) list = fz_new_display_list_from_page(CTX, p);
-        fz_always(CTX) fz_drop_page(CTX, p);
-        fz_catch(CTX) fz_rethrow(CTX);
+        buf = fz_new_buffer(CTX, 1 << 16);
+        out = fz_new_output_with_buffer(CTX, buf);
+        pdf_write_options opts = pdf_default_write_options;
+        opts.do_encrypt = PDF_ENCRYPT_NONE;
+        pdf_write_document(CTX, t->doc, out, &opts);
+        fz_close_output(CTX, out);
     }
-    fz_catch(CTX) return;
-    render_job *j = calloc(1, sizeof *j), *dropped = NULL;
-    *j = (render_job){.gen = t->render_gen, .page = page, .scale = scale, .list = list};
+    fz_always(CTX) fz_drop_output(CTX, out);
+    fz_catch(CTX)
+    {
+        fz_drop_buffer(CTX, buf);
+        return NULL;
+    }
+    return t->render_bytes = buf;
+}
+
+fz_irect page_pixels(tab *t, int page, float scale)
+{
+    return fz_round_rect(fz_transform_rect(page_bounds(t, page), fz_scale(scale, scale)));
+}
+
+static void render_request(tab *t, render_job want)
+{
+    if (!R.started) render_start();
+    if (!R.started) return;
+    want.gen = t->render_gen;
     pthread_mutex_lock(&R.lock);
-    /* the same page at another zoom is no longer wanted; past the limit the oldest requests go */
+    int known = render_known(&want);
+    pthread_mutex_unlock(&R.lock);
+    if (known) return;
+    fz_buffer *bytes = render_bytes(t);
+    if (!bytes) return;
+    render_job *j = calloc(1, sizeof *j), *dropped = NULL;
+    *j = want;
+    j->bytes = fz_keep_buffer(CTX, bytes);
+    pthread_mutex_lock(&R.lock);
+    /* the same page at another zoom is no longer wanted; past the limit the farthest requests go */
     j->next = R.queue, R.queue = j;
     int n = 0;
     for (render_job **q = &R.queue; *q;) {
         render_job *k = *q;
-        if (k != j && ((k->gen == j->gen && k->page == page) || n >= RENDER_QUEUE_MAX)) {
-            *q = k->next, k->next = dropped, dropped = k;
-        } else q = &k->next, n++;
+        int other_zoom =
+            k->gen == j->gen && k->page == j->page && k->tile == j->tile && fabsf(k->scale - j->scale) >= 0.001f;
+        if (k != j && other_zoom) *q = k->next, k->next = dropped, dropped = k;
+        else q = &k->next, n++;
+    }
+    for (; n > RENDER_QUEUE_MAX; n--) {
+        render_job **far = &R.queue;
+        for (render_job **q = &R.queue; *q; q = &(*q)->next)
+            if ((*q)->prio > (*far)->prio) far = q;
+        render_job *k = *far;
+        *far = k->next, k->next = dropped, dropped = k;
     }
     pthread_cond_signal(&R.wake);
     pthread_mutex_unlock(&R.lock);
     jobs_free(dropped);
+}
+
+/* a texture showing pix: `old`'s storage refilled when it has the same size and format (most tiles), else a new one;
+ * creating and deleting a texture per render stalled the GL driver */
+static Texture2D reuse_texture(Texture2D *old, fz_pixmap *pix)
+{
+    if (old && pix && old->id && old->width == pix->w && old->height == pix->h && pix->n == 4 &&
+        old->format == PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 && pix->stride == (ptrdiff_t)pix->w * 4) {
+        UpdateTexture(*old, pix->samples);
+        return *old;
+    }
+    if (old) UnloadTexture(*old);
+    return texture_from_pixmap(pix);
 }
 
 static void cache_insert(tab *t, int page, float scale, fz_pixmap *pix)
@@ -879,42 +1049,109 @@ static void cache_insert(tab *t, int page, float scale, fz_pixmap *pix)
         if (d > fd) fd = d, far = i;
     }
     if (slot < 0) slot = far;
-    if (t->pix[slot].ok) UnloadTexture(t->pix[slot].tex);
-    t->pix[slot] = (page_tex){page, scale, texture_from_pixmap(pix), 1};
+    t->pix[slot].tex = reuse_texture(t->pix[slot].ok ? &t->pix[slot].tex : NULL, pix);
+    t->pix[slot].page = page, t->pix[slot].scale = scale, t->pix[slot].ok = 1;
 }
 
-/* takes this tab's finished renders (one texture upload per frame); results nobody took for a second go */
+static size_t tex_bytes(Texture2D tex) { return (size_t)tex.width * (size_t)tex.height * 4; }
+
+/* Into a free slot within TILE_BUDGET, else in place of the least recently drawn tile (refilling its texture when
+ * the size matches). A tile drawn in this frame stays: pushing it out for one ahead of the view made it flicker. */
+static void tile_insert(tab *t, const render_job *j)
+{
+    size_t need = j->pix ? (size_t)j->pix->w * (size_t)j->pix->h * 4 : 0;
+    int slot;
+    for (;;) {
+        int free_slot = -1, lru = -1;
+        for (int i = 0; i < TILE_CACHE; i++) {
+            if (!t->tiles[i].ok) {
+                if (free_slot < 0) free_slot = i;
+            } else if (t->tiles[i].used < ui.now && (lru < 0 || t->tiles[i].used < t->tiles[lru].used)) lru = i;
+        }
+        if (free_slot >= 0 && t->tile_bytes + need <= TILE_BUDGET) {
+            slot = free_slot;
+            t->tiles[slot].tex = reuse_texture(NULL, j->pix);
+            break;
+        }
+        if (lru < 0) return;
+        if (j->pix && t->tiles[lru].tex.width == j->pix->w && t->tiles[lru].tex.height == j->pix->h) {
+            slot = lru;
+            t->tile_bytes -= tex_bytes(t->tiles[slot].tex);
+            t->tiles[slot].tex = reuse_texture(&t->tiles[slot].tex, j->pix);
+            break;
+        }
+        t->tile_bytes -= tex_bytes(t->tiles[lru].tex);
+        UnloadTexture(t->tiles[lru].tex);
+        t->tiles[lru].ok = 0;
+    }
+    t->tile_bytes += tex_bytes(t->tiles[slot].tex);
+    t->tiles[slot].page = j->page, t->tiles[slot].scale = j->scale;
+    t->tiles[slot].tx = (j->box.x0 - page_pixels(t, j->page, j->scale).x0) / TILE_PX;
+    t->tiles[slot].ty = (j->box.y0 - page_pixels(t, j->page, j->scale).y0) / TILE_PX;
+    t->tiles[slot].ok = 1, t->tiles[slot].used = t->tiles[slot].born = ui.now;
+}
+
+/* takes this tab's finished renders, uploading for a few ms per frame; results nobody took for a second go */
 static void render_collect(tab *t)
 {
-    static double uploaded_at = -1;
-    render_job *mine = NULL, *stale = NULL;
-    pthread_mutex_lock(&R.lock);
-    for (render_job **q = &R.done; *q;) {
-        render_job *j = *q;
-        int take = j->gen == t->render_gen && !mine && uploaded_at != ui.now;
-        if (take || GetTime() - j->done_at > 1) {
-            *q = j->next;
-            if (take) mine = j;
-            else j->next = stale, stale = j;
-        } else q = &j->next;
-    }
-    pthread_mutex_unlock(&R.lock);
-    if (mine) {
-        if (mine->pix) cache_insert(t, mine->page, mine->scale, mine->pix);
-        uploaded_at = ui.now;
+    static double frame = -1, spent;
+    if (frame != ui.now) frame = ui.now, spent = 0;
+    while (spent < UPLOAD_BUDGET_S) {
+        render_job *mine = NULL, *stale = NULL;
+        pthread_mutex_lock(&R.lock);
+        for (render_job **q = &R.done; *q;) {
+            render_job *j = *q;
+            int take = j->gen == t->render_gen && !mine;
+            if (take || GetTime() - j->done_at > 1) {
+                *q = j->next;
+                if (take) mine = j;
+                else j->next = stale, stale = j;
+            } else q = &j->next;
+        }
+        pthread_mutex_unlock(&R.lock);
+        jobs_free(stale);
+        if (!mine) return;
+        double t0 = GetTime();
+        /* a failed render is kept as an empty texture, so it is not asked for again in every frame */
+        if (mine->tile) tile_insert(t, mine);
+        else cache_insert(t, mine->page, mine->scale, mine->pix);
+        spent += GetTime() - t0;
         mine->next = NULL;
         job_free(CTX, mine);
     }
-    jobs_free(stale);
 }
 
-Texture2D *page_texture(tab *t, int page, float scale)
+float tile_level(float scale) { return powf(2, ceilf(log2f(scale) * TILE_LEVELS - 0.01f) / TILE_LEVELS); }
+
+Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, double *born)
+{
+    for (int i = 0; i < TILE_CACHE; i++)
+        if (t->tiles[i].ok && t->tiles[i].page == page && t->tiles[i].tx == tx && t->tiles[i].ty == ty &&
+            fabsf(t->tiles[i].scale - scale) < 0.001f) {
+            t->tiles[i].used = ui.now;
+            if (born) *born = t->tiles[i].born;
+            return &t->tiles[i].tex;
+        }
+    ui.dirty = 1;
+    if (ui.now - t->zoom_t < ZOOM_SETTLE_S) return NULL;
+    fz_irect all = page_pixels(t, page, scale);
+    fz_irect box = {all.x0 + tx * TILE_PX, all.y0 + ty * TILE_PX, 0, 0};
+    box.x1 = (int)fminf(box.x0 + TILE_PX, all.x1), box.y1 = (int)fminf(box.y0 + TILE_PX, all.y1);
+    if (box.x1 <= box.x0 || box.y1 <= box.y0) return NULL;
+    render_request(t, (render_job){.page = page, .tile = 1, .scale = scale, .prio = prio, .box = box});
+    return NULL;
+}
+
+Texture2D *page_texture(tab *t, int page, float scale, float prio)
 {
     fz_rect b = page_bounds(t, page);
     float longest = fmaxf(b.x1, b.y1);
     if (longest * scale > 8000) scale = 8000 / longest;
     if (!t->render_gen) t->render_gen = render_new_gen();
-    render_collect(t);
+    /* once per frame, before this tab draws anything: a texture already drawn in a frame must not be refilled */
+    static double collected_at = -1;
+    static const tab *collected_for;
+    if (collected_at != ui.now || collected_for != t) collected_at = ui.now, collected_for = t, render_collect(t);
     page_tex *other = NULL;
     for (int i = 0; i < PIX_CACHE; i++) {
         page_tex *pt = &t->pix[i];
@@ -924,7 +1161,8 @@ Texture2D *page_texture(tab *t, int page, float scale)
     }
     ui.dirty = 1;
     /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
-    if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S)) render_request(t, page, scale);
+    if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S))
+        render_request(t, (render_job){.page = page, .scale = scale, .prio = prio});
     if (other) return &other->tex;
     return t->thumb_ok && t->thumb_ok[page] ? &t->thumbs[page] : NULL;
 }

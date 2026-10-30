@@ -9,8 +9,22 @@
 #include "ui.h"
 
 #define PAGE_GAP 12.0f
+/* whole-page textures stop at this many device pixels on the long side; zoomed further, tiles of TILE_PX draw over
+ * them, so no single upload stalls a frame. Tiles render at fixed zoom levels TILE_LEVELS per octave apart (the level
+ * just above the zoom, drawn slightly smaller), so nearby zooms share them. Texture memory is capped by bytes. */
+#define BASE_MAX_PX 1100.0f
+#define TILE_PX 512
+#define TILE_LEVELS 4
+#define TILE_CACHE 128
+#define TILE_FADE_S 0.08
+#ifdef __ANDROID__
+#define PIX_CACHE 8
+#define TILE_BUDGET (40 << 20)
+#else
 #define PIX_CACHE 12
-#define ZOOM_SETTLE_S 0.2
+#define TILE_BUDGET (96 << 20)
+#endif
+#define ZOOM_SETTLE_S 0.08
 #define ZOOM_GLIDE_S 0.18
 #define THUMB_W 150.0f
 #define THUMB_H 196.0f
@@ -203,7 +217,15 @@ struct tab {
     int cert_placing;
 
     page_tex pix[PIX_CACHE];
-    unsigned render_gen; /* tags this tab's background renders; a new one drops those of the old pages */
+    struct {
+        int page, tx, ty, ok;
+        float scale;
+        Texture2D tex;
+        double used, born;
+    } tiles[TILE_CACHE];
+    size_t tile_bytes;
+    unsigned render_gen;     /* tags this tab's background renders; a new one drops those of the old pages */
+    fz_buffer *render_bytes; /* the document as the render thread opens it, written when it first renders */
     Texture2D *thumbs;
     char *thumb_ok;
     pt_words *words;
@@ -316,7 +338,11 @@ void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
 int continuous(void);
 void toggle_continuous(tab *t);
-Texture2D *page_texture(tab *t, int page, float scale);
+/* `prio`: the distance from the middle of the view in device pixels; the nearest requests render first */
+Texture2D *page_texture(tab *t, int page, float scale, float prio);
+Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, double *born);
+fz_irect page_pixels(tab *t, int page, float scale);
+float tile_level(float scale);
 fz_locks_context *render_locks(void);
 void render_stop(void);
 Texture2D *thumb_texture(tab *t, int page);

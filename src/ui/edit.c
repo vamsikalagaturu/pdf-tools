@@ -853,7 +853,7 @@ void tab_frame(tab *t, Rectangle area)
     if (t->narrow && side > 1) {
         /* drawn over the page; a tap beside it or picking a page closes it */
         ui_layer_begin(bid(t, 201), full, 0);
-        DrawRectangleRec(full, with_alpha(BLACK, (int)(90 * fminf(1, side / t->side_w))));
+        DrawRectangleRec(full, with_alpha(pal.scrim, (int)(90 * fminf(1, side / t->side_w))));
         if (ui.released && ui_hover(full) && ui.mouse.x > full.x + side) show_sidebar(t, 0, 1);
         int pno = t->pno;
         Rectangle panel = {full.x + side - t->side_w, full.y, t->side_w, full.height};
@@ -1918,7 +1918,7 @@ void popover_frame(tab *t)
     Rectangle r = {x, y, w, h};
     ui_layer_begin(ui_id(p, 1), r, 0);
     set_cursor(CUR_ARROW);
-    DrawRectangleRounded((Rectangle){r.x + 2, r.y + 3, r.width, r.height}, 0.04f, 4, with_alpha(BLACK, 60));
+    DrawRectangleRounded((Rectangle){r.x + 2, r.y + 3, r.width, r.height}, 0.04f, 4, with_alpha(pal.shadow, 60));
     ui_panel(r, pal.window, pal.border, 6);
     draw_text(p->title, r.x + 10, r.y + 8, FS_NORMAL, F_BOLD, pal.window_text);
     float yy = r.y + 34;
@@ -2762,7 +2762,7 @@ static void pages_panel(tab *t, Rectangle area)
         }
         if (edits) {
             DrawRectangleRounded(badge, 1, 8, pal.danger);
-            draw_text_in(badge_text, badge, FS_SMALL * 0.85f, F_BOLD, WHITE, 0);
+            draw_text_in(badge_text, badge, FS_SMALL * 0.85f, F_BOLD, pal.on_danger, 0);
         }
         char num[16];
         snprintf(num, sizeof num, "%d", i + 1);

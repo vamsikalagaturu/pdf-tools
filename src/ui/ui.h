@@ -20,6 +20,10 @@ typedef struct {
     /* drawn over pages and thumbnails, the same in both themes */
     Color selection, find_match, find_current, sync_mark, redact_preview, field_bg, field_mark, crop_dim, note_fill,
         note_line, danger, warning, success, thumb_bg, thumb_frame, check_bg, check_border, pad_guide;
+    /* paper (pages, signature pad), shadows and the dimming behind dialogs and the overlay sidebar, form field text and
+     * frames, text on danger and on the page backdrop, presentation, swatch outlines, one band per merged file */
+    Color paper, shadow, scrim, field_text, field_frame, on_danger, on_backdrop, present_bg, present_label, swatch_line,
+        source[6];
     int dark_mode;
 } ui_palette;
 extern ui_palette pal;

@@ -745,6 +745,9 @@ int pt_app_main(int argc, char **argv)
 #ifdef __APPLE__
     /* a Retina framebuffer: layout stays in points, text and pages render at ui.density */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
+#elif defined(__ANDROID__)
+    /* 4x MSAA cost a phone's high-density framebuffer bandwidth in every frame */
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 #else
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
 #endif

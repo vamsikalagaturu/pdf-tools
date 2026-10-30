@@ -682,7 +682,7 @@ int ui_checkbox(unsigned id, Rectangle r, const char *label, int *value, int dis
 void ui_swatch(Rectangle r, const unsigned char rgb[3])
 {
     DrawRectangleRec(r, rgb3(rgb));
-    DrawRectangleLinesEx(r, 1, BLACK);
+    DrawRectangleLinesEx(r, 1, pal.swatch_line);
 }
 
 int ui_swatch_button(unsigned id, Rectangle r, const unsigned char rgb[3], int checked, const char *tip)
@@ -742,6 +742,7 @@ float ui_scrollbar(unsigned id, Rectangle track, float content, float view, floa
 /* a solid track the full length and a solid thumb, lighter while hovered or dragged */
 void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot)
 {
+    if (hot) set_cursor(CUR_ARROW);
     DrawRectangleRec(track, pal.scroll_lane);
     DrawRectangleRounded(thumb, 0.5f, 6, hot ? pal.scroll_thumb_hot : pal.scroll_thumb);
 }
@@ -1403,7 +1404,7 @@ void menus_frame(void)
         unsigned lid = ui_id(m, 7);
         ui_layer_begin(lid, m->r, 0);
         Rectangle shadow = {m->r.x + 2, m->r.y + 3, m->r.width, m->r.height};
-        DrawRectangleRounded(shadow, 0.02f, 4, with_alpha(BLACK, 60));
+        DrawRectangleRounded(shadow, 0.02f, 4, with_alpha(pal.shadow, 60));
         ui_panel(m->r, pal.window, pal.border, 6);
         float y = m->r.y + 4;
         float sc_x = m->r.x + m->r.width - 12;
@@ -1485,7 +1486,7 @@ void dialogs_frame(void)
         dialog *d = dialogs[i];
         unsigned lid = ui_id(d, 3);
         ui_layer_begin(lid, (Rectangle){0, 0, ui.w, ui.h}, 1);
-        DrawRectangle(0, 0, (int)ui.w + 1, (int)ui.h + 1, with_alpha(BLACK, i ? 60 : 110));
+        DrawRectangle(0, 0, (int)ui.w + 1, (int)ui.h + 1, with_alpha(pal.scrim, i ? 60 : 110));
         float w = fminf(d->w, ui.w - 20), h = fminf(d->h, ui.h - 20);
         Rectangle box = {(ui.w - w) / 2, (ui.h - h) / 2, w, h};
         ui_panel(box, pal.window, pal.border, 8);
@@ -1889,6 +1890,18 @@ void theme_apply(const char *mode)
     pal.check_bg = with_alpha(hex_colour(0xffffff), 230);
     pal.check_border = hex_colour(0x6e6e6e);
     pal.pad_guide = hex_colour(0xc8c8c8);
+    pal.paper = hex_colour(0xffffff);
+    pal.shadow = hex_colour(0x000000);
+    pal.scrim = hex_colour(0x000000);
+    pal.field_text = hex_colour(0x000000);
+    pal.field_frame = hex_colour(0x505050);
+    pal.on_danger = hex_colour(0xffffff);
+    pal.on_backdrop = hex_colour(0xffffff);
+    pal.present_bg = hex_colour(0x000000);
+    pal.present_label = with_alpha(hex_colour(0x000000), 160);
+    pal.swatch_line = hex_colour(0x000000);
+    static const unsigned SOURCE[6] = {0x1a73e8, 0xd93025, 0x1e8e3e, 0xf9ab00, 0xa142f4, 0x0096a0};
+    for (int i = 0; i < 6; i++) pal.source[i] = hex_colour(SOURCE[i]);
     /* the user's accent for this theme, with black or white text on it, whichever contrasts more (Rec. 709 luma) */
     const char *accent = pt_settings_str(&app.settings, pal.dark_mode ? "accent_colour_dark" : "accent_colour_light");
     unsigned v;
