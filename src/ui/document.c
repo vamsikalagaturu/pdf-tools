@@ -126,6 +126,7 @@ void tab_invalidate_pages(tab *t)
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
+    free(t->bounds), free(t->bounds_ok);
     pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
     t->outline_drag = -1;
@@ -147,6 +148,8 @@ void tab_invalidate_pages(tab *t)
     t->links_ok = calloc((size_t)n + 1, 1);
     t->off_x = calloc((size_t)n + 1, sizeof(float));
     t->off_y = calloc((size_t)n + 1, sizeof(float));
+    t->bounds = calloc((size_t)n + 1, sizeof(fz_rect));
+    t->bounds_ok = calloc((size_t)n + 1, 1);
     for (int p = 0; p < n; p++) t->off_y[p] = -1e9f;
 }
 
@@ -197,6 +200,7 @@ void tab_free(tab *t)
     free(t->ticked);
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
+    free(t->bounds), free(t->bounds_ok);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);
@@ -306,6 +310,7 @@ int tab_load(tab *t, const char *path, const char *password)
     t->path = real;
     t->password = locked ? pt_strdup(password) : NULL;
     t->doc = doc;
+    t->doc_is_file = 1;
     t->own = pdf_count_pages(CTX, doc);
     pt_state_free(&t->st);
     pt_state_init(&t->st, t->own);
@@ -380,6 +385,7 @@ void reload_display(tab *t)
     fields_reset(t);
     pdf_drop_document(CTX, t->doc);
     t->doc = fresh;
+    t->doc_is_file = 0;
     tab_invalidate_pages(t);
 }
 
@@ -387,8 +393,11 @@ void reload_display(tab *t)
 
 int page_rotation(tab *t, int page) { return ((pt_rotation_of(&t->st, page) % 360) + 360) % 360; }
 
+/* remembered per page: layout, hit tests and drawing ask constantly, and measuring means loading the page */
 fz_rect page_bounds(tab *t, int page)
 {
+    int cached = t->bounds_ok && page >= 0 && page < t->npages;
+    if (cached && t->bounds_ok[page]) return t->bounds[page];
     fz_rect r = fz_empty_rect;
     fz_try(CTX)
     {
@@ -397,7 +406,9 @@ fz_rect page_bounds(tab *t, int page)
         fz_drop_page(CTX, p);
     }
     fz_catch(CTX) r = fz_make_rect(0, 0, 612, 792);
-    return fz_make_rect(0, 0, r.x1 - r.x0, r.y1 - r.y0);
+    r = fz_make_rect(0, 0, r.x1 - r.x0, r.y1 - r.y0);
+    if (cached) t->bounds[page] = r, t->bounds_ok[page] = 1;
+    return r;
 }
 
 static void source_size(tab *t, int page, float *w0, float *h0)
@@ -759,7 +770,8 @@ typedef struct render_job {
     float scale, prio; /* prio: distance from the middle of the view; nearest first */
     int visible;       /* else prefetched: stored only in free room */
     fz_irect box;      /* a tile's device pixels */
-    fz_buffer *bytes;  /* the document of `gen` */
+    fz_buffer *bytes;  /* the document of `gen`, or NULL: open `path` with `password` */
+    char *path, *password;
     fz_pixmap *pix;
     double done_at;
     struct render_job *next;
@@ -814,6 +826,7 @@ static void job_free(fz_context *ctx, render_job *j)
 {
     fz_drop_buffer(ctx, j->bytes);
     fz_drop_pixmap(ctx, j->pix);
+    free(j->path), free(j->password);
     free(j);
 }
 
@@ -830,10 +843,17 @@ static fz_display_list *worker_list(render_worker_state *w, render_job *j)
     fz_context *ctx = w->ctx;
     if (j->gen != w->doc_gen || !w->doc) {
         worker_drop_doc(w);
-        fz_stream *s = fz_open_buffer(ctx, j->bytes);
-        fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
-        fz_always(ctx) fz_drop_stream(ctx, s);
-        fz_catch(ctx) fz_rethrow(ctx);
+        if (j->bytes) {
+            fz_stream *s = fz_open_buffer(ctx, j->bytes);
+            fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
+            fz_always(ctx) fz_drop_stream(ctx, s);
+            fz_catch(ctx) fz_rethrow(ctx);
+        } else {
+            w->doc = fz_open_document(ctx, j->path);
+            if (fz_needs_password(ctx, w->doc) &&
+                !fz_authenticate_password(ctx, w->doc, j->password ? j->password : ""))
+                fz_throw(ctx, FZ_ERROR_ARGUMENT, "wrong password");
+        }
         w->doc_gen = j->gen;
     }
     int slot = 0;
@@ -1016,11 +1036,17 @@ static void render_request(tab *t, render_job want)
     int known = render_known(&want);
     pthread_mutex_unlock(&R.lock);
     if (known) return;
-    fz_buffer *bytes = render_bytes(t);
-    if (!bytes) return;
+    /* the file itself when the tab shows it as read; a copy of the rebuilt document otherwise */
+    double m;
+    long size;
+    file_stamp(t->path, &m, &size);
+    int from_file = t->doc_is_file && m == t->stamp_mtime && size == t->stamp_size;
+    fz_buffer *bytes = from_file ? NULL : render_bytes(t);
+    if (!from_file && !bytes) return;
     render_job *j = calloc(1, sizeof *j), *dropped = NULL;
     *j = want;
-    j->bytes = fz_keep_buffer(CTX, bytes);
+    if (from_file) j->path = pt_strdup(t->path), j->password = t->password ? pt_strdup(t->password) : NULL;
+    else j->bytes = fz_keep_buffer(CTX, bytes);
     pthread_mutex_lock(&R.lock);
     /* the same page at another zoom is no longer wanted; past the limit the farthest requests go */
     j->next = R.queue, R.queue = j;
@@ -2259,6 +2285,7 @@ static void reload_now(tab *t)
     fields_reset(t);
     pdf_drop_document(CTX, t->doc);
     t->doc = fresh;
+    t->doc_is_file = 1;
     t->own = pdf_count_pages(CTX, fresh);
     pt_state_free(&t->st);
     pt_state_init(&t->st, t->own);

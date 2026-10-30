@@ -209,6 +209,8 @@ struct tab {
     float scroll_x, scroll_y;
     int npages;           /* pages in the display document */
     float *off_x, *off_y; /* per display page; off_y < -1e8 when not laid out */
+    fz_rect *bounds;      /* per display page, once known (bounds_ok) */
+    char *bounds_ok;
     float scene_w, scene_h;
     int want_scroll_page; /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
@@ -228,6 +230,7 @@ struct tab {
     size_t tile_bytes;
     unsigned render_gen;     /* tags this tab's background renders; a new one drops those of the old pages */
     fz_buffer *render_bytes; /* the document as the render thread opens it, written when it first renders */
+    int doc_is_file;         /* doc is the file as read (not rebuilt with edits), so workers can open the file */
     Texture2D *thumbs;
     char *thumb_ok;
     pt_words *words;
