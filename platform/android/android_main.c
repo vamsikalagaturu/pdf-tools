@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "pdf-tools", __VA_ARGS__)
@@ -309,6 +310,30 @@ static int release_velocity(double up_t, float *vx, float *vy)
     return 1;
 }
 
+/* Where the fingers were at time t (event clock): touch events reach a frame in uneven batches, so moving by what
+ * arrived made a steady drag move unevenly. As Android's own resampling: interpolate between the samples around t,
+ * past the last one extrapolate at most 8 ms. */
+static void resample(double t, float *x, float *y)
+{
+    if (nsamples == 1 || t <= samples[0].t) {
+        *x = samples[0].x, *y = samples[0].y;
+        return;
+    }
+    int i = 1;
+    while (i < nsamples - 1 && samples[i].t < t) i++;
+    const sample *a = &samples[i - 1], *b = &samples[i];
+    if (t > b->t) t = fmin(t, b->t + 0.008);
+    double span = b->t - a->t, k = span > 0.001 ? (t - a->t) / span : 1;
+    *x = (float)(a->x + (b->x - a->x) * k), *y = (float)(a->y + (b->y - a->y) * k);
+}
+
+static double event_clock(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
 static void on_touch(const AInputEvent *e, int action)
 {
     float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
@@ -320,7 +345,7 @@ static void on_touch(const AInputEvent *e, int action)
         nsamples = 0;
         add_samples(e);
         /* a finger on a moving page stops it, and that touch is not a tap */
-        if (fling.vx || fling.vy) touch.pending = 0, touch.scrolling = 1, touch.rebase = 1;
+        if (fling.vx || fling.vy) touch.pending = 0, touch.scrolling = 1, touch.rebase = 1, touch.cx = x, touch.cy = y;
         fling.vx = fling.vy = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
@@ -338,14 +363,12 @@ static void on_touch(const AInputEvent *e, int action)
         if (touch.rebase) nsamples = 0;
         add_samples(e);
         if (touch.scrolling) {
+            /* the scroll itself follows the resampled samples in pt_android_frame */
             float cx, cy, spread = finger_spread(e);
             centroid(e, -1, &cx, &cy);
-            if (!touch.rebase) {
-                wheel_acc.x += (cx - touch.cx) / (60 * dp());
-                wheel_acc.y += (cy - touch.cy) / (60 * dp());
-                if (spread > 0 && touch.spread > 0) ui_add_pinch(spread / touch.spread, cx, cy);
-            }
-            touch.cx = cx, touch.cy = cy, touch.spread = spread, touch.rebase = 0;
+            if (!touch.rebase && spread > 0 && touch.spread > 0) ui_add_pinch(spread / touch.spread, cx, cy);
+            if (touch.rebase) touch.cx = cx, touch.cy = cy;
+            touch.spread = spread, touch.rebase = 0;
         } else if (touch.held && hypotf(x - touch.x, y - touch.y) > 8 * dp()) {
             touch.held = 0;
             touch.pressed = 1;
@@ -356,9 +379,7 @@ static void on_touch(const AInputEvent *e, int action)
             else {
                 touch.pending = 0;
                 touch.scrolling = 1;
-                wheel_acc.x += (x - touch.x) / (60 * dp());
-                wheel_acc.y += (y - touch.y) / (60 * dp());
-                touch.cx = x, touch.cy = y, touch.rebase = 0;
+                touch.cx = touch.x, touch.cy = touch.y, touch.rebase = 0;
             }
         }
         break;
@@ -591,6 +612,13 @@ void pt_android_frame(void)
     static double last_frame;
     double now = GetTime(), dt = fmin(now - last_frame, 0.05);
     last_frame = now;
+    if (touch.scrolling && nsamples) {
+        float x, y;
+        resample(event_clock() - 0.005, &x, &y);
+        wheel_acc.x += (x - touch.cx) / (60 * dp());
+        wheel_acc.y += (y - touch.cy) / (60 * dp());
+        touch.cx = x, touch.cy = y;
+    }
     if (fling.vx || fling.vy) {
         wheel_acc.x += (float)(fling.vx * dt) / (60 * dp());
         wheel_acc.y += (float)(fling.vy * dt) / (60 * dp());
