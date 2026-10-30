@@ -623,7 +623,7 @@ int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int
         if (disabled) border = pal.border;
         if (hover) fill = ColorBrightness(fill, 0.1f);
     } else if (flags & B_DANGER) {
-        fill = hover ? (Color){220, 60, 60, 255} : BLANK;
+        fill = hover ? pal.danger : BLANK;
     } else if (flags & B_CHECKED) {
         fill = pal.highlight;
         fg = pal.highlighted_text;
@@ -740,15 +740,10 @@ float ui_scrollbar(unsigned id, Rectangle track, float content, float view, floa
 }
 
 /* a solid track the full length and a solid thumb, lighter while hovered or dragged */
-Color ui_scroll_lane(void) { return pal.dark_mode ? (Color){38, 38, 38, 255} : (Color){224, 224, 224, 255}; }
-
 void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot)
 {
-    Color lane = ui_scroll_lane();
-    Color bar = pal.dark_mode ? (hot ? (Color){150, 150, 150, 255} : (Color){110, 110, 110, 255})
-                              : (hot ? (Color){120, 120, 120, 255} : (Color){160, 160, 160, 255});
-    DrawRectangleRec(track, lane);
-    DrawRectangleRounded(thumb, 0.5f, 6, bar);
+    DrawRectangleRec(track, pal.scroll_lane);
+    DrawRectangleRounded(thumb, 0.5f, 6, hot ? pal.scroll_thumb_hot : pal.scroll_thumb);
 }
 
 /* ---- text fields ---- */
@@ -1569,9 +1564,7 @@ static int msg_frame(dialog *d, Rectangle body)
 {
     msg_data *m = d->data;
     static const char *icons[] = {"about", "about", "about", "about"};
-    Color tint = m->kind == MSG_ERROR     ? (Color){217, 48, 37, 255}
-                 : m->kind == MSG_WARNING ? (Color){230, 160, 0, 255}
-                                          : pal.highlight;
+    Color tint = m->kind == MSG_ERROR ? pal.danger : m->kind == MSG_WARNING ? pal.warning : pal.highlight;
     draw_icon(icons[m->kind], (Rectangle){body.x, body.y + 2, 28, 28}, tint);
     pt_strs lines = {0};
     wrap(m->text, body.width - 44, FS_NORMAL, &lines);
@@ -1848,6 +1841,9 @@ void theme_apply(const char *mode)
             .tooltip = hex_colour(0xffffdc),
             .page_bg = hex_colour(0x5f6368),
             .border = hex_colour(0xc4c4c4),
+            .scroll_lane = hex_colour(0xe0e0e0),
+            .scroll_thumb = hex_colour(0xa0a0a0),
+            .scroll_thumb_hot = hex_colour(0x787878),
             .dark_mode = 0,
         };
     } else {
@@ -1869,9 +1865,30 @@ void theme_apply(const char *mode)
             .tooltip = hex_colour(0x2b2b2b),
             .page_bg = hex_colour(0x5f6368),
             .border = hex_colour(0x4a4a4a),
+            .scroll_lane = hex_colour(0x262626),
+            .scroll_thumb = hex_colour(0x6e6e6e),
+            .scroll_thumb_hot = hex_colour(0x969696),
             .dark_mode = 1,
         };
     }
+    pal.selection = hex_colour(0x1a73e8);
+    pal.find_match = with_alpha(hex_colour(0xffe100), 110);
+    pal.find_current = with_alpha(hex_colour(0xff8c00), 130);
+    pal.sync_mark = with_alpha(hex_colour(0xffc800), 110);
+    pal.redact_preview = with_alpha(hex_colour(0x000000), 90);
+    pal.field_bg = hex_colour(0xdce8ff);
+    pal.field_mark = hex_colour(0x1e1e1e);
+    pal.crop_dim = with_alpha(hex_colour(0x202124), 150);
+    pal.note_fill = hex_colour(0xffd54f);
+    pal.note_line = hex_colour(0x8a6d00);
+    pal.danger = hex_colour(0xd93025);
+    pal.warning = hex_colour(0xe6a000);
+    pal.success = hex_colour(0x1e8e3e);
+    pal.thumb_bg = hex_colour(0xebebeb);
+    pal.thumb_frame = with_alpha(hex_colour(0x808080), 120);
+    pal.check_bg = with_alpha(hex_colour(0xffffff), 230);
+    pal.check_border = hex_colour(0x6e6e6e);
+    pal.pad_guide = hex_colour(0xc8c8c8);
     /* the user's accent for this theme, with black or white text on it, whichever contrasts more (Rec. 709 luma) */
     const char *accent = pt_settings_str(&app.settings, pal.dark_mode ? "accent_colour_dark" : "accent_colour_light");
     unsigned v;

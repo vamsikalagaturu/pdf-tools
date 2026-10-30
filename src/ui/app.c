@@ -732,7 +732,7 @@ int pt_app_main(int argc, char **argv)
         return 0;
     }
     snprintf(app.exe, sizeof app.exe, "%s", exe_path(argv[0]));
-    app.ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
+    app.ctx = fz_new_context(NULL, render_locks(), FZ_STORE_DEFAULT);
     fz_register_document_handlers(app.ctx);
     pt_migrate_legacy();
     pt_settings_load(&app.settings, NULL);
@@ -828,6 +828,7 @@ int pt_app_main(int argc, char **argv)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
         else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);
     if (app.ws) workspace_free(app.ws);
+    render_stop();
     ipc_stop();
     CloseWindow();
     pt_settings_free(&app.settings);

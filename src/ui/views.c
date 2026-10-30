@@ -10,8 +10,6 @@
 #include <string.h>
 
 #define CTX app.ctx
-#define CROP_DIM ((Color){32, 33, 36, 150})
-#define FRAME_BLUE ((Color){26, 115, 232, 255})
 
 static const cursor_kind TOOL_CURSORS[T_COUNT] = {
     [T_VIEW] = CUR_IBEAM,  [T_REDACT] = CUR_CROSS, [T_HIGHLIGHT] = CUR_IBEAM, [T_NOTE] = CUR_HAND,
@@ -385,16 +383,15 @@ static void draw_item(tab *t, int index)
     switch (it->kind) {
     case PT_REDACT:
         DrawRectangleRec(r, rgb3(it->rgb));
-        dashed_rect(r, (Color){217, 48, 37, 255});
+        dashed_rect(r, pal.danger);
         break;
     case PT_HIGHLIGHT: draw_mark(t, page, it); break;
     case PT_NOTE:
-        DrawRectangleRounded(r, 0.15f, 4, (Color){255, 213, 79, 255});
-        DrawRectangleRoundedLinesEx(r, 0.15f, 4, 1, (Color){138, 109, 0, 255});
+        DrawRectangleRounded(r, 0.15f, 4, pal.note_fill);
+        DrawRectangleRoundedLinesEx(r, 0.15f, 4, 1, pal.note_line);
         for (int i = 1; i <= 3; i++) {
             float y = r.y + r.height * i / 4.5f;
-            DrawLineEx((Vector2){r.x + 3 * t->zoom, y}, (Vector2){r.x + r.width - 3 * t->zoom, y}, 1,
-                       (Color){138, 109, 0, 255});
+            DrawLineEx((Vector2){r.x + 3 * t->zoom, y}, (Vector2){r.x + r.width - 3 * t->zoom, y}, 1, pal.note_line);
         }
         break;
     case PT_SHAPE: {
@@ -437,8 +434,8 @@ static void draw_item(tab *t, int index)
     }
     }
     if (t->sel == SEL_ITEM && t->sel_index == index) {
-        dashed_rect(r, FRAME_BLUE);
-        if (resizable(it)) DrawRectangleRec(handle_rect(r), FRAME_BLUE);
+        dashed_rect(r, pal.selection);
+        if (resizable(it)) DrawRectangleRec(handle_rect(r), pal.selection);
     }
 }
 
@@ -761,10 +758,10 @@ static void draw_crop(tab *t, int i)
         {k.x + k.width, k.y, page.x + page.width - k.x - k.width, k.height},
     };
     for (int s = 0; s < 4; s++)
-        if (strips[s].width > 0 && strips[s].height > 0) DrawRectangleRec(strips[s], CROP_DIM);
+        if (strips[s].width > 0 && strips[s].height > 0) DrawRectangleRec(strips[s], pal.crop_dim);
     if (t->tool == T_CROP) {
-        dashed_rect(k, FRAME_BLUE);
-        DrawRectangleRec(handle_rect(k), FRAME_BLUE);
+        dashed_rect(k, pal.selection);
+        DrawRectangleRec(handle_rect(k), pal.selection);
     }
 }
 
@@ -857,6 +854,10 @@ void view_frame(tab *t, Rectangle area)
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
         if (t->off_y[p] < -1e8f) continue;
+        /* pages within a screen of the view render ahead, so a scroll finds them ready */
+        Rectangle pr = scene_rect_to_screen(t, page_scene_rect(t, p));
+        if (pr.y + pr.height > area.y - area.height && pr.y < area.y + 2 * area.height)
+            page_texture(t, p, t->zoom * UI_PX);
         draw_page(t, p);
         /* touch: one finger draws on the pages, and pans beside them */
         if (t->tool != T_VIEW)
@@ -875,7 +876,7 @@ void view_frame(tab *t, Rectangle area)
         for (int i = 0; i < as->n; i++) {
             Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, as->v[i].rect));
             int selected = t->sel == SEL_ANNOT && t->sel_page == p && t->sel_index == as->v[i].xref;
-            if (selected || (ui_hover(area) && in_screen(r) && t->gesture == G_NONE)) dashed_rect(r, FRAME_BLUE);
+            if (selected || (ui_hover(area) && in_screen(r) && t->gesture == G_NONE)) dashed_rect(r, pal.selection);
             const char *c = annot_comment(t, p, &as->v[i]);
             char *tip = *c ? pt_strdup(c)
                            : pt_format("%s annotation - click to comment or delete",
@@ -890,15 +891,15 @@ void view_frame(tab *t, Rectangle area)
     for (int i = 0; i < t->matches.n; i++) {
         int p = t->matches.v[i].page;
         if (t->off_y[p] < -1e8f) continue;
-        Color c = i == t->match_idx ? (Color){255, 140, 0, 130} : (Color){255, 225, 0, 110};
+        Color c = i == t->match_idx ? pal.find_current : pal.find_match;
         DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, p, t->matches.v[i].rect)), c);
     }
     if (t->text_sel_page >= 0 && t->off_y[t->text_sel_page] > -1e8f)
         for (int i = 0; i < t->text_sel.n; i++)
             DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, t->text_sel_page, t->text_sel.v[i])),
-                             (Color){26, 115, 232, 70});
+                             with_alpha(pal.selection, 70));
     if (t->flow_preview.n && t->off_y[t->flow_page] > -1e8f) {
-        Color c = t->tool == T_VIEW ? (Color){26, 115, 232, 70} : t->tool == T_REDACT ? (Color){0, 0, 0, 90} : BLANK;
+        Color c = t->tool == T_VIEW ? with_alpha(pal.selection, 70) : t->tool == T_REDACT ? pal.redact_preview : BLANK;
         if (!c.a) {
             unsigned char rgb[3];
             mark_colour(mark_style(), rgb);
@@ -913,14 +914,13 @@ void view_frame(tab *t, Rectangle area)
         for (int i = 0; i < t->sync_marks.n; i++) {
             int p = t->sync_marks.v[i].page;
             if (t->off_y[p] > -1e8f)
-                DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, p, t->sync_marks.v[i].rect)),
-                                 (Color){255, 200, 0, 110});
+                DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, p, t->sync_marks.v[i].rect)), pal.sync_mark);
         }
     }
     if (t->gesture == G_BAND) {
         Rectangle b = scene_rect_to_screen(t, t->band);
-        DrawRectangleRec(b, (Color){26, 115, 232, 40});
-        dashed_rect(b, FRAME_BLUE);
+        DrawRectangleRec(b, with_alpha(pal.selection, 40));
+        dashed_rect(b, pal.selection);
     }
     if (t->gesture == G_SHAPE && t->stroke.n == 2)
         draw_shape(t->shape, scene_to_screen(t, t->stroke.v[0]), scene_to_screen(t, t->stroke.v[1]),
@@ -960,7 +960,7 @@ void view_frame(tab *t, Rectangle area)
             t->scroll_x = fminf(fmaxf((ui.mouse.x - grab - track.x) / fmaxf(1, track.width - w), 0), 1) * max;
         ui_scroll_draw(track, thumb, ui.active == id || ui_hover(track));
         if (content_h > area.height)
-            DrawRectangleRec((Rectangle){track.x + track.width, track.y, 12, 12}, ui_scroll_lane());
+            DrawRectangleRec((Rectangle){track.x + track.width, track.y, 12, 12}, pal.scroll_lane);
     }
     popover_frame(t);
 }
@@ -970,7 +970,6 @@ void view_frame(tab *t, Rectangle area)
  * to fit like auto-size fields, and are written on save. */
 
 #define MIN_FIELD_PX 5
-#define FIELD_BG ((Color){220, 232, 255, 255})
 
 pt_key coalesce_key = {-1, -1};
 
@@ -1117,8 +1116,8 @@ void fields_frame(tab *t, int page)
             float px = fit_text(f, e, f->rect);
             /* black on light blue in both themes, as on paper */
             ui_palette saved = pal;
-            pal.base = FIELD_BG, pal.text = BLACK, pal.border = BLANK, pal.placeholder = DARKGRAY;
-            DrawRectangleRec(r, FIELD_BG);
+            pal.base = pal.field_bg, pal.text = BLACK, pal.border = BLANK, pal.placeholder = DARKGRAY;
+            DrawRectangleRec(r, pal.field_bg);
             e->text.size = px * t->zoom;
             int res = ui_textfield(id, &e->text, r, 0);
             pal = saved;
@@ -1129,16 +1128,16 @@ void fields_frame(tab *t, int page)
             int on = is_checked(t, f);
             float side = fmaxf(4, fminf(r.width, r.height) - 2);
             Rectangle box = {r.x + (r.width - side) / 2, r.y + (r.height - side) / 2, side, side};
-            DrawRectangleRec(r, FIELD_BG);
+            DrawRectangleRec(r, pal.field_bg);
             int hover = ui_hover(r);
             if (hover) set_cursor(CUR_HAND);
             if (f->type == PDF_WIDGET_TYPE_RADIOBUTTON) {
                 Vector2 c = {box.x + side / 2, box.y + side / 2};
-                DrawCircleV(c, side / 2, FIELD_BG);
+                DrawCircleV(c, side / 2, pal.field_bg);
                 DrawCircleLinesV(c, side / 2, DARKGRAY);
-                if (on) DrawCircleV(c, side / 4, (Color){30, 30, 30, 255});
+                if (on) DrawCircleV(c, side / 4, pal.field_mark);
             } else {
-                DrawRectangleRec(box, FIELD_BG);
+                DrawRectangleRec(box, pal.field_bg);
                 DrawRectangleLinesEx(box, 1, DARKGRAY);
                 if (on) {
                     DrawLineEx((Vector2){box.x + side * 0.2f, box.y + side * 0.55f},
@@ -1157,7 +1156,7 @@ void fields_frame(tab *t, int page)
             e->choice = -1;
             for (int k = 0; k < f->choices.n; k++)
                 if (!strcmp(f->choices.v[k], current)) e->choice = k;
-            DrawRectangleRec(r, FIELD_BG);
+            DrawRectangleRec(r, pal.field_bg);
             float px = fmaxf(MIN_FIELD_PX, fminf(12, roundf((f->rect.y1 - f->rect.y0) * 0.75f))) * t->zoom;
             char *shown = elide_right(e->choice >= 0 ? f->choices.v[e->choice] : current, r.width - 22, px, F_REGULAR);
             draw_text(shown, r.x + 3, text_top(r.y + r.height / 2, px), px, F_REGULAR, BLACK);
@@ -1365,8 +1364,8 @@ void compare_frame(compare *c, Rectangle area)
         c->shown = c->pos;
     }
     DrawRectangleRec(area, pal.window);
-    pane(c, 0, (Rectangle){area.x, area.y, pw, ph}, (Color){217, 48, 37, 90});
-    pane(c, 1, (Rectangle){area.x + pw + gap, area.y, pw, ph}, (Color){30, 142, 62, 90});
+    pane(c, 0, (Rectangle){area.x, area.y, pw, ph}, with_alpha(pal.danger, 90));
+    pane(c, 1, (Rectangle){area.x + pw + gap, area.y, pw, ph}, with_alpha(pal.success, 90));
 }
 
 static void next_change(compare *c)
@@ -2224,8 +2223,8 @@ void workspace_frame(workspace *w, Rectangle area)
                 Rectangle at = {thumb.x + (CARD_THUMB_W - c->tw * s) / 2, thumb.y, c->tw * s, c->th * s};
                 DrawTexturePro(c->thumb, (Rectangle){0, 0, (float)c->thumb.width, (float)c->thumb.height}, at,
                                (Vector2){0, 0}, 0, WHITE);
-                DrawRectangleLinesEx(at, 1, (Color){128, 128, 128, 110});
-            } else DrawRectangleRec(thumb, (Color){128, 128, 128, 40});
+                DrawRectangleLinesEx(at, 1, pal.thumb_frame);
+            } else DrawRectangleRec(thumb, with_alpha(pal.thumb_frame, 40));
             char label[32];
             snprintf(label, sizeof label, "Page %d", c->page + 1);
             float ly = thumb.y + CARD_THUMB_H + 4;

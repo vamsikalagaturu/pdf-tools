@@ -203,6 +203,7 @@ struct tab {
     int cert_placing;
 
     page_tex pix[PIX_CACHE];
+    unsigned render_gen; /* tags this tab's background renders; a new one drops those of the old pages */
     Texture2D *thumbs;
     char *thumb_ok;
     pt_words *words;
@@ -316,6 +317,8 @@ void zoom_by(tab *t, float factor);
 int continuous(void);
 void toggle_continuous(tab *t);
 Texture2D *page_texture(tab *t, int page, float scale);
+fz_locks_context *render_locks(void);
+void render_stop(void);
 Texture2D *thumb_texture(tab *t, int page);
 pt_words *page_words(tab *t, int page);
 field_infos *page_fields(tab *t, int page);

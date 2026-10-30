@@ -3,6 +3,7 @@
 #include "tab.h"
 #include "dialogs.h"
 #include <math.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -70,10 +71,13 @@ static void free_history(pt_state **v, int *n)
     *n = 0;
 }
 
+static unsigned render_new_gen(void);
+
 void tab_invalidate_pages(tab *t)
 {
     for (int i = 0; i < PIX_CACHE; i++)
         if (t->pix[i].ok) UnloadTexture(t->pix[i].tex), t->pix[i].ok = 0;
+    t->render_gen = render_new_gen();
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
         if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]);
@@ -717,44 +721,212 @@ static Texture2D texture_from_pixmap(fz_pixmap *pix)
     return tex;
 }
 
+/* ---- page renders on a worker thread ----
+ * Rasterizing a page took 10-30 ms, several frames at 120 Hz, so a scroll jerked whenever a page came into view.
+ * The main thread records a page as a display list (MuPDF objects are not shared across threads); a worker with a
+ * cloned context rasterizes it, newest request first; finished pixmaps become textures on the main thread, one
+ * per frame. Until then the view shows the page at another zoom, its thumbnail, or white. */
+
+typedef struct render_job {
+    unsigned gen;
+    int page;
+    float scale;
+    fz_display_list *list;
+    fz_pixmap *pix;
+    double done_at;
+    struct render_job *next;
+} render_job;
+
+#define RENDER_QUEUE_MAX 6
+
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t wake;
+    pthread_t thread;
+    fz_context *ctx;
+    render_job *queue, *busy, *done; /* queue: newest first */
+    int started, quit;
+    unsigned gen;
+} R = {.lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER};
+
+static pthread_mutex_t mupdf_mutex[FZ_LOCK_MAX];
+static void lock_mupdf(void *user, int lock) { (void)user, pthread_mutex_lock(&mupdf_mutex[lock]); }
+static void unlock_mupdf(void *user, int lock) { (void)user, pthread_mutex_unlock(&mupdf_mutex[lock]); }
+
+fz_locks_context *render_locks(void)
+{
+    static fz_locks_context locks = {NULL, lock_mupdf, unlock_mupdf};
+    static int ready;
+    if (!ready)
+        for (int i = 0; i < FZ_LOCK_MAX; i++) pthread_mutex_init(&mupdf_mutex[i], NULL);
+    ready = 1;
+    return &locks;
+}
+
+static unsigned render_new_gen(void) { return ++R.gen; }
+
+static void job_free(fz_context *ctx, render_job *j)
+{
+    fz_drop_display_list(ctx, j->list);
+    fz_drop_pixmap(ctx, j->pix);
+    free(j);
+}
+
+static void jobs_free(render_job *j)
+{
+    while (j) {
+        render_job *next = j->next;
+        job_free(CTX, j);
+        j = next;
+    }
+}
+
+static void *render_worker(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&R.lock);
+    while (!R.quit) {
+        if (!R.queue) {
+            pthread_cond_wait(&R.wake, &R.lock);
+            continue;
+        }
+        render_job *j = R.busy = R.queue;
+        R.queue = j->next;
+        pthread_mutex_unlock(&R.lock);
+        fz_try(R.ctx) j->pix =
+            fz_new_pixmap_from_display_list(R.ctx, j->list, fz_scale(j->scale, j->scale), fz_device_rgb(R.ctx), 0);
+        fz_catch(R.ctx) j->pix = NULL;
+        fz_drop_display_list(R.ctx, j->list);
+        j->list = NULL;
+        pthread_mutex_lock(&R.lock);
+        R.busy = NULL;
+        j->done_at = GetTime();
+        j->next = R.done, R.done = j;
+    }
+    pthread_mutex_unlock(&R.lock);
+    return NULL;
+}
+
+void render_stop(void)
+{
+    if (!R.started) return;
+    pthread_mutex_lock(&R.lock);
+    R.quit = 1;
+    pthread_cond_signal(&R.wake);
+    pthread_mutex_unlock(&R.lock);
+    pthread_join(R.thread, NULL);
+    jobs_free(R.queue);
+    jobs_free(R.done);
+    R.queue = R.done = NULL;
+    fz_drop_context(R.ctx);
+    R.started = 0;
+}
+
+/* queued, being drawn or drawn but not yet taken: the caller holds R.lock */
+static int render_known(unsigned gen, int page, float scale)
+{
+    render_job *lists[3] = {R.queue, R.busy, R.done};
+    for (int i = 0; i < 3; i++)
+        for (render_job *j = lists[i]; j; j = i == 1 ? NULL : j->next)
+            if (j->gen == gen && j->page == page && fabsf(j->scale - scale) < 0.001f) return 1;
+    return 0;
+}
+
+static void render_request(tab *t, int page, float scale)
+{
+    if (!R.started) {
+        R.ctx = fz_clone_context(CTX);
+        if (!R.ctx || pthread_create(&R.thread, NULL, render_worker, NULL)) return;
+        R.started = 1;
+    }
+    pthread_mutex_lock(&R.lock);
+    int known = render_known(t->render_gen, page, scale);
+    pthread_mutex_unlock(&R.lock);
+    if (known) return;
+    fz_display_list *list = NULL;
+    fz_try(CTX)
+    {
+        fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
+        fz_try(CTX) list = fz_new_display_list_from_page(CTX, p);
+        fz_always(CTX) fz_drop_page(CTX, p);
+        fz_catch(CTX) fz_rethrow(CTX);
+    }
+    fz_catch(CTX) return;
+    render_job *j = calloc(1, sizeof *j), *dropped = NULL;
+    *j = (render_job){.gen = t->render_gen, .page = page, .scale = scale, .list = list};
+    pthread_mutex_lock(&R.lock);
+    /* the same page at another zoom is no longer wanted; past the limit the oldest requests go */
+    j->next = R.queue, R.queue = j;
+    int n = 0;
+    for (render_job **q = &R.queue; *q;) {
+        render_job *k = *q;
+        if (k != j && ((k->gen == j->gen && k->page == page) || n >= RENDER_QUEUE_MAX)) {
+            *q = k->next, k->next = dropped, dropped = k;
+        } else q = &k->next, n++;
+    }
+    pthread_cond_signal(&R.wake);
+    pthread_mutex_unlock(&R.lock);
+    jobs_free(dropped);
+}
+
+static void cache_insert(tab *t, int page, float scale, fz_pixmap *pix)
+{
+    int slot = -1, far = -1, fd = -1;
+    for (int i = 0; i < PIX_CACHE && slot < 0; i++) {
+        page_tex *pt = &t->pix[i];
+        if (!pt->ok || pt->page == page) slot = i;
+        int d = pt->ok ? abs(order_index(t, pt->page) - order_index(t, t->pno)) : -1;
+        if (d > fd) fd = d, far = i;
+    }
+    if (slot < 0) slot = far;
+    if (t->pix[slot].ok) UnloadTexture(t->pix[slot].tex);
+    t->pix[slot] = (page_tex){page, scale, texture_from_pixmap(pix), 1};
+}
+
+/* takes this tab's finished renders (one texture upload per frame); results nobody took for a second go */
+static void render_collect(tab *t)
+{
+    static double uploaded_at = -1;
+    render_job *mine = NULL, *stale = NULL;
+    pthread_mutex_lock(&R.lock);
+    for (render_job **q = &R.done; *q;) {
+        render_job *j = *q;
+        int take = j->gen == t->render_gen && !mine && uploaded_at != ui.now;
+        if (take || GetTime() - j->done_at > 1) {
+            *q = j->next;
+            if (take) mine = j;
+            else j->next = stale, stale = j;
+        } else q = &j->next;
+    }
+    pthread_mutex_unlock(&R.lock);
+    if (mine) {
+        if (mine->pix) cache_insert(t, mine->page, mine->scale, mine->pix);
+        uploaded_at = ui.now;
+        mine->next = NULL;
+        job_free(CTX, mine);
+    }
+    jobs_free(stale);
+}
+
 Texture2D *page_texture(tab *t, int page, float scale)
 {
     fz_rect b = page_bounds(t, page);
     float longest = fmaxf(b.x1, b.y1);
     if (longest * scale > 8000) scale = 8000 / longest;
-    int free_slot = -1, far = -1, fd = -1;
+    if (!t->render_gen) t->render_gen = render_new_gen();
+    render_collect(t);
+    page_tex *other = NULL;
     for (int i = 0; i < PIX_CACHE; i++) {
         page_tex *pt = &t->pix[i];
-        if (pt->ok && pt->page == page) {
-            if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
-            /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
-            if (ui.now - t->zoom_t < ZOOM_SETTLE_S) {
-                ui.dirty = 1;
-                return &pt->tex;
-            }
-            UnloadTexture(pt->tex);
-            pt->ok = 0;
-            free_slot = i;
-            break;
-        }
-        if (!pt->ok && free_slot < 0) free_slot = i;
-        int d = pt->ok ? abs(order_index(t, pt->page) - order_index(t, t->pno)) : -1;
-        if (d > fd) fd = d, far = i;
+        if (!pt->ok || pt->page != page) continue;
+        if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
+        other = pt;
     }
-    int slot = free_slot >= 0 ? free_slot : far;
-    if (t->pix[slot].ok) UnloadTexture(t->pix[slot].tex), t->pix[slot].ok = 0;
-    fz_pixmap *pix = NULL;
-    fz_try(CTX)
-    {
-        fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
-        fz_try(CTX) pix = pt_render_page(CTX, p, scale, 0);
-        fz_always(CTX) fz_drop_page(CTX, p);
-        fz_catch(CTX) fz_rethrow(CTX);
-    }
-    fz_catch(CTX) return NULL;
-    t->pix[slot] = (page_tex){page, scale, texture_from_pixmap(pix), 1};
-    fz_drop_pixmap(CTX, pix);
-    return &t->pix[slot].tex;
+    ui.dirty = 1;
+    /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
+    if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S)) render_request(t, page, scale);
+    if (other) return &other->tex;
+    return t->thumb_ok && t->thumb_ok[page] ? &t->thumbs[page] : NULL;
 }
 
 Texture2D *thumb_texture(tab *t, int page)

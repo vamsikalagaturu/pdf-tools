@@ -229,8 +229,7 @@ static int pad_frame(dialog *d, Rectangle b)
     DrawRectangleRec(surface, WHITE);
     float ly = surface.y + surface.height * 0.75f;
     for (float x = surface.x + 20; x < surface.x + surface.width - 20; x += 8)
-        DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1,
-                   (Color){200, 200, 200, 255});
+        DrawLineEx((Vector2){x, ly}, (Vector2){fminf(x + 4, surface.x + surface.width - 20), ly}, 1, pal.pad_guide);
     DrawTexturePro(p->tex, (Rectangle){0, 0, PAD_W, PAD_H}, surface, (Vector2){0, 0}, 0, WHITE);
     ui_touch_drag_area(surface);
     int over = ui_hover(surface);

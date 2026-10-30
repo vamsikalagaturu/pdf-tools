@@ -16,6 +16,10 @@
 typedef struct {
     Color window, window_text, base, text, button, button_text, mid, light, dark, highlight, highlighted_text,
         disabled_text, placeholder, link, tooltip, page_bg, border;
+    Color scroll_lane, scroll_thumb, scroll_thumb_hot;
+    /* drawn over pages and thumbnails, the same in both themes */
+    Color selection, find_match, find_current, sync_mark, redact_preview, field_bg, field_mark, crop_dim, note_fill,
+        note_line, danger, warning, success, thumb_bg, thumb_frame, check_bg, check_border, pad_guide;
     int dark_mode;
 } ui_palette;
 extern ui_palette pal;
@@ -149,7 +153,6 @@ int ui_spin(unsigned id, Rectangle r, int *value, int lo, int hi, int step, cons
 int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float step, const char *suffix);
 float ui_scrollbar(unsigned id, Rectangle track, float content, float view, float *offset);
 void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot);
-Color ui_scroll_lane(void);
 void ui_separator_v(float x, float y0, float y1);
 /* toolbars: 32 px buttons on a 34 px step; a separator takes UI_SEP_W after a button's 2 px gap and returns
  * where the next button starts */

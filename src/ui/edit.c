@@ -928,7 +928,6 @@ void tab_status(tab *t, Rectangle area)
  * the text box typed on the page with its format bar, and find. */
 
 #define CTX app.ctx
-#define FRAME_BLUE ((Color){26, 115, 232, 255})
 
 /* the one menu open at a time keeps its target here */
 static struct {
@@ -2303,7 +2302,7 @@ void text_box_frame(tab *t)
                   xz = src.x0 + pt_text_length(CTX, rf.font, pz, size) + (hi > L.end ? 3 : 0);
             Rectangle s =
                 scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(xa, top, xz, top + size * (asc - desc))));
-            DrawRectangleRec(s, (Color){26, 115, 232, 80});
+            DrawRectangleRec(s, with_alpha(pal.selection, 80));
             free(pa), free(pz);
         }
         int caret_here = b->text.caret >= L.start && b->text.caret <= L.end &&
@@ -2322,7 +2321,7 @@ void text_box_frame(tab *t)
     Rectangle frame = box.width > 4 ? (Rectangle){box.x - 2, box.y - 2, box.width + 4, box.height + 4}
                                     : (Rectangle){box.x - 2, box.y - 2, 12, box.height + 4};
     if (b->obj.box_width > 0) frame.width = fmaxf(frame.width, b->obj.box_width * t->zoom + 4);
-    DrawRectangleLinesEx(frame, 1, FRAME_BLUE);
+    DrawRectangleLinesEx(frame, 1, pal.selection);
     pt_drop_resolved_font(CTX, &rf);
 
     /* the format bar above the box */
@@ -2624,7 +2623,6 @@ void hide_find(tab *t)
  * Pages (thumbnails with tick boxes and edit badges, drag to reorder), Outline (editable), Annotations (ours and the
  * PDF's, per page) and Edits (every unsaved edit, each discardable). */
 
-#define BADGE ((Color){217, 48, 37, 255})
 #define TAB_H 32.0f
 
 static const struct {
@@ -2746,16 +2744,16 @@ static void pages_panel(tab *t, Rectangle area)
         Rectangle badge = {thumb.x + thumb.width - bw - 5, thumb.y + 5, bw, 18};
         int current = p == t->pno, hover = ui_hover(card);
         if (current) DrawRectangleRounded(card, 0.08f, 6, with_alpha(pal.highlight, 45));
-        DrawRectangleRec(thumb, (Color){235, 235, 235, 255});
+        DrawRectangleRec(thumb, pal.thumb_bg);
         Texture2D *tex = thumb_texture(t, p);
         if (tex)
             DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, thumb, (Vector2){0, 0}, 0,
                            WHITE);
-        DrawRectangleLinesEx(thumb, current ? 2 : 1, current ? pal.highlight : (Color){128, 128, 128, 120});
+        DrawRectangleLinesEx(thumb, current ? 2 : 1, current ? pal.highlight : pal.thumb_frame);
         int ticked = t->ticked[p];
         if (ticked || any_ticked || hover) {
-            DrawRectangleRounded(check, 0.2f, 4, ticked ? pal.highlight : (Color){255, 255, 255, 230});
-            DrawRectangleRoundedLinesEx(check, 0.2f, 4, 1.2f, ticked ? pal.highlight : (Color){110, 110, 110, 255});
+            DrawRectangleRounded(check, 0.2f, 4, ticked ? pal.highlight : pal.check_bg);
+            DrawRectangleRoundedLinesEx(check, 0.2f, 4, 1.2f, ticked ? pal.highlight : pal.check_border);
             if (ticked) {
                 Color c = pal.highlighted_text;
                 DrawLineEx((Vector2){check.x + 3.5f, check.y + 8}, (Vector2){check.x + 6.5f, check.y + 12}, 2, c);
@@ -2763,7 +2761,7 @@ static void pages_panel(tab *t, Rectangle area)
             }
         }
         if (edits) {
-            DrawRectangleRounded(badge, 1, 8, BADGE);
+            DrawRectangleRounded(badge, 1, 8, pal.danger);
             draw_text_in(badge_text, badge, FS_SMALL * 0.85f, F_BOLD, WHITE, 0);
         }
         char num[16];
