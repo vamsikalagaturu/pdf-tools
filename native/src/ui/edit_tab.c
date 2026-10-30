@@ -9,6 +9,8 @@
 #define FIND_H 38.0f
 #define SPLITTER 5.0f
 #define OPTS_H 40.0f
+/* "100%" with a few pixels each side, so it sits close to the zoom buttons */
+#define ZOOM_LABEL_W 42.0f
 
 static unsigned bid(tab *t, int k) { return ui_id(t, 60000 + k); }
 
@@ -239,7 +241,6 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(tools);
         menu_item(tools, "Bates numbering...", "bates", NULL, run, t, A_BATES, doc, 0);
         menu_item(tools, "Watermark...", "stamp", NULL, run, t, A_WATERMARK, doc, 0);
-        menu_item(tools, "Sign with certificate...", "certificate", NULL, run, t, A_CERT, doc, 0);
         menu_item(tools, "Recognize text (OCR)...", "ocr", NULL, run, t, A_OCR, doc, 0);
         menu_item(tools, "Compare with...", "compare", NULL, run, t, A_COMPARE, doc, 0);
         menu_sep(tools);
@@ -552,7 +553,7 @@ void tab_toolbar(tab *t, Rectangle area)
     int dis = doc ? 0 : B_DISABLED;
     /* right side, laid out first so the tools know how much room they have */
     float save_w = button_width("Save", "save", 0) + 22;
-    float right = 34 * 4 + 52 + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
+    float right = 34 * 4 + ZOOM_LABEL_W + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
     float x = area.x;
     if (ui_button(bid(t, 1), (Rectangle){x, y, 32, h}, NULL, "sidebar", pt_settings_int(&app.settings, "show_sidebar") ? B_CHECKED : B_FLAT,
                   "Show or hide the sidebar (F9)"))
@@ -584,8 +585,8 @@ void tab_toolbar(tab *t, Rectangle area)
     x += 34;
     char zoom[16];
     snprintf(zoom, sizeof zoom, "%d%%", doc ? (int)lroundf(t->zoom * 100) : 0);
-    if (doc) draw_text_in(zoom, (Rectangle){x, y, 50, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
-    x += 52;
+    if (doc) draw_text_in(zoom, (Rectangle){x, y, ZOOM_LABEL_W, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
+    x += ZOOM_LABEL_W;
     if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis, "Zoom in (Ctrl++)")) run(t, A_ZOOM_IN);
     x += 34;
     if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit", (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis,

@@ -11,7 +11,12 @@ void export_images_dialog(tab *t);
 void present_start(tab *t);        /* presentation.c */
 int present_active(void);
 void present_frame(void);
-void compare_start(tab *t);        /* compare.c */
+void compare_start(tab *t);        /* compare.c: the Compare tab */
+void compare_free(compare *c);
+char *compare_title(const compare *c);
+void compare_frame(compare *c, Rectangle area);
+void compare_toolbar(compare *c, Rectangle area);
+void compare_shortcuts(compare *c);
 void ocr_dialog(tab *t);           /* ocr_dialog.c */
 void cert_sign_start(tab *t);      /* certificate.c */
 int cert_placing(tab *t);          /* the next band on the page is the signature box */

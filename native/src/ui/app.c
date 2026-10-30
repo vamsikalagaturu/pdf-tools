@@ -116,7 +116,7 @@ static void drop_page(tab_kind kind)
 void app_go_home(void)
 {
     int i = index_of_kind(TAB_HOME);
-    if (i < 0) i = add_tab((win_tab){TAB_HOME, NULL});
+    if (i < 0) i = add_tab((win_tab){TAB_HOME, NULL, NULL});
     app.current = i;
 }
 
@@ -128,10 +128,17 @@ static void ensure_tab(void)
 void app_add_doc(tab *t)
 {
     int from_home = app.current >= 0 && app.current < app.tabs.n && app.tabs.v[app.current].kind == TAB_HOME;
-    app.current = add_tab((win_tab){TAB_DOC, t});
+    app.current = add_tab((win_tab){TAB_DOC, t, NULL});
     if (from_home) drop_page(TAB_HOME);
     app.current = index_of_doc(t);
     app_publish_state();
+}
+
+void app_add_compare(compare *c)
+{
+    app.current = add_tab((win_tab){TAB_COMPARE, NULL, c});
+    for (int i = 0; i < app.tabs.n; i++)
+        if (app.tabs.v[i].cmp == c) app.current = i;
 }
 
 void app_open_paths(pt_strs *paths)
@@ -171,7 +178,7 @@ void app_open_workspace(tab *t)
         }
     }
     int i = index_of_kind(TAB_WORKSPACE);
-    if (i < 0) i = add_tab((win_tab){TAB_WORKSPACE, NULL});
+    if (i < 0) i = add_tab((win_tab){TAB_WORKSPACE, NULL, NULL});
     app.current = i;
     if (from_home) drop_page(TAB_HOME);
     app.current = index_of_kind(TAB_WORKSPACE);
@@ -193,6 +200,12 @@ void app_close_tab(int index)
     win_tab *w = &app.tabs.v[index];
     if (w->kind == TAB_DOC) {
         tab_close(w->doc);
+        return;
+    }
+    if (w->kind == TAB_COMPARE) {
+        compare_free(w->cmp);
+        drop_index(index);
+        ensure_tab();
         return;
     }
     if (w->kind == TAB_WORKSPACE && app.tabs.n == 1) app_go_home();
@@ -431,7 +444,10 @@ static void tab_strip(Rectangle r)
     float avail = r.width - 4, each = fminf(260, avail / fmaxf(1, n));
     for (int i = 0; i < n; i++) {
         win_tab *w = &app.tabs.v[i];
-        char *title = w->kind == TAB_HOME ? pt_strdup("Home") : w->kind == TAB_WORKSPACE ? pt_strdup("Combine & split") : tab_title(w->doc);
+        char *title = w->kind == TAB_HOME        ? pt_strdup("Home")
+                      : w->kind == TAB_WORKSPACE ? pt_strdup("Combine & split")
+                      : w->kind == TAB_COMPARE   ? compare_title(w->cmp)
+                                                 : tab_title(w->doc);
         float tw = fminf(each, text_width(title, TAB_FS, F_BOLD) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0));
         Rectangle tr = {x, r.y, tw, r.height};
         int hover = ui_hover(tr), current = i == app.current;
@@ -443,12 +459,14 @@ static void tab_strip(Rectangle r)
         float tx = tr.x + 12, cy = tr.y;
         if (w->kind == TAB_HOME) draw_logo((Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}), tx += 20;
         else if (w->kind == TAB_WORKSPACE) draw_icon("merge", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
+        else if (w->kind == TAB_COMPARE) draw_icon("compare", (Rectangle){tx, cy + (tr.height - 16) / 2, 16, 16}, fg), tx += 20;
         char *el = elide_middle(title, tr.x + tr.width - 28 - tx, TAB_FS, fk);
         draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, TAB_FS, fk, fg, -1);
         free(el);
         Rectangle close = {tr.x + tr.width - 26, tr.y + (tr.height - 20) / 2, 20, 20};
         int on_close = ui_hover(close);
-        if (ui_button(ui_id(w->doc ? (void *)w->doc : (void *)&app.tabs, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
+        void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
+        if (ui_button(ui_id(owner, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
             free(title);
             app_close_tab(i);
             return;
@@ -551,12 +569,14 @@ static void frame(void)
     Rectangle tools = {74, 0, ui.w - 80, HEADER_H};
     if (t) tab_toolbar(t, tools);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_toolbar(app.ws, tools);
+    else if (cur && cur->kind == TAB_COMPARE) compare_toolbar(cur->cmp, tools);
     tab_strip((Rectangle){0, HEADER_H, ui.w, TABS_H});
     Rectangle content = {0, HEADER_H + TABS_H, ui.w, ui.h - HEADER_H - TABS_H - STATUS_H};
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
     t = app_current_doc();
     if (cur && cur->kind == TAB_HOME) home_frame(content);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_frame(app.ws, content);
+    else if (cur && cur->kind == TAB_COMPARE) compare_frame(cur->cmp, content);
     else if (t) tab_frame(t, content);
     /* status line */
     Rectangle bar = {0, ui.h - STATUS_H, ui.w, STATUS_H};
@@ -574,6 +594,7 @@ static void frame(void)
     /* keys: the current tab's, then the window's */
     if (t) tab_shortcuts(t);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_shortcuts(app.ws);
+    else if (cur && cur->kind == TAB_COMPARE) compare_shortcuts(cur->cmp);
     global_shortcuts();
     ui_end_frame();
     cursor_commit();
@@ -583,7 +604,11 @@ static void frame(void)
     char title[600];
     if (t && t->path) snprintf(title, sizeof title, "%s%s - %s", tab_edit_count(t) ? "* " : "", pt_basename(t->path), APP_NAME);
     else if (cur && cur->kind == TAB_WORKSPACE) snprintf(title, sizeof title, "Combine & split - %s", APP_NAME);
-    else snprintf(title, sizeof title, "%s", APP_NAME);
+    else if (cur && cur->kind == TAB_COMPARE) {
+        char *c = compare_title(cur->cmp);
+        snprintf(title, sizeof title, "Compare %s - %s", c, APP_NAME);
+        free(c);
+    } else snprintf(title, sizeof title, "%s", APP_NAME);
     static char shown[600];
     if (strcmp(shown, title)) {
         SetWindowTitle(title);
@@ -767,6 +792,7 @@ int main(int argc, char **argv)
     }
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
+        else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);
     if (app.ws) workspace_free(app.ws);
     ipc_stop();
     CloseWindow();

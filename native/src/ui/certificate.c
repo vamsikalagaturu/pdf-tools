@@ -22,9 +22,12 @@ static void cert_password_given(void *ctx, const char *password)
     char *name = NULL;
     fz_try(CTX) name = pt_certificate_name(CTX, t->cert_path, password);
     fz_catch(CTX) {
-        char *prompt = pt_format("%s\n\nPassword:", fz_caught_message(CTX));
-        ask_password(t, prompt);
-        free(prompt);
+        /* only a wrong password is worth another try */
+        if (fz_caught(CTX) == FZ_ERROR_ARGUMENT) {
+            char *prompt = pt_format("%s\n\nPassword:", fz_caught_message(CTX));
+            ask_password(t, prompt);
+            free(prompt);
+        } else message_box(MSG_ERROR, "Sign with certificate", fz_caught_message(CTX), NULL, NULL);
         return;
     }
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
@@ -56,7 +59,7 @@ void cert_sign_start(tab *t)
         return;
     }
     const char *last = pt_settings_str(&app.settings, "signing_certificate");
-    char *start = last && *last ? pt_strdup(last) : pt_strdup(getenv("HOME"));
+    char *start = last && *last ? pt_strdup(last) : pt_dirname(t->path);
     file_dialog(FD_OPEN, "Choose a certificate (.p12 or .pfx)", start, "Certificates", "*.p12 *.pfx", cert_chosen, t);
     free(start);
 }

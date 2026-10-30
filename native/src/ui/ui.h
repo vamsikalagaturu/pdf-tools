@@ -221,8 +221,9 @@ void status(const char *text, double seconds);
 /* ---- the app ---- */
 typedef struct tab tab;
 typedef struct workspace workspace;
-typedef enum { TAB_HOME, TAB_DOC, TAB_WORKSPACE } tab_kind;
-typedef struct { tab_kind kind; tab *doc; } win_tab;
+typedef enum { TAB_HOME, TAB_DOC, TAB_WORKSPACE, TAB_COMPARE } tab_kind;
+typedef struct compare compare;
+typedef struct { tab_kind kind; tab *doc; compare *cmp; } win_tab;
 PT_VEC(win_tabs, win_tab);
 typedef struct {
     win_tabs tabs;
@@ -242,6 +243,7 @@ extern app_state app;
 
 void app_open_paths(pt_strs *paths);
 void app_add_doc(tab *t);   /* show a loaded document tab after the current one */
+void app_add_compare(compare *c);   /* takes ownership */
 void app_open_dialog(void);
 void app_go_home(void);
 void app_open_workspace(tab *t);
