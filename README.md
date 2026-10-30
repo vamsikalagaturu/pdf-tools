@@ -32,11 +32,11 @@ platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.a
 ```
 
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
-dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it as the AppImage,
-which adds the English OCR data. To install the binary instead, with its man page, desktop entry and icon:
+dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it with the English
+OCR data as the AppImage. To install the binary instead, with its man page, desktop entry, icon and OCR data:
 
 ```sh
-cmake --install ~/.cache/pdf-tools/linux/build --prefix ~/.local
+platform/linux/build.sh install ~/.local
 ```
 
 The scripts download and build the pinned dependencies ([MuPDF](https://mupdf.com) with

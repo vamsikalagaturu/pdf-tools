@@ -5,7 +5,17 @@
 # the window system's libraries come from the system at run time.
 # Needs a C/C++ compiler, make, CMake, pkg-config, curl, git and the X11/Wayland development headers (README.md).
 # Output: $PT_LINUX_OUT/out (default ~/.cache/pdf-tools/linux). Re-runs are incremental.
+# `build.sh install PREFIX` installs the program with its man page, launcher entry, icon and OCR data into PREFIX
+# (e.g. ~/.local) instead of packing the AppImage.
 set -euo pipefail
+
+USAGE="usage: $0 [appimage | install PREFIX]"
+MODE=${1:-appimage}
+case "$MODE" in
+appimage) ;;
+install) PREFIX=${2:?$USAGE} ;;
+*) echo "$USAGE" >&2; exit 1 ;;
+esac
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -87,17 +97,20 @@ step "PDF Tools"
 export PKG_CONFIG_PATH="$ROOT/pkgconfig:$PCRE2_OUT/lib/pkgconfig:$OPENSSL_OUT/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 cmake --fresh -S "$REPO" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RAYLIB_OUT" \
     -DCMAKE_C_FLAGS_RELEASE="$SIZE_CFLAGS -DNDEBUG" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-    -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections" >/dev/null
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections" -DPT_TESSDATA="$ROOT/dl/eng.traineddata" >/dev/null
 cmake --build "$ROOT/build" -j"$JOBS"
 ctest --test-dir "$ROOT/build" --output-on-failure
+
+if [ "$MODE" = install ]; then
+    step "Install into $PREFIX"
+    cmake --install "$ROOT/build" --prefix "$PREFIX" --component app --strip
+    exit 0
+fi
 
 step "PDF_Tools-$ARCH.AppImage"
 APPDIR=$ROOT/AppDir
 rm -rf "$APPDIR"
-DESTDIR=$APPDIR cmake --install "$ROOT/build" --prefix /usr --component app >/dev/null
-strip "$APPDIR/usr/bin/pdf-tools"
-mkdir -p "$APPDIR/usr/share/pdf-tools/tessdata"
-cp "$ROOT/dl/eng.traineddata" "$APPDIR/usr/share/pdf-tools/tessdata/"
+DESTDIR=$APPDIR cmake --install "$ROOT/build" --prefix /usr --component app --strip >/dev/null
 cp "$REPO/assets/pdf-tools.desktop" "$APPDIR/pdf-tools.desktop"
 cp "$REPO/assets/logo.svg" "$APPDIR/pdf-tools.svg"
 ln -s usr/bin/pdf-tools "$APPDIR/AppRun"

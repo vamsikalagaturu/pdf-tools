@@ -174,9 +174,14 @@ else()
   target_compile_options(pdf-tools PRIVATE -Wall -Wextra -Wno-clobbered -Wno-unused-parameter)
 endif()
 
-# `cmake --install`: the program, its man page, launcher entry and icon (component app); the core library with its
-# header and a pkg-config file for other programs (component dev)
+# `cmake --install`: the program, its man page, launcher entry, icon and OCR data (component app); the core library
+# with its header and a pkg-config file for other programs (component dev)
+set(PT_TESSDATA "" CACHE FILEPATH "Tesseract eng.traineddata to install with the program")
 install(TARGETS pdf-tools RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT app)
+if(PT_TESSDATA)
+  # pt_tessdata_dir looks in <bin>/../share/pdf-tools/tessdata
+  install(FILES ${PT_TESSDATA} DESTINATION ${CMAKE_INSTALL_DATADIR}/pdf-tools/tessdata COMPONENT app)
+endif()
 install(FILES man/pdf-tools.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1 COMPONENT app)
 install(FILES assets/pdf-tools.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT app)
 install(FILES assets/logo.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps RENAME pdf-tools.svg COMPONENT app)
