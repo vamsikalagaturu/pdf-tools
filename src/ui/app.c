@@ -760,7 +760,13 @@ int pt_app_main(int argc, char **argv)
         return 1;
     }
     SetExitKey(KEY_NULL);
+#ifdef __ANDROID__
+    /* the swap waits for vsync: a sleeping 60 fps cap held frames for uneven numbers of a 90/120 Hz display's
+     * refreshes, and moving pages juddered */
+    SetTargetFPS(0);
+#else
     SetTargetFPS(60);
+#endif
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);
     ui_input_init();
 #ifdef __APPLE__

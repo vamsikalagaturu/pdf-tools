@@ -736,8 +736,13 @@ static void draw_page(tab *t, int p)
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
     DrawRectangleRec(r, WHITE);
     Texture2D *tex = page_texture(t, p, t->zoom * UI_PX);
-    if (tex)
-        DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, r, (Vector2){0, 0}, 0, WHITE);
+    if (!tex) return;
+    /* a texture rendered for this zoom goes on whole device pixels at its own size: placed between pixels, its
+     * text was resampled differently in every frame of a scroll and shimmered */
+    float px = UI_PX;
+    if (fabsf(tex->width - r.width * px) < 2 && fabsf(tex->height - r.height * px) < 2)
+        r = (Rectangle){roundf(r.x * px) / px, roundf(r.y * px) / px, tex->width / px, tex->height / px};
+    DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, r, (Vector2){0, 0}, 0, WHITE);
 }
 
 static void draw_crop(tab *t, int i)
@@ -954,6 +959,8 @@ void view_frame(tab *t, Rectangle area)
         if (ui.active == id && ui.down)
             t->scroll_x = fminf(fmaxf((ui.mouse.x - grab - track.x) / fmaxf(1, track.width - w), 0), 1) * max;
         ui_scroll_draw(track, thumb, ui.active == id || ui_hover(track));
+        if (content_h > area.height)
+            DrawRectangleRec((Rectangle){track.x + track.width, track.y, 12, 12}, ui_scroll_lane());
     }
     popover_frame(t);
 }

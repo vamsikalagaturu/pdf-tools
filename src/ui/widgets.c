@@ -740,9 +740,11 @@ float ui_scrollbar(unsigned id, Rectangle track, float content, float view, floa
 }
 
 /* a solid track the full length and a solid thumb, lighter while hovered or dragged */
+Color ui_scroll_lane(void) { return pal.dark_mode ? (Color){38, 38, 38, 255} : (Color){224, 224, 224, 255}; }
+
 void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot)
 {
-    Color lane = pal.dark_mode ? (Color){38, 38, 38, 255} : (Color){224, 224, 224, 255};
+    Color lane = ui_scroll_lane();
     Color bar = pal.dark_mode ? (hot ? (Color){150, 150, 150, 255} : (Color){110, 110, 110, 255})
                               : (hot ? (Color){120, 120, 120, 255} : (Color){160, 160, 160, 255});
     DrawRectangleRec(track, lane);
