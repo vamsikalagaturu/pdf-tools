@@ -454,21 +454,147 @@ static void t_close(void *ctx, intptr_t a)
 }
 
 #define TAB_FS 15.0f
+#define TAB_MIN_W 150.0f
+#define TAB_MAX_W 260.0f
+#define TAB_LIST_W 36.0f
+
+static char *win_tab_title(const win_tab *w)
+{
+    return w->kind == TAB_HOME        ? pt_strdup("Home")
+           : w->kind == TAB_WORKSPACE ? pt_strdup("Combine & split")
+           : w->kind == TAB_COMPARE   ? compare_title(w->cmp)
+                                      : tab_title(w->doc);
+}
+
+static float win_tab_width(const win_tab *w, const char *title)
+{
+    float natural = text_width(title, TAB_FS, F_BOLD) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0);
+    return fminf(TAB_MAX_W, fmaxf(TAB_MIN_W, natural));
+}
+
+/* ---- "Go to tab": the open tabs, filtered by what is typed (title or path) ---- */
+
+typedef struct {
+    ui_text filter;
+    int sel;
+    float scroll;
+} tab_list;
+
+static int contains_nocase(const char *hay, const char *needle)
+{
+    size_t n = strlen(needle);
+    for (; *hay; hay++)
+        if (!strncasecmp(hay, needle, n)) return 1;
+    return 0;
+}
+
+static int tab_matches(int i, const char *needle)
+{
+    if (!*needle) return 1;
+    char *title = win_tab_title(&app.tabs.v[i]);
+    const char *path = app.tabs.v[i].kind == TAB_DOC ? app.tabs.v[i].doc->path : NULL;
+    int hit = contains_nocase(title, needle) || (path && contains_nocase(path, needle));
+    free(title);
+    return hit;
+}
+
+static int tab_list_frame(dialog *d, Rectangle b)
+{
+    tab_list *l = d->data;
+    /* the arrows pick a row: read before the text field, which takes them for its caret */
+    if (ui_key(KEY_DOWN)) l->sel++;
+    if (ui_key(KEY_UP)) l->sel--;
+    int ev = ui_textfield(ui_id(l, 1), &l->filter, (Rectangle){b.x, b.y, b.width, 30}, 1);
+    if (ui.focus != &l->filter) text_focus(&l->filter);
+    pt_ints shown = {0};
+    for (int i = 0; i < app.tabs.n; i++)
+        if (tab_matches(i, text_get(&l->filter))) pt_push(shown, i);
+    if (ev & TE_CHANGED) l->sel = 0, l->scroll = 0;
+    l->sel = shown.n ? (l->sel < 0 ? 0 : l->sel >= shown.n ? shown.n - 1 : l->sel) : 0;
+    const float row = 34;
+    Rectangle list = {b.x, b.y + 40, b.width, b.height - 40};
+    if (l->sel * row < l->scroll) l->scroll = l->sel * row;
+    if ((l->sel + 1) * row > l->scroll + list.height) l->scroll = (l->sel + 1) * row - list.height;
+    if (ui_hover(list) && ui.wheel) l->scroll -= ui.wheel * row * 2;
+    l->scroll = fmaxf(0, fminf(l->scroll, shown.n * row - list.height));
+    int pick = ev & TE_SUBMIT ? l->sel : -1;
+    ui_scissor_begin(list);
+    for (int k = 0; k < shown.n; k++) {
+        Rectangle rr = {list.x, list.y + k * row - l->scroll, list.width, row};
+        if (rr.y + row < list.y || rr.y > list.y + list.height) continue;
+        int i = shown.v[k], hover = ui_hover(rr);
+        if (k == l->sel) DrawRectangleRec(rr, pal.highlight);
+        else if (hover) DrawRectangleRec(rr, with_alpha(pal.light, 160));
+        Color fg = k == l->sel ? pal.highlighted_text : pal.text;
+        char *title = win_tab_title(&app.tabs.v[i]);
+        char *el = elide_middle(title, rr.width - 24, FS_NORMAL, i == app.current ? F_BOLD : F_REGULAR);
+        draw_text_in(el, (Rectangle){rr.x + 12, rr.y, rr.width - 24, row}, FS_NORMAL,
+                     i == app.current ? F_BOLD : F_REGULAR, fg, -1);
+        free(el), free(title);
+        if (hover && ui.released) pick = k;
+    }
+    ui_scissor_end();
+    if (pick >= 0 && pick < shown.n) app.current = shown.v[pick];
+    pt_vec_free(shown);
+    return pick >= 0 || (ev & TE_CANCEL);
+}
+
+static void tab_list_free(dialog *d)
+{
+    tab_list *l = d->data;
+    if (ui.focus == &l->filter) ui.focus = NULL;
+    text_free(&l->filter);
+    free(l);
+}
+
+static void tab_list_open(void)
+{
+    dialog *d = calloc(1, sizeof *d);
+    tab_list *l = calloc(1, sizeof *l);
+    l->filter.placeholder = "Search open tabs";
+    l->filter.size = FS_NORMAL;
+    *d = (dialog){"Go to tab", 520, 460, tab_list_frame, tab_list_free, l, 1};
+    dialog_push(d);
+}
 
 static void tab_strip(Rectangle r)
 {
     DrawRectangleRec(r, pal.window);
     ui_separator_h(r.x, r.x + r.width, r.y + r.height - 1);
-    float x = r.x;
     int n = app.tabs.n, move_to = -1;
-    float avail = r.width - 4, each = fminf(260, avail / fmaxf(1, n));
+    /* the tabs scroll under the strip when they do not fit; the button at its end lists and searches them */
+    Rectangle strip = {r.x, r.y, r.width - TAB_LIST_W, r.height};
+    float total = 0, cur_x = 0, cur_w = 0;
+    for (int i = 0; i < n; i++) {
+        char *title = win_tab_title(&app.tabs.v[i]);
+        float tw = win_tab_width(&app.tabs.v[i], title);
+        if (i == app.current) cur_x = total, cur_w = tw;
+        total += tw + 1;
+        free(title);
+    }
+    float max_scroll = fmaxf(0, total - strip.width);
+    if (app.current != app.tab_shown) {
+        if (cur_x < app.tab_scroll) app.tab_scroll = cur_x;
+        if (cur_x + cur_w > app.tab_scroll + strip.width) app.tab_scroll = cur_x + cur_w - strip.width;
+        app.tab_shown = app.current;
+    }
+    if (ui_hover(strip) && (ui.wheel || ui.wheel_x)) app.tab_scroll -= (ui.wheel + ui.wheel_x) * 60;
+    app.tab_scroll = fmaxf(0, fminf(app.tab_scroll, max_scroll));
+    if (ui_button(ui_id(&app.tabs, 600),
+                  (Rectangle){r.x + r.width - TAB_LIST_W + 2, r.y + 2, TAB_LIST_W - 4, r.height - 4}, NULL, "find",
+                  B_FLAT | B_ICON_ONLY, "Go to tab..."))
+        tab_list_open();
+    ui_scissor_begin(strip);
+    float x = strip.x - app.tab_scroll;
     for (int i = 0; i < n; i++) {
         win_tab *w = &app.tabs.v[i];
-        char *title = w->kind == TAB_HOME        ? pt_strdup("Home")
-                      : w->kind == TAB_WORKSPACE ? pt_strdup("Combine & split")
-                      : w->kind == TAB_COMPARE   ? compare_title(w->cmp)
-                                                 : tab_title(w->doc);
-        float tw = fminf(each, text_width(title, TAB_FS, F_BOLD) + 30 + 22 + (w->kind != TAB_DOC ? 20 : 0));
+        char *title = win_tab_title(w);
+        float tw = win_tab_width(w, title);
+        if (x + tw < strip.x || x > strip.x + strip.width) {
+            x += tw + 1;
+            free(title);
+            continue;
+        }
         Rectangle tr = {x, r.y, tw, r.height};
         int hover = ui_hover(tr), current = i == app.current;
         /* the current tab filled with the accent colour, light text; the others plain, dimmer text */
@@ -490,6 +616,7 @@ static void tab_strip(Rectangle r)
         void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
         if (ui_button(ui_id(owner, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
             free(title);
+            ui_scissor_end();
             app_close_tab(i);
             return;
         }
@@ -501,6 +628,7 @@ static void tab_strip(Rectangle r)
         }
         if (hover && ui.mpressed) {
             free(title);
+            ui_scissor_end();
             app_close_tab(i);
             return;
         }
@@ -515,6 +643,21 @@ static void tab_strip(Rectangle r)
             move_to = i;
         x += tw + 1;
         free(title);
+    }
+    ui_scissor_end();
+    /* a thin scrollbar along the bottom of the strip, draggable */
+    if (max_scroll > 0) {
+        Rectangle track = {strip.x, r.y + r.height - 4, strip.width, 4};
+        float tw = fmaxf(30, track.width * strip.width / total);
+        Rectangle thumb = {track.x + (track.width - tw) * (app.tab_scroll / max_scroll), track.y, tw, track.height};
+        static float grab;
+        unsigned id = ui_id(&app.tabs, 601);
+        Rectangle grip = {thumb.x, r.y + r.height - 10, thumb.width, 10};
+        if (ui_hover(grip) && ui.pressed) ui.active = id, grab = ui.mouse.x - thumb.x;
+        if (ui.active == id && ui.down)
+            app.tab_scroll =
+                fminf(fmaxf((ui.mouse.x - grab - track.x) / fmaxf(1, track.width - tw), 0), 1) * max_scroll;
+        ui_scroll_draw(track, thumb, ui.active == id || ui_hover(grip));
     }
     if (move_to >= 0) {
         win_tab moving = app.tabs.v[app.current];

@@ -567,7 +567,9 @@ static int editing_key(int ctrl, int key)
 
 int ui_key(int key)
 {
-    if (ui.focus && editing_key(ui.ctrl, key)) return 0;
+    /* Up and Down do nothing in a one-line field, so lists under one (Go to tab) can take them */
+    int line_arrow = (key == KEY_UP || key == KEY_DOWN) && ui.focus && !((const ui_text *)ui.focus)->multiline;
+    if (ui.focus && editing_key(ui.ctrl, key) && !line_arrow) return 0;
     if (dialogs_open() && ui.layer != ui.modal) return 0;
     return key_pressed(key);
 }
