@@ -21,6 +21,10 @@ A PDF viewer and editor for Linux, macOS and Android, with a command line for sc
 Each push builds a Linux AppImage, a macOS `.dmg` and an Android APK on GitHub Actions (artifacts
 `PDF-Tools-Linux`, `PDF-Tools-macOS` and `PDF-Tools-Android`).
 
+On Linux, make the AppImage executable and run `./PDF_Tools-x86_64.AppImage --install-desktop` once to add it to
+the applications menu and to "Open with" for PDFs (`--uninstall-desktop` removes it; after moving the AppImage, run
+it again).
+
 On a Mac the app is not notarized: open it the first time with right-click > Open.
 
 ## Build

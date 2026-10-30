@@ -858,18 +858,31 @@ static void log_to_raylib(pt_log_level level, const char *message)
     TraceLog(RAYLIB_LEVEL[level], "%s", message);
 }
 
+/* so "Open with" lists the change without a new login */
+static void refresh_desktop_database(void)
+{
+    char *base = pt_data_dir(), *dir = pt_format("%s/applications", base);
+    char *argv[] = {"update-desktop-database", dir, NULL};
+    run_detached(argv);
+    free(dir);
+    free(base);
+}
+
 int pt_app_main(int argc, char **argv)
 {
     if (argc == 2 && (!strcmp(argv[1], "--install-desktop") || !strcmp(argv[1], "--uninstall-desktop"))) {
         if (!strcmp(argv[1], "--install-desktop")) {
+            /* inside an AppImage the program runs from a mount that is gone after exit; $APPIMAGE is the file */
+            const char *appimage = getenv("APPIMAGE");
             char *entry, *icon;
-            if (pt_desktop_install(exe_path(argv[0]), &entry, &icon)) return 1;
+            if (pt_desktop_install(appimage && *appimage ? appimage : exe_path(argv[0]), &entry, &icon)) return 1;
             printf("wrote %s\nwrote %s\n", entry, icon);
         } else {
             pt_strs removed = {0};
             if (!pt_desktop_uninstall(&removed)) printf("nothing to remove\n");
             for (int i = 0; i < removed.n; i++) printf("removed %s\n", removed.v[i]);
         }
+        refresh_desktop_database();
         return 0;
     }
     if (argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))) {

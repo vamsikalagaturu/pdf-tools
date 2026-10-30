@@ -1,4 +1,4 @@
-/* Per-user app launcher integration: the .desktop entry and icon behind `pdf-tools-gui --install-desktop`. */
+/* Per-user app launcher integration: the .desktop entry and icon behind `pdf-tools --install-desktop`. */
 #include "pt_core.h"
 #include <stdlib.h>
 #include <string.h>

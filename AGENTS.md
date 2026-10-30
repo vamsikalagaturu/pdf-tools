@@ -74,6 +74,7 @@ pdf-tools scrub in.pdf -o out.pdf                            # metadata, attachm
 pdf-tools file.pdf ...                         # opens tabs in the window used last (starts the app if needed)
 pdf-tools --new-window file.pdf ...            # opens them in a new window
 pdf-tools --forward file.pdf LINE source.tex   # scrolls the window showing that PDF to the source line
+pdf-tools --install-desktop                    # launcher entry + icon in ~/.local/share (--uninstall-desktop removes)
 ```
 
 Edits made in the window (redactions, text, signatures, forms, page changes) only reach the
