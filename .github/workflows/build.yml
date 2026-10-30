@@ -31,7 +31,9 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36.1" \
             "ndk;28.2.13676358" >/dev/null
       - name: Build the APK (platform/android/build.sh)
-        run: PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" platform/android/build.sh
+        run: |
+          PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" ANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
+            platform/android/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: PDF-Tools-Android

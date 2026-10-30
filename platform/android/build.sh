@@ -92,7 +92,8 @@ cmake -S "$HERE" -B "$ROOT/build" -G Ninja \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
     -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" \
-    -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON -DCMAKE_FIND_ROOT_PATH="$OPENSSL_OUT" >/dev/null
+    -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON -DCMAKE_FIND_ROOT_PATH="$OPENSSL_OUT" \
+    -DPKG_CONFIG_EXECUTABLE="$ROOT/nopkgconfig/pkg-config" >/dev/null
 cmake --build "$ROOT/build" --target pdf-tools -j"$JOBS"
 
 step "dex"
