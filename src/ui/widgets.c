@@ -130,32 +130,45 @@ static float width_n(const char *s, int n, float size, font_kind f)
     return w;
 }
 
+/* s with its middle cut to `keep` bytes and an ellipsis between, on character boundaries */
+static char *cut_middle(const char *s, int len, int keep)
+{
+    int head = keep / 2, t0 = len - (keep - head);
+    while (head > 0 && ((unsigned char)s[head] & 0xc0) == 0x80) head--;
+    while (t0 < len && ((unsigned char)s[t0] & 0xc0) == 0x80) t0++;
+    return pt_format("%.*s\xe2\x80\xa6%s", head, s, s + t0);
+}
+
+/* the longest cut that fits, found by bisection: the width grows with what is kept */
 char *elide_middle(const char *s, float width, float size, font_kind f)
 {
     if (text_width(s, size, f) <= width) return pt_strdup(s);
-    int len = (int)strlen(s);
-    for (int keep = len; keep > 0; keep--) {
-        int head = keep / 2, tail = keep - head;
-        while (head > 0 && ((unsigned char)s[head] & 0xc0) == 0x80) head--;
-        int t0 = len - tail;
-        while (t0 < len && ((unsigned char)s[t0] & 0xc0) == 0x80) t0++;
-        char *out = pt_format("%.*s\xe2\x80\xa6%s", head, s, s + t0);
-        if (text_width(out, size, f) <= width) return out;
+    int len = (int)strlen(s), lo = 0, hi = len - 1;
+    while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        char *out = cut_middle(s, len, mid);
+        if (text_width(out, size, f) <= width) lo = mid;
+        else hi = mid - 1;
         free(out);
     }
-    return pt_strdup("\xe2\x80\xa6");
+    return lo ? cut_middle(s, len, lo) : pt_strdup("\xe2\x80\xa6");
 }
 
 char *elide_right(const char *s, float width, float size, font_kind f)
 {
     if (text_width(s, size, f) <= width) return pt_strdup(s);
-    int len = (int)strlen(s);
-    for (int n = utf8_prev(s, len); n > 0; n = utf8_prev(s, n)) {
-        char *out = pt_format("%.*s\xe2\x80\xa6", n, s);
-        if (text_width(out, size, f) <= width) return out;
+    int len = (int)strlen(s), lo = 0, hi = utf8_prev(s, len);
+    while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        while (mid > lo && ((unsigned char)s[mid] & 0xc0) == 0x80) mid--;
+        if (mid == lo && (mid = utf8_next(s, len, lo)) > hi) break;
+        char *out = pt_format("%.*s\xe2\x80\xa6", mid, s);
+        int fits = text_width(out, size, f) <= width;
         free(out);
+        if (fits) lo = mid;
+        else hi = mid - 1;
     }
-    return pt_strdup("\xe2\x80\xa6");
+    return pt_format("%.*s\xe2\x80\xa6", lo, s);
 }
 
 int text_index_at(const char *s, int len, float x, float size, font_kind f)
@@ -2124,72 +2137,81 @@ static int desktop_cursor_px(void)
     return (int)roundf(base * (scale > 0.5f ? scale : 1));
 }
 
-static void make_cursors(void)
+static char cursor_tried[CUR_COUNT];
+
+/* cursors are made when first shown, at the desktop's cursor size; a size change drops them all */
+static void reset_cursors(void)
 {
-    for (int i = 0; i < CUR_COUNT; i++)
-        if (cursors[i]) glfwDestroyCursor(cursors[i]), cursors[i] = NULL;
-    cursor_px = desktop_cursor_px();
-    int size = cursor_px;
-    float s = size / 24.0f;
     for (int i = 0; i < CUR_COUNT; i++) {
-        const cursor_spec *c = &SPECS[i];
-        const pt_icon_data *d = lucide_file(c->file);
-        if (!d) continue;
-        char *src = pt_strdup((const char *)d->data), ink[8], outline[8], fill[16];
-        svg_hex(BLACK, ink), svg_hex(WHITE, outline);
-        if (c->filled) {
-            snprintf(fill, sizeof fill, "fill=\"%s\"", ink);
-            char *f = replace_all(src, "fill=\"none\"", fill);
-            free(src);
-            src = f;
-        }
-        float hx = c->hx, hy = c->hy;
-        fz_matrix ctm = fz_scale(s, s);
-        if (c->turn) {
-            /* the hotspot moves to (4, 3) so the turned shape and its outline stay inside the cursor image */
-            ctm = fz_concat(fz_concat(fz_concat(fz_translate(-hx, -hy), fz_rotate(c->turn)), fz_translate(4, 3)),
-                            fz_scale(s, s));
-            hx = 4, hy = 3;
-        }
-        unsigned char *layers[2] = {0};
-        /* the icon's own 2-unit stroke, laid over a wider white one that gives the outline */
-        const char *colour[2] = {outline, ink};
-        static const char *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
-        for (int k = 0; k < 2; k++) {
-            char *a = replace_all(src, "currentColor", colour[k]);
-            char *b = replace_all(a, "stroke-width=\"2\"", width[k]);
-            layers[k] = render_svg(b, size, ctm);
-            free(a);
-            free(b);
-        }
-        free(src);
-        if (!layers[0] || !layers[1]) {
-            free(layers[0]);
-            free(layers[1]);
-            continue;
-        }
-        /* black over white */
-        for (int p = 0; p < size * size; p++) {
-            unsigned char *w = layers[0] + p * 4, *bk = layers[1] + p * 4;
-            float ab = bk[3] / 255.0f, aw = w[3] / 255.0f, a = ab + aw * (1 - ab);
-            for (int k = 0; k < 3; k++) w[k] = a > 0 ? (unsigned char)((bk[k] * ab + w[k] * aw * (1 - ab)) / a) : 0;
-            w[3] = (unsigned char)(a * 255);
-        }
-        GLFWimage img = {size, size, layers[0]};
-        cursors[i] = glfwCreateCursor(&img, (int)roundf(hx * size / 24), (int)roundf(hy * size / 24));
-        free(layers[0]);
-        free(layers[1]);
+        if (cursors[i]) glfwDestroyCursor(cursors[i]), cursors[i] = NULL;
+        cursor_tried[i] = 0;
     }
+    cursor_px = desktop_cursor_px();
     shown = CUR_COUNT;
 }
 
-void cursors_init(void) { make_cursors(); }
+static void make_cursor(int i)
+{
+    cursor_tried[i] = 1;
+    int size = cursor_px;
+    float s = size / 24.0f;
+    const cursor_spec *c = &SPECS[i];
+    const pt_icon_data *d = lucide_file(c->file);
+    if (!d) return;
+    char *src = pt_strdup((const char *)d->data), ink[8], outline[8], fill[16];
+    svg_hex(BLACK, ink), svg_hex(WHITE, outline);
+    if (c->filled) {
+        snprintf(fill, sizeof fill, "fill=\"%s\"", ink);
+        char *f = replace_all(src, "fill=\"none\"", fill);
+        free(src);
+        src = f;
+    }
+    float hx = c->hx, hy = c->hy;
+    fz_matrix ctm = fz_scale(s, s);
+    if (c->turn) {
+        /* the hotspot moves to (4, 3) so the turned shape and its outline stay inside the cursor image */
+        ctm = fz_concat(fz_concat(fz_concat(fz_translate(-hx, -hy), fz_rotate(c->turn)), fz_translate(4, 3)),
+                        fz_scale(s, s));
+        hx = 4, hy = 3;
+    }
+    unsigned char *layers[2] = {0};
+    /* the icon's own 2-unit stroke, laid over a wider white one that gives the outline */
+    const char *colour[2] = {outline, ink};
+    static const char *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
+    for (int k = 0; k < 2; k++) {
+        char *a = replace_all(src, "currentColor", colour[k]);
+        char *b = replace_all(a, "stroke-width=\"2\"", width[k]);
+        layers[k] = render_svg(b, size, ctm);
+        free(a);
+        free(b);
+    }
+    free(src);
+    if (!layers[0] || !layers[1]) {
+        free(layers[0]);
+        free(layers[1]);
+        return;
+    }
+    /* black over white */
+    for (int p = 0; p < size * size; p++) {
+        unsigned char *w = layers[0] + p * 4, *bk = layers[1] + p * 4;
+        float ab = bk[3] / 255.0f, aw = w[3] / 255.0f, a = ab + aw * (1 - ab);
+        for (int k = 0; k < 3; k++) w[k] = a > 0 ? (unsigned char)((bk[k] * ab + w[k] * aw * (1 - ab)) / a) : 0;
+        w[3] = (unsigned char)(a * 255);
+    }
+    GLFWimage img = {size, size, layers[0]};
+    cursors[i] = glfwCreateCursor(&img, (int)roundf(hx * size / 24), (int)roundf(hy * size / 24));
+    free(layers[0]);
+    free(layers[1]);
+}
+
+void cursors_init(void) { reset_cursors(); }
 
 void set_cursor(cursor_kind c) { wanted = c; }
 
 void cursor_commit(void)
 {
-    if (cursor_px != desktop_cursor_px()) make_cursors();
+    if (cursor_px != desktop_cursor_px()) reset_cursors();
+    if (!cursors[wanted] && !cursor_tried[wanted]) make_cursor(wanted);
     if (wanted != shown && cursors[wanted]) {
         glfwSetCursor(glfwGetCurrentContext(), cursors[wanted]);
         shown = wanted;

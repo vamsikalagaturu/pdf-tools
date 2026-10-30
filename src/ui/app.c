@@ -564,14 +564,24 @@ static void tab_strip(Rectangle r)
     int n = app.tabs.n, move_to = -1;
     /* the tabs scroll under the strip when they do not fit; the button at its end lists and searches them */
     Rectangle strip = {r.x, r.y, r.width - TAB_LIST_W, r.height};
+    /* titles once per frame; a width is measured again only when its title changed */
+    static pt_strs titles;
+    static float *widths;
+    static int widths_cap;
+    widths = pt_grow(widths, &widths_cap, n, sizeof *widths);
     float total = 0, cur_x = 0, cur_w = 0;
     for (int i = 0; i < n; i++) {
         char *title = win_tab_title(&app.tabs.v[i]);
-        float tw = win_tab_width(&app.tabs.v[i], title);
-        if (i == app.current) cur_x = total, cur_w = tw;
-        total += tw + 1;
-        free(title);
+        if (i < titles.n && !strcmp(title, titles.v[i])) free(title);
+        else {
+            widths[i] = win_tab_width(&app.tabs.v[i], title);
+            if (i < titles.n) free(titles.v[i]), titles.v[i] = title;
+            else pt_push(titles, title);
+        }
+        if (i == app.current) cur_x = total, cur_w = widths[i];
+        total += widths[i] + 1;
     }
+    while (titles.n > n) free(titles.v[--titles.n]);
     float max_scroll = fmaxf(0, total - strip.width);
     if (app.current != app.tab_shown) {
         if (cur_x < app.tab_scroll_to) app.tab_scroll_to = cur_x;
@@ -595,11 +605,10 @@ static void tab_strip(Rectangle r)
     float x = strip.x - app.tab_scroll;
     for (int i = 0; i < n; i++) {
         win_tab *w = &app.tabs.v[i];
-        char *title = win_tab_title(w);
-        float tw = win_tab_width(w, title);
+        const char *title = titles.v[i];
+        float tw = widths[i];
         if (x + tw < strip.x || x > strip.x + strip.width) {
             x += tw + 1;
-            free(title);
             continue;
         }
         Rectangle tr = {x, r.y, tw, r.height};
@@ -622,7 +631,6 @@ static void tab_strip(Rectangle r)
         int on_close = ui_hover(close);
         void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
         if (ui_button(ui_id(owner, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
-            free(title);
             ui_scissor_end();
             app_close_tab(i);
             return;
@@ -634,7 +642,6 @@ static void tab_strip(Rectangle r)
             app.tab_drag_x = ui.mouse.x;
         }
         if (hover && ui.mpressed) {
-            free(title);
             ui_scissor_end();
             app_close_tab(i);
             return;
@@ -649,7 +656,6 @@ static void tab_strip(Rectangle r)
             ui.mouse.x >= tr.x && ui.mouse.x < tr.x + tr.width)
             move_to = i;
         x += tw + 1;
-        free(title);
     }
     ui_scissor_end();
     /* a scrollbar along the bottom of the strip, draggable, brighter while the pointer is over the strip */

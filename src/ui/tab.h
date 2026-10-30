@@ -112,6 +112,9 @@ typedef struct {
     ui_text text;
     int fit_px;
     int choice;
+    /* the last fit, kept until the text or the field's size changes */
+    unsigned fit_hash;
+    float fit_w, fit_h, fit_size;
 } field_editor;
 PT_VEC(field_editors, field_editor);
 

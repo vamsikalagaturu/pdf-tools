@@ -1175,10 +1175,15 @@ static int fits(const char *text, float px, float w, float h, int multiline)
 static float fit_text(field_info *f, field_editor *e, fz_rect r)
 {
     float w = r.x1 - r.x0, h = r.y1 - r.y0;
+    const char *text = text_get(&e->text);
+    unsigned hash = 2166136261u; /* FNV-1a */
+    for (const char *c = text; *c; c++) hash = (hash ^ (unsigned char)*c) * 16777619u;
+    if (e->fit_size > 0 && hash == e->fit_hash && w == e->fit_w && h == e->fit_h) return e->fit_size;
     int start = f->fontsize > 0 ? (int)lroundf(f->fontsize) : f->multiline ? 12 : (int)fminf(12, lroundf(h * 0.75f));
     int px = start > MIN_FIELD_PX ? start : MIN_FIELD_PX;
-    while (px > MIN_FIELD_PX && !fits(text_get(&e->text), (float)px, w, h, f->multiline)) px--;
+    while (px > MIN_FIELD_PX && !fits(text, (float)px, w, h, f->multiline)) px--;
     e->fit_px = px < start ? px : 0;
+    e->fit_hash = hash, e->fit_w = w, e->fit_h = h, e->fit_size = (float)px;
     return (float)px;
 }
 
