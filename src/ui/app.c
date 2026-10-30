@@ -574,11 +574,18 @@ static void tab_strip(Rectangle r)
     }
     float max_scroll = fmaxf(0, total - strip.width);
     if (app.current != app.tab_shown) {
-        if (cur_x < app.tab_scroll) app.tab_scroll = cur_x;
-        if (cur_x + cur_w > app.tab_scroll + strip.width) app.tab_scroll = cur_x + cur_w - strip.width;
+        if (cur_x < app.tab_scroll_to) app.tab_scroll_to = cur_x;
+        if (cur_x + cur_w > app.tab_scroll_to + strip.width) app.tab_scroll_to = cur_x + cur_w - strip.width;
         app.tab_shown = app.current;
     }
-    if (ui_hover(strip) && (ui.wheel || ui.wheel_x)) app.tab_scroll -= (ui.wheel + ui.wheel_x) * 60;
+    if (ui_hover(strip) && (ui.wheel || ui.wheel_x)) app.tab_scroll_to -= (ui.wheel + ui.wheel_x) * 120;
+    app.tab_scroll_to = fmaxf(0, fminf(app.tab_scroll_to, max_scroll));
+    /* glide to the target, closing most of the gap in about 0.1 s */
+    static double glided_at;
+    float dt = (float)fmin(0.05, ui.now - glided_at), gap = app.tab_scroll_to - app.tab_scroll;
+    glided_at = ui.now;
+    if (fabsf(gap) > 0.5f) app.tab_scroll += gap * fminf(1, dt * 20), ui.dirty = 1;
+    else app.tab_scroll = app.tab_scroll_to;
     app.tab_scroll = fmaxf(0, fminf(app.tab_scroll, max_scroll));
     if (ui_button(ui_id(&app.tabs, 600),
                   (Rectangle){r.x + r.width - TAB_LIST_W + 2, r.y + 2, TAB_LIST_W - 4, r.height - 4}, NULL, "find",
@@ -645,19 +652,22 @@ static void tab_strip(Rectangle r)
         free(title);
     }
     ui_scissor_end();
-    /* a thin scrollbar along the bottom of the strip, draggable */
+    /* a scrollbar along the bottom of the strip, draggable, brighter while the pointer is over the strip */
     if (max_scroll > 0) {
-        Rectangle track = {strip.x, r.y + r.height - 4, strip.width, 4};
+        Rectangle track = {strip.x, r.y + r.height - 6, strip.width, 6};
         float tw = fmaxf(30, track.width * strip.width / total);
         Rectangle thumb = {track.x + (track.width - tw) * (app.tab_scroll / max_scroll), track.y, tw, track.height};
         static float grab;
         unsigned id = ui_id(&app.tabs, 601);
-        Rectangle grip = {thumb.x, r.y + r.height - 10, thumb.width, 10};
+        Rectangle grip = {thumb.x, r.y + r.height - 12, thumb.width, 12};
         if (ui_hover(grip) && ui.pressed) ui.active = id, grab = ui.mouse.x - thumb.x;
         if (ui.active == id && ui.down)
-            app.tab_scroll =
+            app.tab_scroll = app.tab_scroll_to =
                 fminf(fmaxf((ui.mouse.x - grab - track.x) / fmaxf(1, track.width - tw), 0), 1) * max_scroll;
-        ui_scroll_draw(track, thumb, ui.active == id || ui_hover(grip));
+        /* brighter than the page scrollbars: it sits on the dark strip, thin */
+        DrawRectangleRec(track, pal.scroll_lane);
+        DrawRectangleRounded(thumb, 0.5f, 6,
+                             ui.active == id || ui_hover(grip) ? pal.window_text : pal.scroll_thumb_hot);
     }
     if (move_to >= 0) {
         win_tab moving = app.tabs.v[app.current];
@@ -892,7 +902,7 @@ int pt_app_main(int argc, char **argv)
     /* a Retina framebuffer: layout stays in points, text and pages render at ui.density */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
 #elif defined(__ANDROID__)
-    /* 4x MSAA cost a phone's high-density framebuffer bandwidth in every frame */
+    /* no MSAA: on a phone's dense framebuffer it costs bandwidth in every frame */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 #else
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
@@ -910,8 +920,7 @@ int pt_app_main(int argc, char **argv)
     }
     SetExitKey(KEY_NULL);
 #ifdef __ANDROID__
-    /* the swap waits for vsync: a sleeping 60 fps cap held frames for uneven numbers of a 90/120 Hz display's
-     * refreshes, and moving pages juddered */
+    /* vsync paces the frames: a sleeping 60 fps cap does not line up with a 90/120 Hz display */
     SetTargetFPS(0);
 #else
     SetTargetFPS(60);

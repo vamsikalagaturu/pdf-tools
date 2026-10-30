@@ -32,8 +32,8 @@ static int resizable(const pt_item *it)
 /* A shape between two screen points, as its annotation is drawn: rectangle and ellipse strokes inside their box,
  * lines with round ends, an arrow with an open head at b. */
 /* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
- * one strip, since overlapping pieces showed darker at every joint; the highlighter multiplies a light tint into
- * the page, as the saved annotation does. */
+ * one strip so its joints do not darken; the highlighter multiplies a light tint into the page, as the saved
+ * annotation does. */
 static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
 {
     w = fmaxf(1, w);
@@ -56,7 +56,7 @@ static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
         for (int k = 1; k < n; k++) {
             Vector2 a = v[k - 1], d = {v[k].x - a.x, v[k].y - a.y};
             double len = hypot(d.x, d.y);
-            /* in doubles with a least step: in floats a step below the position's precision never advanced */
+            /* doubles and a least step, so the walk always advances */
             for (double s = 0; s < len;) {
                 double phase = fmod(at + s, period);
                 double step = fmin(len - s, fmax(1e-3, phase < on ? on - phase : period - phase));
@@ -791,7 +791,7 @@ static float view_distance(tab *t, Rectangle r)
 
 /* Tiles of page p (on screen at r) that meet `want` (screen units): drawn when `draw`, else only requested, nearest
  * the middle of the view first. They render at the zoom level just above the zoom and are drawn k <= 1 times that,
- * each edge on a whole device pixel (between pixels text shimmered while scrolling); a new tile fades in. */
+ * each edge on a whole device pixel so text stays crisp while scrolling; a new tile fades in. */
 static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
 {
     float px = UI_PX, zoom = t->zoom * px, level = tile_level(zoom), k = zoom / level;
@@ -801,8 +801,7 @@ static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
     float x0 = fmaxf(0, (want.x * px - ox) / k), x1 = fminf(w, ((want.x + want.width) * px - ox) / k);
     float y0 = fmaxf(0, (want.y * px - oy) / k), y1 = fminf(h, ((want.y + want.height) * px - oy) / k);
     if (x1 <= x0 || y1 <= y0) return;
-    /* tiles of other levels, scaled, until this level's arrive: only the soft whole-page render showed while
-     * pinching */
+    /* tiles of other levels, scaled, until this level's arrive */
     if (draw)
         for (int i = 0; i < TILE_CACHE; i++) {
             if (!t->tiles[i].ok || t->tiles[i].page != p || fabsf(t->tiles[i].scale - level) < 0.001f) continue;

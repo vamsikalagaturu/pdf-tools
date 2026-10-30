@@ -280,8 +280,8 @@ typedef struct {
     int quit;
     int dragging_tab;
     float tab_drag_x;
-    float tab_scroll; /* the tab strip scrolls when its tabs do not fit */
-    int tab_shown;    /* the tab last scrolled into view */
+    float tab_scroll, tab_scroll_to; /* the tab strip scrolls (gliding to tab_scroll_to) when its tabs do not fit */
+    int tab_shown;                   /* the tab last scrolled into view */
 } app_state;
 extern app_state app;
 

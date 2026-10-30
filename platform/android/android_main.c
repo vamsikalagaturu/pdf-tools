@@ -310,9 +310,8 @@ static int release_velocity(double up_t, float *vx, float *vy)
     return 1;
 }
 
-/* Where the fingers were at time t (event clock): touch events reach a frame in uneven batches, so moving by what
- * arrived made a steady drag move unevenly. As Android's own resampling: interpolate between the samples around t,
- * past the last one extrapolate at most 8 ms. */
+/* Where the fingers were at time t (event clock), as Android's own resampling does: touch events reach a frame in
+ * uneven batches. Interpolates between the samples around t; past the last one extrapolates at most 8 ms. */
 static void resample(double t, float *x, float *y)
 {
     if (nsamples == 1 || t <= samples[0].t) {
@@ -607,8 +606,7 @@ void pt_android_frame(void)
     if (a->destroyRequested) app.quit = 1;
     pt_raylib_follow_window();
     file_dialogs_poll();
-    /* the fling steps by the frame interval: timed from the release event instead, the first frame after it
-     * barely moved and the page hitched as the finger left */
+    /* the fling steps by the frame interval, not the time since the release event, so its first step is a full one */
     static double last_frame;
     double now = GetTime(), dt = fmin(now - last_frame, 0.05);
     last_frame = now;

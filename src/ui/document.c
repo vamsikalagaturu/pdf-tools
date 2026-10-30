@@ -90,8 +90,7 @@ static void release_renders(tab *t)
     t->render_gen = render_new_gen();
 }
 
-/* A tab out of view gives its renders back (they come again when it is shown): every visited tab kept ~20 MB, and
- * 50 open documents grew to 1.5 GB. */
+/* a tab out of view gives its renders back; they are made again when it is shown */
 void tab_release_renders(tab *t)
 {
     int any = t->render_bytes != NULL;
@@ -748,11 +747,11 @@ static Texture2D texture_from_pixmap(fz_pixmap *pix)
 }
 
 /* ---- page renders on a worker thread ----
- * Interpreting and rasterizing a page took 10-30 ms, several frames at 120 Hz, so a scroll jerked whenever a page
- * came into view. A MuPDF document is used by one thread at a time, so the worker opens its own copy (the tab's
- * document written to memory once, see render_bytes) in a cloned context, records each page's display list once and
- * rasterizes a whole page or one tile of it, newest request first. Finished pixmaps become textures on the main
- * thread within a few ms per frame; until then the view shows the page at another zoom, its thumbnail, or white. */
+ * Interpreting and rasterizing happen off the main thread, so scrolling never waits for a page. A MuPDF document is
+ * used by one thread at a time, so each worker opens its own copy (see render_bytes) in a cloned context, records a
+ * page's display list once and rasterizes the whole page or one tile of it, nearest the middle of the view first.
+ * Finished pixmaps become textures on the main thread within a few ms per frame; until then the view shows the page
+ * at another zoom, its thumbnail, or white. */
 
 typedef struct render_job {
     unsigned gen;
@@ -967,7 +966,7 @@ static int same_job(const render_job *a, const render_job *b)
 /* queued, being drawn or drawn but not yet taken: the caller holds R.lock */
 static int render_known(const render_job *want)
 {
-    /* a waiting request takes the distance it has now: the view moved since it was made */
+    /* a waiting request takes its current distance, as the view may have moved */
     for (render_job *j = R.queue; j; j = j->next)
         if (same_job(j, want)) return j->prio = want->prio, j->visible |= want->visible, 1;
     for (render_job *j = R.done; j; j = j->next)
@@ -1046,7 +1045,7 @@ static void render_request(tab *t, render_job want)
 }
 
 /* a texture showing pix: `old`'s storage refilled when it has the same size and format (most tiles), else a new one;
- * creating and deleting a texture per render stalled the GL driver */
+ * refilling spares the GL driver an allocation per render */
 static Texture2D reuse_texture(Texture2D *old, fz_pixmap *pix)
 {
     if (old && pix && old->id && old->width == pix->w && old->height == pix->h && pix->n == 4 &&
@@ -1084,7 +1083,7 @@ static void cache_insert(tab *t, const render_job *j)
 static size_t tex_bytes(Texture2D tex) { return (size_t)tex.width * (size_t)tex.height * 4; }
 
 /* Into a free slot within TILE_BUDGET, else in place of the least recently drawn tile (refilling its texture when
- * the size matches). A tile drawn in this frame stays: pushing it out for one ahead of the view made it flicker. */
+ * the size matches). A tile drawn in this frame is on screen and stays. */
 static void tile_insert(tab *t, const render_job *j)
 {
     size_t need = j->pix ? (size_t)j->pix->w * (size_t)j->pix->h * 4 : 0;
@@ -1157,9 +1156,7 @@ Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, 
     for (int i = 0; i < TILE_CACHE; i++)
         if (t->tiles[i].ok && t->tiles[i].page == page && t->tiles[i].tx == tx && t->tiles[i].ty == ty &&
             fabsf(t->tiles[i].scale - scale) < 0.001f) {
-            /* only a drawn tile counts as used in this frame (and so stays); one merely prefetched may make room.
-             * Prefetched tiles once held the whole budget, every finished tile was dropped and asked for again, and
-             * the workers never stopped. */
+            /* only a drawn tile counts as used in this frame (and so stays); a prefetched one may make room */
             t->tiles[i].used = born ? ui.now : fmin(t->tiles[i].used, ui.now - 0.001);
             if (born) *born = t->tiles[i].born;
             return &t->tiles[i].tex;
