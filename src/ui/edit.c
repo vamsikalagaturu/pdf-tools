@@ -559,7 +559,7 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
             x += 30;
         }
         known |= is_favourite_colour(t->pen_rgb);
-        x += favourites(t, x, y, h, draw, opts_room - (x - x0) - 30 - 98, t->pen_rgb, picked, &hit);
+        x += favourites(t, x, y, h, draw, opts_room - (x - x0) - 30 - 90, t->pen_rgb, picked, &hit);
         if (hit) set_pen_colour(t, picked);
         /* the custom colour: a palette button, or the colour itself when it is none of the swatches */
         Rectangle cb = {x, y + (h - 28) / 2, 28, 28};
@@ -569,13 +569,22 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
             } else if (ui_swatch_button(bid(t, 63), cb, t->pen_rgb, 1, "Custom colour...")) run(t, A_PEN_COLOUR);
         }
         x += 30;
-        static const char *widths[3] = {"Thin", "Medium", "Thick"};
+        /* widths: three small buttons, each showing its line */
         int idx = t->pen_width <= 1 ? 0 : t->pen_width >= 4 ? 2 : 1;
-        if (draw && ui_combo(bid(t, 62), (Rectangle){x, y + (h - 28) / 2, 96, 28}, widths, 3, &idx)) {
-            t->pen_width = PEN_WIDTHS[idx].width;
-            t->ink_page = -1;
+        for (int i = 0; i < 3; i++) {
+            Rectangle wb = {x, y + (h - 28) / 2, 28, 28};
+            if (draw) {
+                if (ui_button(bid(t, 74 + i), wb, NULL, NULL, B_FLAT | (idx == i ? B_CHECKED : 0),
+                              PEN_WIDTHS[i].name)) {
+                    t->pen_width = PEN_WIDTHS[i].width;
+                    t->ink_page = -1;
+                }
+                float lw = 1.5f + 1.5f * (float)i * (i + 1) / 2, cy = wb.y + wb.height / 2;
+                DrawLineEx((Vector2){wb.x + 7, cy}, (Vector2){wb.x + wb.width - 7, cy}, lw,
+                           idx == i ? pal.highlighted_text : pal.button_text);
+            }
+            x += 30;
         }
-        x += 98;
     }
     return x - x0;
 }
