@@ -332,8 +332,13 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
             char name[32];
             snprintf(name, sizeof name, "Signature%d", pdf_count_signatures(ctx, doc) + 1);
             pdf_annot *w = pdf_create_signature_widget(ctx, pg, name);
-            pdf_set_annot_rect(ctx, w, fz_transform_rect(user_rect, ctm));
-            pdf_sign_signature(ctx, w, &g->base, PDF_SIGNATURE_DEFAULT_APPEARANCE, NULL, reason, NULL);
+            fz_try(ctx)
+            {
+                pdf_set_annot_rect(ctx, w, fz_transform_rect(user_rect, ctm));
+                pdf_sign_signature(ctx, w, &g->base, PDF_SIGNATURE_DEFAULT_APPEARANCE, NULL, reason, NULL);
+            }
+            fz_always(ctx) pdf_drop_annot(ctx, w);
+            fz_catch(ctx) fz_rethrow(ctx);
         }
         fz_always(ctx) fz_drop_page(ctx, (fz_page *)pg);
         fz_catch(ctx) fz_rethrow(ctx);

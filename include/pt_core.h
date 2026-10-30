@@ -159,11 +159,12 @@ typedef enum { PT_MARK_HIGHLIGHT, PT_MARK_UNDERLINE, PT_MARK_STRIKEOUT, PT_MARK_
 /* saved as Square, Circle and Line annotations (an arrow is a Line with an open arrowhead at its end) */
 typedef enum { PT_SHAPE_RECT, PT_SHAPE_ELLIPSE, PT_SHAPE_LINE, PT_SHAPE_ARROW } pt_shape;
 /* default colours (#rrggbb) of new edits, for the command line and the window's settings */
+#define PT_BLACK "#000000"
 #define PT_COLOUR_HIGHLIGHT "#ffe45c"
 #define PT_COLOUR_INK "#c62828"
-#define PT_COLOUR_REDACT "#000000"
-#define PT_COLOUR_TEXT "#000000"
-#define PT_COLOUR_BATES "#000000"
+#define PT_COLOUR_REDACT PT_BLACK
+#define PT_COLOUR_TEXT PT_BLACK
+#define PT_COLOUR_BATES PT_BLACK
 #define PT_COLOUR_WATERMARK "#c81e1e"
 /* ink pens: highlighter 3x wide, 40% opaque, multiplied over the page; marker 1.5x wide, 80% opaque; dashed */
 typedef enum { PT_PEN_PEN, PT_PEN_HIGHLIGHTER, PT_PEN_MARKER, PT_PEN_DASHED } pt_pen;

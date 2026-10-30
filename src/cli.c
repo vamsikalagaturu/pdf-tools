@@ -227,9 +227,10 @@ static void page_list(const char *spec, int count, pt_ints *out)
 static char *write_out(const char *out, fz_buffer *data, const char *source)
 {
     if (pt_exists(out) && pt_same_file(out, source)) fail("refusing to overwrite the input; write to another file");
-    char *real = pt_realpath(out);
-    if (!strcmp(real, pt_realpath(source))) fail("refusing to overwrite the input; write to another file");
+    char *real = pt_realpath(out), *real_source = pt_realpath(source);
+    if (!strcmp(real, real_source)) fail("refusing to overwrite the input; write to another file");
     free(real);
+    free(real_source);
     if (pt_write_file(out, data->data, data->len)) fail("cannot write %s", out);
     return pt_strdup(out);
 }
@@ -454,6 +455,12 @@ typedef struct {
 } match;
 PT_VEC(matches, match);
 
+static void matches_free(matches *m)
+{
+    for (int i = 0; i < m->n; i++) free(m->v[i].text);
+    pt_vec_free(*m);
+}
+
 /* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`. */
 static void find_matches(pdf_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
 {
@@ -531,6 +538,8 @@ static int cmd_redact(args *a)
         pt_json_int(&j, 0);
         pt_json_key(&j, "error");
         pt_json_string(&j, "nothing matched; nothing written");
+        pt_vec_free(pages);
+        pdf_drop_document(ctx, doc);
         return emit_end(&j, NO_MATCH);
     }
     pt_state s;
@@ -575,7 +584,15 @@ static int cmd_redact(args *a)
         pt_json_end_object(&j);
     }
     pt_json_end_array(&j);
-    return emit_end(&j, leaks.n ? LEAKED : OK);
+    int code = leaks.n ? LEAKED : OK;
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_leaks_free(&leaks);
+    pt_state_free(&s);
+    matches_free(&found);
+    pt_vec_free(pages);
+    pdf_drop_document(ctx, doc);
+    return emit_end(&j, code);
 }
 
 /* "true"/"false" become booleans, anything else stays text. */
@@ -661,6 +678,12 @@ static int cmd_fill(args *a)
         free(name);
     }
     pt_json_end_object(&j);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_state_free(&s);
+    for (int f = 0; f < fields.n; f++) free(fields.v[f].name);
+    pt_vec_free(fields);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -758,6 +781,12 @@ static int cmd_pages(args *a)
     pt_json_end_object(&j);
     pt_json_key(&j, "hidden_data_removed");
     pt_json_bool(&j, s.crop.n > 0);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_state_free(&s);
+    pt_vec_free(order);
+    pt_vec_free(removed);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -833,6 +862,13 @@ static int cmd_merge(args *a)
         pt_json_end_array(&j);
     }
     pt_json_end_array(&j);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    for (int i = 0; i < parts.n; i++) {
+        free(parts.v[i].path);
+        pt_vec_free(parts.v[i].pages);
+    }
+    pt_vec_free(parts);
     return emit_end(&j, OK);
 }
 
@@ -850,6 +886,7 @@ static int cmd_split(args *a)
         pt_ints at = {0};
         if (pt_ordered_ranges(get(a, "--at"), n, &at) < 0) fail("invalid --at '%s'", get(a, "--at"));
         pt_split_points(n, 0, at.v, at.n, &starts);
+        pt_vec_free(at);
     }
     const char *folder = get(a, "--directory");
     pt_mkdirs(folder);
@@ -881,6 +918,9 @@ static int cmd_split(args *a)
         pt_state_free(&s);
     }
     pt_json_end_array(&j);
+    free(stem);
+    pt_vec_free(starts);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -899,6 +939,9 @@ static int cmd_protect(args *a)
     pt_json_string(&j, out);
     pt_json_key(&j, "encrypted");
     pt_json_string(&j, "AES-256");
+    free(out);
+    fz_drop_buffer(ctx, locked);
+    fz_drop_buffer(ctx, data);
     return emit_end(&j, OK);
 }
 
@@ -916,6 +959,8 @@ static int cmd_unprotect(args *a)
     pt_json_string(&j, out);
     pt_json_key(&j, "encrypted");
     pt_json_bool(&j, 0);
+    free(out);
+    fz_drop_buffer(ctx, data);
     return emit_end(&j, OK);
 }
 
@@ -929,7 +974,8 @@ static int cmd_flatten(args *a)
     fz_buffer *data = apply(path, pw, &s, NULL), *flat = NULL;
     fz_try(ctx) flat = pt_flatten(ctx, data, dpi);
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
-    char *out = write_out(get(a, "--output"), finish(doc, flat, pw), path);
+    flat = finish(doc, flat, pw);
+    char *out = write_out(get(a, "--output"), flat, path);
     pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
@@ -938,6 +984,10 @@ static int cmd_flatten(args *a)
     pt_json_int(&j, dpi);
     pt_json_key(&j, "pages");
     pt_json_int(&j, pdf_count_pages(ctx, doc));
+    free(out);
+    fz_drop_buffer(ctx, flat);
+    fz_drop_buffer(ctx, data);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -961,12 +1011,15 @@ static int cmd_synctex(args *a)
             char *msg = pt_format("no SyncTeX data on page %d", page);
             pt_json_key(&j, "error");
             pt_json_string(&j, msg);
+            free(msg);
+            pt_synctex_free(&sync);
             return emit_end(&j, NO_MATCH);
         }
         pt_json_key(&j, "source");
         pt_json_string(&j, source);
         pt_json_key(&j, "line");
         pt_json_int(&j, line);
+        pt_synctex_free(&sync);
         return emit_end(&j, OK);
     }
     if (get(a, "--source") && get(a, "--line") && int_arg(a, "--line", 0)) {
@@ -977,6 +1030,8 @@ static int cmd_synctex(args *a)
             char *msg = pt_format("nothing typeset from %s:%s", get(a, "--source"), get(a, "--line"));
             pt_json_key(&j, "error");
             pt_json_string(&j, msg);
+            free(msg);
+            pt_synctex_free(&sync);
             return emit_end(&j, NO_MATCH);
         }
         pt_json_key(&j, "page");
@@ -985,6 +1040,8 @@ static int cmd_synctex(args *a)
         pt_json_begin_array(&j);
         for (int i = 0; i < hits.n; i++) pt_json_rect(&j, hits.v[i].rect);
         pt_json_end_array(&j);
+        pt_vec_free(hits);
+        pt_synctex_free(&sync);
         return emit_end(&j, OK);
     }
     fail("give --page and --at (PDF to source) or --source and --line (source to PDF)");
@@ -1031,6 +1088,10 @@ static int write_item(args *a, pt_item it)
     pt_json_int(&j, it.page + 1);
     pt_json_key(&j, "kind");
     pt_json_string(&j, pt_kind_names[it.kind]);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_state_free(&s);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1061,7 +1122,12 @@ static int cmd_search(args *a)
     pt_json_end_array(&j);
     pt_json_key(&j, "count");
     pt_json_int(&j, found.n);
-    return emit_end(&j, found.n ? OK : NO_MATCH);
+    int code = found.n ? OK : NO_MATCH;
+    matches_free(&found);
+    pt_strs_free(&texts);
+    pt_vec_free(pages);
+    pdf_drop_document(ctx, doc);
+    return emit_end(&j, code);
 }
 
 static int cmd_render(args *a)
@@ -1087,6 +1153,7 @@ static int cmd_render(args *a)
     pt_json_int(&j, p + 1);
     pt_json_key(&j, "dpi");
     pt_json_int(&j, dpi);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1107,9 +1174,10 @@ static int cmd_annotate(args *a)
         it.kind = PT_HIGHLIGHT;
         it.style = (pt_mark)style;
         it.text = pt_strdup(get(a, "--text") ? get(a, "--text") : "");
-        colour_arg(a, style == PT_MARK_HIGHLIGHT ? "#ffe45c" : "#c62828", it.rgb);
+        colour_arg(a, style == PT_MARK_HIGHLIGHT ? PT_COLOUR_HIGHLIGHT : PT_COLOUR_INK, it.rgb);
         pt_push(it.rects, it.rect);
     }
+    pdf_drop_document(ctx, doc);
     return write_item(a, it);
 }
 
@@ -1119,7 +1187,7 @@ static int cmd_draw(args *a)
     pt_item it = {0};
     it.kind = PT_INK;
     it.page = one_page(a, doc);
-    colour_arg(a, "#c62828", it.rgb);
+    colour_arg(a, PT_COLOUR_INK, it.rgb);
     const char *w = get(a, "--width");
     it.pen_width = w ? strtof(w, NULL) : 2;
     int pen = pt_pen_from_name(get(a, "--style"));
@@ -1138,6 +1206,8 @@ static int cmd_draw(args *a)
     for (int i = 0; i < pts.n; i++)
         it.rect = fz_include_point_in_rect(i ? it.rect : fz_make_rect(pts.v[0].x, pts.v[0].y, pts.v[0].x, pts.v[0].y),
                                            pts.v[i]);
+    free(spec);
+    pdf_drop_document(ctx, doc);
     return write_item(a, it);
 }
 
@@ -1154,7 +1224,8 @@ static int cmd_insert_text(args *a)
     it.font = pt_strdup(get(a, "--font"));
     it.size = strtof(get(a, "--size"), NULL);
     it.box_width = get(a, "--width") ? strtof(get(a, "--width"), NULL) : 0;
-    colour_arg(a, "#000000", it.rgb);
+    colour_arg(a, PT_COLOUR_TEXT, it.rgb);
+    pdf_drop_document(ctx, doc);
     return write_item(a, it);
 }
 
@@ -1166,6 +1237,7 @@ static int cmd_insert_image(args *a)
     it.page = one_page(a, doc);
     it.rect = rect_arg(a, "--rect");
     if (pt_read_file(get(a, "--image"), &it.data)) fail("cannot read %s", get(a, "--image"));
+    pdf_drop_document(ctx, doc);
     return write_item(a, it);
 }
 
@@ -1186,8 +1258,8 @@ static int write_stamp(args *a, pt_stamp st)
     pt_state s;
     pt_state_init(&s, 0);
     pt_push(s.stamps, st);
-    fz_buffer *data = apply(path, pw, &s, NULL);
-    char *out = write_out(get(a, "--output"), finish(doc, data, pw), path);
+    fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
+    char *out = write_out(get(a, "--output"), data, path);
     pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
@@ -1207,7 +1279,10 @@ static int write_stamp(args *a, pt_stamp st)
     }
     pt_json_key(&j, "pages");
     pt_json_int(&j, pdf_count_pages(ctx, doc));
+    free(out);
+    fz_drop_buffer(ctx, data);
     pt_state_free(&s);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1224,7 +1299,7 @@ static int cmd_bates(args *a)
                    {0, 0, 0},
                    NULL};
     if (st.digits < 1 || st.digits > 12) fail("--digits wants 1 to 12");
-    colour_arg(a, "#000000", st.rgb);
+    colour_arg(a, PT_COLOUR_BATES, st.rgb);
     return write_stamp(a, st);
 }
 
@@ -1241,7 +1316,7 @@ static int cmd_watermark(args *a)
                    {0, 0, 0},
                    NULL};
     if (st.opacity <= 0 || st.opacity > 1) fail("--opacity wants a number in (0, 1]");
-    colour_arg(a, "#c81e1e", st.rgb);
+    colour_arg(a, PT_COLOUR_WATERMARK, st.rgb);
     return write_stamp(a, st);
 }
 
@@ -1277,6 +1352,11 @@ static int cmd_ocr(args *a)
     pt_json_int(&j, pages.n);
     pt_json_key(&j, "characters_added");
     pt_json_int(&j, chars);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_vec_free(pages);
+    pdf_drop_document(ctx, doc);
+    free(datadir);
     return emit_end(&j, OK);
 }
 
@@ -1324,6 +1404,8 @@ static int cmd_compare(args *a)
     pt_json_begin_array(&j);
     pt_json_int(&j, n[0]), pt_json_int(&j, n[1]);
     pt_json_end_array(&j);
+    pdf_drop_document(ctx, doc[0]);
+    pdf_drop_document(ctx, doc[1]);
     return emit_end(&j, OK);
 }
 
@@ -1363,6 +1445,8 @@ static int cmd_export_images(args *a)
     pt_json_key(&j, "dpi");
     pt_json_int(&j, dpi);
     free(stem);
+    pt_vec_free(pages);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1405,6 +1489,9 @@ static int cmd_sign(args *a)
     pt_json_key(&j, "page");
     pt_json_int(&j, page + 1);
     free(name);
+    free(out);
+    fz_drop_buffer(ctx, signed_pdf);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1419,6 +1506,8 @@ static int cmd_prepare_signature(args *a)
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
+    free(out);
+    fz_drop_buffer(ctx, png);
     return emit_end(&j, OK);
 }
 
@@ -1435,13 +1524,17 @@ static int cmd_scrub(args *a)
         pdf_drop_document(ctx, work);
     }
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
-    char *out = write_out(get(a, "--output"), finish(doc, data, pw), path);
+    data = finish(doc, data, pw);
+    char *out = write_out(get(a, "--output"), data, path);
     pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
     pt_json_key(&j, "hidden_data_removed");
     pt_json_bool(&j, 1);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1498,6 +1591,7 @@ static int cmd_inspect(args *a)
         fz_drop_page(ctx, (fz_page *)page);
     }
     pt_json_end_array(&j);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1526,6 +1620,10 @@ static int cmd_edit_annotation(args *a)
     pt_json_string(&j, out);
     pt_json_key(&j, given(a, "--remove") ? "removed" : "updated");
     pt_json_int(&j, index);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_state_free(&s);
+    pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1566,7 +1664,7 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
-      {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", "#000000"},
+      {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
       {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)",
        NULL}},
      {0}},
@@ -1829,7 +1927,7 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
-      {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", "#000000"},
+      {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
       {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
      {0}},
 };
@@ -1892,5 +1990,9 @@ int pt_cli_main(int argc, char **argv)
     parse(c, argc - 2, argv + 2, &a);
     int code = c->run(&a);
     fflush(stdout);
+    pt_strs_free(&a.positional);
+    for (int k = 0; k < (int)(sizeof a.v / sizeof *a.v); k++) pt_strs_free(&a.v[k].vals);
+    fz_drop_context(ctx);
+    ctx = NULL;
     return code;
 }

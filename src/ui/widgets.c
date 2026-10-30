@@ -1829,9 +1829,12 @@ Color rgb3(const unsigned char rgb[3]) { return (Color){rgb[0], rgb[1], rgb[2], 
  * Lucide icons (ISC, assets/icons) rendered by MuPDF as white masks and tinted when drawn, and the app's mouse
  * cursors, drawn from the same icons so they do not depend on the desktop's cursor theme. */
 
-#define ICON_MASK_COLOUR "#ffffff"
-#define CURSOR_COLOUR "#000000"
-#define CURSOR_OUTLINE_COLOUR "#ffffff"
+/* "#rrggbb" of c, for an SVG's colour attributes */
+static const char *svg_hex(Color c, char out[8])
+{
+    snprintf(out, 8, "#%02x%02x%02x", c.r, c.g, c.b);
+    return out;
+}
 
 /* GLFW's custom-cursor calls. raylib's GetWindowHandle() is the native (X11/Wayland) handle, not the GLFWwindow,
  * which is the current GL context. */
@@ -2061,7 +2064,8 @@ static icon_tex *icon_for(const char *name)
         if (!strcmp(LUCIDE[i][0], name)) file = LUCIDE[i][1];
     const pt_icon_data *d = lucide_file(file);
     if (!d) return it;
-    char *svg = replace_all((const char *)d->data, "currentColor", ICON_MASK_COLOUR);
+    char mask[8];
+    char *svg = replace_all((const char *)d->data, "currentColor", svg_hex(WHITE, mask));
     unsigned char *rgba = render_svg(svg, ICON_PX, fz_scale(ICON_PX / 24.0f, ICON_PX / 24.0f));
     free(svg);
     if (rgba) {
@@ -2131,9 +2135,11 @@ static void make_cursors(void)
         const cursor_spec *c = &SPECS[i];
         const pt_icon_data *d = lucide_file(c->file);
         if (!d) continue;
-        char *src = pt_strdup((const char *)d->data);
+        char *src = pt_strdup((const char *)d->data), ink[8], outline[8], fill[16];
+        svg_hex(BLACK, ink), svg_hex(WHITE, outline);
         if (c->filled) {
-            char *f = replace_all(src, "fill=\"none\"", "fill=\"" CURSOR_COLOUR "\"");
+            snprintf(fill, sizeof fill, "fill=\"%s\"", ink);
+            char *f = replace_all(src, "fill=\"none\"", fill);
             free(src);
             src = f;
         }
@@ -2147,8 +2153,8 @@ static void make_cursors(void)
         }
         unsigned char *layers[2] = {0};
         /* the icon's own 2-unit stroke, laid over a wider white one that gives the outline */
-        static const char *colour[2] = {CURSOR_OUTLINE_COLOUR, CURSOR_COLOUR},
-                          *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
+        const char *colour[2] = {outline, ink};
+        static const char *width[2] = {"stroke-width=\"4.5\"", "stroke-width=\"2\""};
         for (int k = 0; k < 2; k++) {
             char *a = replace_all(src, "currentColor", colour[k]);
             char *b = replace_all(a, "stroke-width=\"2\"", width[k]);

@@ -12,31 +12,29 @@
         (unsigned char)((v) >> 16), (unsigned char)((v) >> 8), (unsigned char)(v), alpha \
     }
 
-/* drawn over pages and thumbnails, the same in both themes */
-#define PAGE_COLOURS                                                                                               \
-    .selection = HEX(0x1a73e8), .find_match = HEXA(0xffe100, 110), .find_current = HEXA(0xff8c00, 130),            \
-    .sync_mark = HEXA(0xffc800, 110), .redact_preview = HEXA(0x000000, 90), .field_bg = HEX(0xdce8ff),             \
-    .field_mark = HEX(0x1e1e1e), .crop_dim = HEXA(0x202124, 150), .note_fill = HEX(0xffd54f),                      \
-    .note_line = HEX(0x8a6d00), .danger = HEX(0xd93025), .warning = HEX(0xe6a000), .success = HEX(0x1e8e3e),       \
-    .thumb_bg = HEX(0xebebeb), .thumb_frame = HEXA(0x808080, 120), .check_bg = HEXA(0xffffff, 230),                \
-    .check_border = HEX(0x6e6e6e), .pad_guide = HEX(0xc8c8c8), .paper = HEX(0xffffff), .shadow = HEX(0x000000),    \
-    .scrim = HEX(0x000000), .field_text = HEX(0x000000), .field_frame = HEX(0x505050), .on_danger = HEX(0xffffff), \
-    .on_backdrop = HEX(0xffffff), .present_bg = HEX(0x000000), .present_label = HEXA(0x000000, 160),               \
-    .swatch_line = HEX(0x000000),                                                                                  \
+/* drawn over pages and thumbnails, the same in both themes (the see-through black and white ones: theme_apply) */
+#define PAGE_COLOURS                                                                                                   \
+    .selection = HEX(0x1a73e8), .find_match = HEXA(0xffe100, 110), .find_current = HEXA(0xff8c00, 130),                \
+    .sync_mark = HEXA(0xffc800, 110), .field_bg = HEX(0xdce8ff), .field_mark = HEX(0x1e1e1e),                          \
+    .crop_dim = HEXA(0x202124, 150), .note_fill = HEX(0xffd54f), .note_line = HEX(0x8a6d00), .danger = HEX(0xd93025),  \
+    .warning = HEX(0xe6a000), .success = HEX(0x1e8e3e), .thumb_bg = HEX(0xebebeb), .thumb_frame = HEXA(0x808080, 120), \
+    .check_border = HEX(0x6e6e6e), .pad_guide = HEX(0xc8c8c8), .paper = WHITE, .shadow = BLACK, .scrim = BLACK,        \
+    .field_text = BLACK, .field_frame = HEX(0x505050), .on_danger = WHITE, .on_backdrop = WHITE, .present_bg = BLACK,  \
+    .swatch_line = BLACK,                                                                                              \
     .source = {HEX(0x1a73e8), HEX(0xd93025), HEX(0x1e8e3e), HEX(0xf9ab00), HEX(0xa142f4), HEX(0x0096a0)}
 
 static const ui_palette LIGHT = {
     .window = HEX(0xefefef),
     .window_text = HEX(0x1a1a1a),
-    .base = HEX(0xffffff),
+    .base = WHITE,
     .text = HEX(0x1a1a1a),
     .button = HEX(0xe3e3e3),
     .button_text = HEX(0x1a1a1a),
     .mid = HEX(0xb8b8b8),
-    .light = HEX(0xffffff),
+    .light = WHITE,
     .dark = HEX(0x9f9f9f),
     .highlight = HEX(0x308cc6),
-    .highlighted_text = HEX(0xffffff),
+    .highlighted_text = WHITE,
     .disabled_text = HEX(0x8c8c8c),
     .placeholder = HEX(0x8c8c8c),
     .link = HEX(0x0b57d0),
@@ -61,7 +59,7 @@ static const ui_palette DARK = {
     .light = HEX(0x4a4a4a),
     .dark = HEX(0x1a1a1a),
     .highlight = HEX(0x2f6fd0),
-    .highlighted_text = HEX(0xffffff),
+    .highlighted_text = WHITE,
     .disabled_text = HEX(0x7a7a7a),
     .placeholder = HEX(0x8a8a8a),
     .link = HEX(0x6ab0ff),
@@ -76,13 +74,16 @@ static const ui_palette DARK = {
 };
 
 /* text on the accent: whichever of these contrasts more (Rec. 709 luma) */
-static const Color ON_LIGHT_ACCENT = HEX(0x111111), ON_DARK_ACCENT = HEX(0xffffff);
+static const Color ON_LIGHT_ACCENT = HEX(0x111111), ON_DARK_ACCENT = WHITE;
 
 ui_palette pal;
 
 void theme_apply(const char *mode)
 {
     pal = mode && !strcmp(mode, "light") ? LIGHT : DARK;
+    pal.redact_preview = with_alpha(BLACK, 90);
+    pal.present_label = with_alpha(BLACK, 160);
+    pal.check_bg = with_alpha(WHITE, 230);
     const char *accent = pt_settings_str(&app.settings, pal.dark_mode ? "accent_colour_dark" : "accent_colour_light");
     unsigned v;
     if (accent && accent[0] == '#' && strlen(accent) == 7 && sscanf(accent + 1, "%6x", &v) == 1) {

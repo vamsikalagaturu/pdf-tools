@@ -954,7 +954,7 @@ int pt_app_main(int argc, char **argv)
     } else if (message) app_handle_message(message);
     free(message);
 
-    int was_focused = 1;
+    int was_focused = 1, timer_wake = 0;
     while (!app.quit) {
         if (close_requested) {
             close_requested = 0;
@@ -973,14 +973,28 @@ int pt_app_main(int argc, char **argv)
             pt_strs_free(&paths);
         }
         was_focused = focused;
+        /* woken by the timer alone: watch the files, and draw only if that changed something */
+        if (timer_wake && !ui_events_pending() && !IsWindowResized() && !IsFileDropped() && !*app.status) {
+            ui.now = GetTime();
+            ui.dirty = 0;
+            for (int i = 0; i < app.tabs.n; i++)
+                if (app.tabs.v[i].kind == TAB_DOC) tab_poll(app.tabs.v[i].doc);
+            if (!ui.dirty) {
+                glfwWaitEventsTimeout(0.3);
+                continue;
+            }
+        }
+        timer_wake = 0;
         ui.dirty = 0;
         BeginDrawing();
         frame();
         EndDrawing();
         /* idle: sleep until input (or a short timeout for file watching and messages) */
         if (!ui.dirty && !ui.down && !ui_events_pending() && !file_dialog_busy() &&
-            !(*app.status && ui.now < app.status_until))
+            !(*app.status && ui.now < app.status_until)) {
             glfwWaitEventsTimeout(0.3);
+            timer_wake = 1;
+        }
     }
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);

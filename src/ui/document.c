@@ -2308,6 +2308,7 @@ void tab_poll(tab *t)
     }
     if (ui.now < t->settle_until) return;
     if (m == t->stamp_mtime && s == t->stamp_size) return;
+    ui.dirty = 1;
     int n = tab_edit_count(t);
     if (n) {
         t->reload_asked = 1;
