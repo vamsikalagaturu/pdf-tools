@@ -740,6 +740,7 @@ typedef struct render_job {
     unsigned gen;
     int page, tile;
     float scale, prio; /* prio: distance from the middle of the view; nearest first */
+    int visible;       /* else prefetched: stored only in free room */
     fz_irect box;      /* a tile's device pixels */
     fz_buffer *bytes;  /* the document of `gen` */
     fz_pixmap *pix;
@@ -950,7 +951,7 @@ static int render_known(const render_job *want)
 {
     /* a waiting request takes the distance it has now: the view moved since it was made */
     for (render_job *j = R.queue; j; j = j->next)
-        if (same_job(j, want)) return j->prio = want->prio, 1;
+        if (same_job(j, want)) return j->prio = want->prio, j->visible |= want->visible, 1;
     for (render_job *j = R.done; j; j = j->next)
         if (same_job(j, want)) return 1;
     for (int i = 0; i < R.nworkers; i++)
@@ -1039,16 +1040,25 @@ static Texture2D reuse_texture(Texture2D *old, fz_pixmap *pix)
     return texture_from_pixmap(pix);
 }
 
-static void cache_insert(tab *t, int page, float scale, fz_pixmap *pix)
+static int pix_free_slot(tab *t, int page)
 {
-    int slot = -1, far = -1, fd = -1;
+    for (int i = 0; i < PIX_CACHE; i++)
+        if (!t->pix[i].ok || t->pix[i].page == page) return i;
+    return -1;
+}
+
+static void cache_insert(tab *t, const render_job *j)
+{
+    int slot = pix_free_slot(t, j->page), far = -1, fd = -1;
+    if (slot < 0 && !j->visible) return;
     for (int i = 0; i < PIX_CACHE && slot < 0; i++) {
-        page_tex *pt = &t->pix[i];
-        if (!pt->ok || pt->page == page) slot = i;
-        int d = pt->ok ? abs(order_index(t, pt->page) - order_index(t, t->pno)) : -1;
+        int d = abs(order_index(t, t->pix[i].page) - order_index(t, t->pno));
         if (d > fd) fd = d, far = i;
     }
     if (slot < 0) slot = far;
+    int page = j->page;
+    float scale = j->scale;
+    fz_pixmap *pix = j->pix;
     t->pix[slot].tex = reuse_texture(t->pix[slot].ok ? &t->pix[slot].tex : NULL, pix);
     t->pix[slot].page = page, t->pix[slot].scale = scale, t->pix[slot].ok = 1;
 }
@@ -1068,12 +1078,13 @@ static void tile_insert(tab *t, const render_job *j)
                 if (free_slot < 0) free_slot = i;
             } else if (t->tiles[i].used < ui.now && (lru < 0 || t->tiles[i].used < t->tiles[lru].used)) lru = i;
         }
-        if (free_slot >= 0 && t->tile_bytes + need <= TILE_BUDGET) {
+        /* past the budget only when everything else is on screen: a dropped result would be asked for again */
+        if (free_slot >= 0 && (t->tile_bytes + need <= TILE_BUDGET || lru < 0)) {
             slot = free_slot;
             t->tiles[slot].tex = reuse_texture(NULL, j->pix);
             break;
         }
-        if (lru < 0) return;
+        if (lru < 0 || !j->visible) return;
         if (j->pix && t->tiles[lru].tex.width == j->pix->w && t->tiles[lru].tex.height == j->pix->h) {
             slot = lru;
             t->tile_bytes -= tex_bytes(t->tiles[slot].tex);
@@ -1114,7 +1125,7 @@ static void render_collect(tab *t)
         double t0 = GetTime();
         /* a failed render is kept as an empty texture, so it is not asked for again in every frame */
         if (mine->tile) tile_insert(t, mine);
-        else cache_insert(t, mine->page, mine->scale, mine->pix);
+        else cache_insert(t, mine);
         spent += GetTime() - t0;
         mine->next = NULL;
         job_free(CTX, mine);
@@ -1128,21 +1139,30 @@ Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, 
     for (int i = 0; i < TILE_CACHE; i++)
         if (t->tiles[i].ok && t->tiles[i].page == page && t->tiles[i].tx == tx && t->tiles[i].ty == ty &&
             fabsf(t->tiles[i].scale - scale) < 0.001f) {
-            t->tiles[i].used = ui.now;
+            /* only a drawn tile counts as used in this frame (and so stays); one merely prefetched may make room.
+             * Prefetched tiles once held the whole budget, every finished tile was dropped and asked for again, and
+             * the workers never stopped. */
+            t->tiles[i].used = born ? ui.now : fmin(t->tiles[i].used, ui.now - 0.001);
             if (born) *born = t->tiles[i].born;
             return &t->tiles[i].tex;
         }
-    ui.dirty = 1;
+    if (born) ui.dirty = 1;
+    else {
+        int free_slot = 0;
+        for (int i = 0; i < TILE_CACHE && !free_slot; i++) free_slot = !t->tiles[i].ok;
+        if (!free_slot || t->tile_bytes + (size_t)TILE_PX * TILE_PX * 4 > TILE_BUDGET) return NULL;
+    }
     if (ui.now - t->zoom_t < ZOOM_SETTLE_S) return NULL;
     fz_irect all = page_pixels(t, page, scale);
     fz_irect box = {all.x0 + tx * TILE_PX, all.y0 + ty * TILE_PX, 0, 0};
     box.x1 = (int)fminf(box.x0 + TILE_PX, all.x1), box.y1 = (int)fminf(box.y0 + TILE_PX, all.y1);
     if (box.x1 <= box.x0 || box.y1 <= box.y0) return NULL;
-    render_request(t, (render_job){.page = page, .tile = 1, .scale = scale, .prio = prio, .box = box});
+    render_request(
+        t, (render_job){.page = page, .tile = 1, .scale = scale, .prio = prio, .visible = born != NULL, .box = box});
     return NULL;
 }
 
-Texture2D *page_texture(tab *t, int page, float scale, float prio)
+Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible)
 {
     fz_rect b = page_bounds(t, page);
     float longest = fmaxf(b.x1, b.y1);
@@ -1159,10 +1179,11 @@ Texture2D *page_texture(tab *t, int page, float scale, float prio)
         if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
         other = pt;
     }
-    ui.dirty = 1;
+    if (visible) ui.dirty = 1;
+    else if (pix_free_slot(t, page) < 0) return other ? &other->tex : NULL;
     /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
     if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S))
-        render_request(t, (render_job){.page = page, .scale = scale, .prio = prio});
+        render_request(t, (render_job){.page = page, .scale = scale, .prio = prio, .visible = visible});
     if (other) return &other->tex;
     return t->thumb_ok && t->thumb_ok[page] ? &t->thumbs[page] : NULL;
 }

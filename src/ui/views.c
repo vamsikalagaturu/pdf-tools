@@ -777,7 +777,7 @@ static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
             float ay = roundf(oy + ty * TILE_PX * k), by = roundf(oy + fminf((ty + 1) * TILE_PX, h) * k);
             Rectangle d = {ax / px, ay / px, (bx - ax) / px, (by - ay) / px};
             double born = 0;
-            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), &born);
+            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), draw ? &born : NULL);
             if (!draw || !tex) continue;
             float a = fminf(1, (float)((ui.now - born) / TILE_FADE_S));
             if (a < 1) ui.dirty = 1;
@@ -793,7 +793,7 @@ static void draw_page(tab *t, int p)
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
     DrawRectangleRec(r, pal.paper);
     float px = UI_PX, base = base_scale(t, p);
-    Texture2D *tex = page_texture(t, p, base, view_distance(t, r));
+    Texture2D *tex = page_texture(t, p, base, view_distance(t, r), 1);
     if (tex) {
         /* the same pixel-snapped origin as the tiles, so a stretched render sits exactly under them */
         Rectangle d = {roundf(r.x * px) / px, roundf(r.y * px) / px, r.width, r.height};
@@ -921,7 +921,7 @@ void view_frame(tab *t, Rectangle area)
         Rectangle near = {area.x, area.y - area.height / 2, area.width, area.height * 2};
         if (pr.y + pr.height > near.y && pr.y < near.y + near.height) {
             float base = base_scale(t, p);
-            page_texture(t, p, base, view_distance(t, pr));
+            page_texture(t, p, base, view_distance(t, pr), 0);
             if (base < t->zoom * UI_PX - 0.001f) page_tiles(t, p, pr, near, 0);
         }
         draw_page(t, p);
@@ -1296,7 +1296,7 @@ void present_frame(void)
     fz_rect b = page_bounds(t, page);
     float zoom = fminf(ui.w / b.x1, ui.h / b.y1);
     Rectangle dst = {(ui.w - b.x1 * zoom) / 2, (ui.h - b.y1 * zoom) / 2, b.x1 * zoom, b.y1 * zoom};
-    Texture2D *tex = page_texture(t, page, zoom * UI_PX, 0);
+    Texture2D *tex = page_texture(t, page, zoom * UI_PX, 0, 1);
     if (tex)
         DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, dst, (Vector2){0, 0}, 0, WHITE);
     /* a click or tap on the left third goes back, anywhere else forward */

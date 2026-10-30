@@ -338,8 +338,10 @@ void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
 int continuous(void);
 void toggle_continuous(tab *t);
-/* `prio`: the distance from the middle of the view in device pixels; the nearest requests render first */
-Texture2D *page_texture(tab *t, int page, float scale, float prio);
+/* `prio`: the distance from the middle of the view in device pixels; the nearest requests render first. Prefetching
+ * (`visible` 0; page_tile: `born`, the tile's arrival time for fading in, NULL) only fills free cache room: when
+ * prefetched pages and tiles pushed each other out, they were rendered again and again and the window never idled. */
+Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible);
 Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, double *born);
 fz_irect page_pixels(tab *t, int page, float scale);
 float tile_level(float scale);
