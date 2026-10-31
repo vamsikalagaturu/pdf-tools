@@ -258,7 +258,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
     int doc = t->doc != NULL, n = tab_edit_count(t);
     if (file) {
         menu_sep(file);
-        menu_item(file, "Save (overwrite original)", "save", "Ctrl+S", run, t, A_SAVE, n > 0, 0);
+        menu_item(file, t->converted ? "Save (as a new PDF)" : "Save (overwrite original)", "save", "Ctrl+S", run, t,
+                  A_SAVE, n > 0, 0);
         menu_item(file, "Save As...", "save", "Ctrl+Shift+S", run, t, A_SAVE_AS, n > 0, 0);
         menu_item(file, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(file, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
@@ -2108,8 +2109,10 @@ static void nearby_style(tab *t, int page, fz_point src, char **font, float *siz
 static void font_families(tab *t, pt_strs *out)
 {
     pt_strs names = {0};
-    fz_try(CTX) pt_pdf_font_names(CTX, t->doc, &names);
-    fz_catch(CTX) fz_ignore_error(CTX);
+    if (t->pdf) {
+        fz_try(CTX) pt_pdf_font_names(CTX, t->pdf, &names);
+        fz_catch(CTX) fz_ignore_error(CTX);
+    }
     for (int i = 0; i < 5; i++) pt_push(names, pt_strdup(pt_default_fonts[i]));
     for (int i = 0; i < names.n; i++) {
         char *f = pt_font_family(names.v[i]);
@@ -2126,8 +2129,10 @@ static void tb_restyle(tab *t)
 {
     text_box *b = &t->tb;
     pt_strs names = {0};
-    fz_try(CTX) pt_pdf_font_names(CTX, t->doc, &names);
-    fz_catch(CTX) fz_ignore_error(CTX);
+    if (t->pdf) {
+        fz_try(CTX) pt_pdf_font_names(CTX, t->pdf, &names);
+        fz_catch(CTX) fz_ignore_error(CTX);
+    }
     free(b->obj.font);
     b->obj.font = pt_styled_font(b->families.v[b->family], b->bold, b->italic, &names);
     pt_strs_free(&names);
@@ -2141,7 +2146,7 @@ static void tb_hint(tab *t)
     const char *s = text_get(&b->text);
     fz_try(CTX)
     {
-        pt_resolve_font(CTX, t->doc, b->obj.font, *s ? s : "x", &rf);
+        pt_resolve_font(CTX, t->pdf, b->obj.font, *s ? s : "x", &rf);
         snprintf(b->hint, sizeof b->hint, "%s", rf.desc);
         pt_drop_resolved_font(CTX, &rf);
     }
@@ -2231,7 +2236,7 @@ void finish_text(tab *t)
         pt_resolved_font rf;
         fz_try(CTX)
         {
-            pt_resolve_font(CTX, t->doc, obj.font, obj.text, &rf);
+            pt_resolve_font(CTX, t->pdf, obj.font, obj.text, &rf);
             float w, h;
             pt_text_size(CTX, rf.font, obj.text, obj.size, obj.box_width, &w, &h);
             obj.rect = fz_make_rect(obj.rect.x0, obj.rect.y0, obj.rect.x0 + w, obj.rect.y0 + h);
@@ -2326,7 +2331,7 @@ void text_box_frame(tab *t)
     int have_font = 0;
     fz_try(CTX)
     {
-        pt_resolve_font(CTX, t->doc, b->obj.font, *text ? text : "x", &rf);
+        pt_resolve_font(CTX, t->pdf, b->obj.font, *text ? text : "x", &rf);
         have_font = 1;
     }
     fz_catch(CTX) fz_ignore_error(CTX);
@@ -2361,7 +2366,7 @@ void text_box_frame(tab *t)
                 copy.text = (char *)text;
                 copy.size = size;
                 copy.rect = fz_make_rect(0, 0, w, h);
-                pt_draw_text(CTX, tmp, page, &copy, t->doc);
+                pt_draw_text(CTX, tmp, page, &copy, t->pdf);
                 fz_drop_page(CTX, (fz_page *)page);
                 page = pdf_load_page(CTX, tmp, 0);
                 float s = t->zoom * UI_PX;

@@ -145,7 +145,11 @@ void tab_invalidate_pages(tab *t)
     t->outline_ok = 0;
     t->outline_drag = -1;
 
-    int n = t->doc ? pdf_count_pages(CTX, t->doc) : 0;
+    int n = 0;
+    if (t->doc) {
+        fz_try(CTX) n = fz_count_pages(CTX, t->doc);
+        fz_catch(CTX) n = 0;
+    }
     char *ticked = calloc((size_t)n + 1, 1);
     for (int p = 0; p < n && p < t->npages && t->ticked; p++) ticked[p] = t->ticked[p];
     free(t->ticked);
@@ -175,8 +179,10 @@ void tab_reset(tab *t)
     finish_text(t);
     close_popover(t, 0);
     fields_reset(t);
-    if (t->doc) pdf_drop_document(CTX, t->doc);
+    fz_drop_document(CTX, t->doc);
     t->doc = NULL;
+    t->pdf = NULL;
+    t->converted = 0;
     tab_invalidate_pages(t);
     fz_drop_buffer(CTX, t->file);
     t->file = NULL;
@@ -313,43 +319,95 @@ static void file_stamp(const char *path, double *mtime, long *size)
     *size = (long)st.st_size;
 }
 
+/* The page and font size e-books are laid out at (settings ebook_page_size, ebook_font_size); "window" is the view
+ * of `t`, else the window, less the gap around a page. */
+static void ebook_layout(tab *t, float *w, float *h, float *em)
+{
+    int size = pt_settings_int(&app.settings, "ebook_font_size");
+    *em = size >= 4 && size <= 96 ? (float)size : PT_EBOOK_FONT_SIZE;
+    const char *name = pt_settings_str(&app.settings, "ebook_page_size");
+    if (!strcmp(name, "window")) {
+        Rectangle v = t->view.width > 100 ? t->view : (Rectangle){0, 0, (float)ui.w, (float)ui.h};
+        *w = fmaxf(v.width / UI_PX - 2 * PAGE_GAP, 144), *h = fmaxf(v.height / UI_PX - 2 * PAGE_GAP, 144);
+    } else if (!pt_page_size(name, w, h)) pt_page_size(PT_EBOOK_PAGE_SIZE, w, h);
+}
+
+/* `file` opened as the tab shows `path`: by its format, an e-book laid out as ebook_layout says (`layout` gets w, h
+ * and em; w 0 for a fixed layout), or as a PDF once converted. Throws; does not authenticate. */
+static fz_document *open_file(tab *t, fz_buffer *file, const char *path, int converted, float layout[3])
+{
+    float w = 0, h = 0, em = 0;
+    if (!converted && pt_is_other_format(path)) ebook_layout(t, &w, &h, &em);
+    fz_document *doc = pt_open_document(CTX, file, converted ? "converted.pdf" : path, w, h, em);
+    if (!fz_is_document_reflowable(CTX, doc)) w = h = em = 0;
+    layout[0] = w, layout[1] = h, layout[2] = em;
+    if (pt_is_other_format(path) && fz_count_pages(CTX, doc) < 1) {
+        fz_drop_document(CTX, doc);
+        fz_throw(CTX, FZ_ERROR_FORMAT, "the document has no pages");
+    }
+    return doc;
+}
+
+fz_document *tab_open_file(tab *t)
+{
+    float layout[3];
+    fz_document *doc = open_file(t, t->file, t->path, t->converted, layout);
+    if (fz_needs_password(CTX, doc) && !fz_authenticate_password(CTX, doc, t->password ? t->password : "")) {
+        fz_drop_document(CTX, doc);
+        fz_throw(CTX, FZ_ERROR_ARGUMENT, "wrong password");
+    }
+    return doc;
+}
+
+fz_document *open_document_file(tab *t, const char *path)
+{
+    float layout[3];
+    fz_buffer *file = fz_read_file(CTX, path);
+    fz_document *doc = NULL;
+    fz_try(CTX) doc = open_file(t, file, path, 0, layout);
+    fz_always(CTX) fz_drop_buffer(CTX, file);
+    fz_catch(CTX) fz_rethrow(CTX);
+    return doc;
+}
+
 int tab_load(tab *t, const char *path, const char *password)
 {
-    pdf_document *doc = NULL;
+    fz_document *doc = NULL;
     fz_buffer *file = NULL;
-    fz_stream *stm = NULL;
-    fz_var(file), fz_var(stm);
+    float layout[3];
+    fz_var(file), fz_var(doc);
     fz_try(CTX)
     {
         file = fz_read_file(CTX, path);
-        stm = fz_open_buffer(CTX, file);
-        doc = pdf_open_document_with_stream(CTX, stm);
+        doc = open_file(t, file, path, 0, layout);
     }
-    fz_always(CTX) fz_drop_stream(CTX, stm);
     fz_catch(CTX)
     {
+        fz_drop_document(CTX, doc);
         fz_drop_buffer(CTX, file);
         char *msg = pt_format("Cannot open %s:\n%s", pt_basename(path), fz_caught_message(CTX));
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
         return -1;
     }
-    int locked = pdf_needs_password(CTX, doc);
-    if (locked && !pdf_authenticate_password(CTX, doc, password ? password : "")) {
-        pdf_drop_document(CTX, doc);
+    int locked = fz_needs_password(CTX, doc);
+    if (locked && !fz_authenticate_password(CTX, doc, password ? password : "")) {
+        fz_drop_document(CTX, doc);
         fz_drop_buffer(CTX, file);
         return 1;
     }
 
     tab_reset(t);
+    t->layout_w = layout[0], t->layout_h = layout[1], t->layout_em = layout[2];
     char *real = pt_realpath(path);
     free(t->path);
     t->path = real;
     t->password = locked ? pt_strdup(password) : NULL;
     t->doc = doc;
+    t->pdf = pdf_specifics(CTX, doc);
     t->file = file;
     t->doc_is_file = 1;
-    t->own = pdf_count_pages(CTX, doc);
+    t->own = fz_count_pages(CTX, doc);
     pt_state_free(&t->st);
     pt_state_init(&t->st, t->own);
     tab_invalidate_pages(t);
@@ -396,6 +454,8 @@ int tab_edit_count(const tab *t) { return t->doc ? pt_count_edits(&t->st, t->own
 
 void reload_display(tab *t)
 {
+    /* every edit makes the tab a PDF first (tab_editable): another format has nothing to rebuild */
+    if (!t->pdf) return;
     finish_text(t);
     pdf_document *fresh = NULL;
     fz_var(fresh);
@@ -426,10 +486,90 @@ void reload_display(tab *t)
         return;
     }
     fields_reset(t);
-    pdf_drop_document(CTX, t->doc);
-    t->doc = fresh;
+    fz_drop_document(CTX, t->doc);
+    t->doc = (fz_document *)fresh;
+    t->pdf = fresh;
     t->doc_is_file = 0;
     tab_invalidate_pages(t);
+}
+
+/* ---- documents of other formats ---- */
+
+fz_buffer *tab_pdf_file(tab *t)
+{
+    if (t->pdf) return fz_keep_buffer(CTX, t->file);
+    return pt_convert_to_pdf(CTX, t->doc);
+}
+
+int tab_editable(tab *t)
+{
+    if (t->pdf || !t->doc) return 1;
+    fz_buffer *pdf = NULL;
+    pdf_document *doc = NULL;
+    fz_var(pdf), fz_var(doc);
+    fz_try(CTX)
+    {
+        pdf = pt_convert_to_pdf(CTX, t->doc);
+        doc = pt_open_pdf_buffer(CTX, pdf, t->path, NULL, NULL);
+    }
+    fz_catch(CTX)
+    {
+        fz_drop_buffer(CTX, pdf);
+        char *msg = pt_format("Cannot make an editable PDF of %s:\n%s", pt_basename(t->path), fz_caught_message(CTX));
+        message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+        free(msg);
+        return 0;
+    }
+    /* The conversion draws the same pages at the same size with the same text, so the renders, words, links and
+     * sizes learnt from the original stay valid and the page does not flash while it changes over. */
+    fz_drop_document(CTX, t->doc);
+    t->doc = (fz_document *)doc;
+    t->pdf = doc;
+    fz_drop_buffer(CTX, t->file);
+    t->file = pdf;
+    t->doc_is_file = 1;
+    free(t->password);
+    t->password = NULL;
+    t->converted = 1;
+    status("Editing a copy as PDF; Save writes a new .pdf", 8);
+    return 1;
+}
+
+void tab_relayout(tab *t)
+{
+    if (!t->doc || t->pdf || !t->layout_w) return;
+    float w, h, em;
+    ebook_layout(t, &w, &h, &em);
+    if (w == t->layout_w && h == t->layout_h && em == t->layout_em) return;
+    fz_try(CTX)
+    {
+        fz_bookmark mark = fz_make_bookmark(CTX, t->doc, fz_location_from_page_number(CTX, t->doc, t->pno));
+        fz_layout_document(CTX, t->doc, w, h, em);
+        t->pno = fz_page_number_from_location(CTX, t->doc, fz_lookup_bookmark(CTX, t->doc, mark));
+        t->own = fz_count_pages(CTX, t->doc);
+    }
+    fz_catch(CTX)
+    {
+        char *msg = pt_format("Cannot lay out %s again:\n%s", pt_basename(t->path), fz_caught_message(CTX));
+        message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+        free(msg);
+        return;
+    }
+    t->layout_w = w, t->layout_h = h, t->layout_em = em;
+    finish_text(t);
+    close_popover(t, 0);
+    fields_reset(t);
+    pt_state_free(&t->st);
+    pt_state_init(&t->st, t->own);
+    tab_invalidate_pages(t);
+    if (t->pno < 0 || t->pno >= t->own) t->pno = 0;
+    t->text_sel_page = -1;
+    t->matches.n = 0;
+    t->sel = SEL_NONE;
+    /* a restore outlasts the fit to the new page size, which a scroll request would not */
+    if (t->fit) t->fit_pending = t->fit;
+    t->restore_pending = 1, t->restore_top = 0;
+    if (t->find_open) run_search(t);
 }
 
 /* ---- coordinates ---- */
@@ -568,7 +708,12 @@ int order_index(const tab *t, int page)
 
 /* ---- undo ---- */
 
-void snapshot(tab *t, pt_state *out) { pt_state_copy(out, &t->st); }
+/* every edit begins with a snapshot for its undo step, so this is where another format becomes a PDF */
+void snapshot(tab *t, pt_state *out)
+{
+    tab_editable(t);
+    pt_state_copy(out, &t->st);
+}
 
 void push_undo(tab *t, pt_state *snap)
 {
@@ -801,6 +946,8 @@ typedef struct render_job {
     fz_irect box;      /* a tile's device pixels */
     fz_buffer *bytes;  /* the document of `gen` */
     char *password;    /* for `bytes` when they are the encrypted file itself */
+    char *name;        /* names the format of `bytes` (pt_open_document) */
+    float layout[3];   /* the e-book layout of `bytes`: w, h, em */
     fz_pixmap *pix;
     double done_at;
     struct render_job *next;
@@ -864,6 +1011,7 @@ static void job_free(fz_context *ctx, render_job *j)
     fz_drop_pixmap(ctx, j->pix);
     pt_words_free(&j->found);
     free(j->password);
+    free(j->name);
     free(j);
 }
 
@@ -880,10 +1028,7 @@ static fz_display_list *worker_list(render_worker_state *w, render_job *j)
     fz_context *ctx = w->ctx;
     if (j->gen != w->doc_gen || !w->doc) {
         worker_drop_doc(w);
-        fz_stream *s = fz_open_buffer(ctx, j->bytes);
-        fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
-        fz_always(ctx) fz_drop_stream(ctx, s);
-        fz_catch(ctx) fz_rethrow(ctx);
+        w->doc = pt_open_document(ctx, j->bytes, j->name, j->layout[0], j->layout[1], j->layout[2]);
         if (fz_needs_password(ctx, w->doc) && !fz_authenticate_password(ctx, w->doc, j->password ? j->password : ""))
             fz_throw(ctx, FZ_ERROR_ARGUMENT, "wrong password");
         w->doc_gen = j->gen;
@@ -1087,7 +1232,7 @@ static fz_buffer *render_bytes(tab *t)
         out = fz_new_output_with_buffer(CTX, buf);
         pdf_write_options opts = pdf_default_write_options;
         opts.do_encrypt = PDF_ENCRYPT_NONE;
-        pdf_write_document(CTX, t->doc, out, &opts);
+        pdf_write_document(CTX, t->pdf, out, &opts);
         fz_close_output(CTX, out);
     }
     fz_always(CTX) fz_drop_output(CTX, out);
@@ -1122,6 +1267,8 @@ static void render_request(tab *t, render_job want)
     *j = want;
     j->bytes = fz_keep_buffer(CTX, bytes);
     if (t->doc_is_file && t->password) j->password = pt_strdup(t->password);
+    j->name = pt_strdup(t->pdf ? "display.pdf" : t->path);
+    j->layout[0] = t->layout_w, j->layout[1] = t->layout_h, j->layout[2] = t->layout_em;
     pthread_mutex_lock(&R.lock);
     /* the same page at another zoom is no longer wanted; past the limit the farthest requests go */
     j->next = R.queue, R.queue = j;
@@ -1377,9 +1524,10 @@ field_infos *page_fields(tab *t, int page)
 {
     if (t->fields_ok[page]) return &t->fields[page];
     t->fields_ok[page] = 1;
+    if (!t->pdf) return &t->fields[page];
     fz_try(CTX)
     {
-        pdf_page *p = pdf_load_page(CTX, t->doc, page);
+        pdf_page *p = pdf_load_page(CTX, t->pdf, page);
         for (pdf_annot *w = pdf_first_widget(CTX, p); w; w = pdf_next_widget(CTX, w)) {
             pdf_obj *obj = pdf_annot_obj(CTX, w);
             field_info f = {0};
@@ -1416,9 +1564,10 @@ annot_infos *page_annots(tab *t, int page)
 {
     if (t->annots_ok[page]) return &t->annots[page];
     t->annots_ok[page] = 1;
+    if (!t->pdf) return &t->annots[page];
     fz_try(CTX)
     {
-        pdf_page *p = pdf_load_page(CTX, t->doc, page);
+        pdf_page *p = pdf_load_page(CTX, t->pdf, page);
         fz_stext_page *st = NULL;
         for (pdf_annot *a = pdf_first_annot(CTX, p); a; a = pdf_next_annot(CTX, a)) {
             enum pdf_annot_type type = pdf_annot_type(CTX, a);
@@ -1630,8 +1779,14 @@ fz_buffer *tab_edited(tab *t, const pt_ints *pages, pt_leaks *leaks)
         for (int k = 0; k < t->editors.n; k++)
             if (!memcmp(&t->editors.v[k]->key, &s.forms.v[i].key, sizeof(pt_key)) && t->editors.v[k]->fit_px > 0)
                 s.forms.v[i].size = (float)t->editors.v[k]->fit_px;
-    fz_buffer *data = NULL;
-    fz_try(CTX) data = pt_apply_edits_buffer(CTX, t->file, t->path, t->password, &s, leaks);
+    fz_buffer *data = NULL, *file = NULL;
+    fz_var(file);
+    fz_try(CTX)
+    {
+        file = tab_pdf_file(t);
+        data = pt_apply_edits_buffer(CTX, file, t->path, t->password, &s, leaks);
+    }
+    fz_always(CTX) fz_drop_buffer(CTX, file);
     fz_catch(CTX)
     {
         char *msg = pt_format("Could not write the edited PDF:\n%s", fz_caught_message(CTX));
@@ -1687,7 +1842,7 @@ static fz_buffer *tab_output(tab *t, pt_leaks *leaks)
     fz_buffer *data = tab_edited(t, NULL, leaks);
     if (!data) return NULL;
     fz_buffer *locked = NULL;
-    fz_try(CTX) locked = pt_keep_encryption(CTX, data, t->doc, t->password, NULL);
+    fz_try(CTX) locked = t->pdf ? pt_keep_encryption(CTX, data, t->pdf, t->password, NULL) : fz_keep_buffer(CTX, data);
     fz_catch(CTX)
     {
         char *msg = pt_format("Could not encrypt the document as the original is:\n%s", fz_caught_message(CTX));
@@ -1747,9 +1902,15 @@ static void save_confirmed(void *ctx, int yes)
     free(password);
 }
 
+static void save_converted(tab *t);
+
 void tab_save(tab *t)
 {
     if (!tab_edit_count(t)) return;
+    if (t->converted) {
+        save_converted(t);
+        return;
+    }
 #ifdef __ANDROID__
     char *msg = pt_format("Overwrite %s with the edited version?", pt_basename(t->path));
 #elif defined(__APPLE__)
@@ -1772,6 +1933,7 @@ typedef struct {
     unsigned tab_id;
     pt_ints pages;
     int has_pages, dpi, keep_password, optimize;
+    int open_saved; /* the tab shows the written file afterwards */
     char *password;
 } copy_job;
 
@@ -1844,10 +2006,10 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
 
             const char *pw = job->keep_password ? t->password : job->password;
             /* keeping the password keeps the original's encryption and permissions; a new one replaces them */
-            if (data && (job->keep_password || pw)) {
+            if (data && (job->keep_password ? t->pdf != NULL : pw != NULL)) {
                 fz_buffer *locked = NULL;
                 fz_try(CTX) locked =
-                    job->keep_password ? pt_keep_encryption(CTX, data, t->doc, pw, NULL) : pt_protect(CTX, data, pw);
+                    job->keep_password ? pt_keep_encryption(CTX, data, t->pdf, pw, NULL) : pt_protect(CTX, data, pw);
                 fz_catch(CTX)
                 {
                     char *msg = pt_format("Could not encrypt the copy:\n%s", fz_caught_message(CTX));
@@ -1864,6 +2026,7 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
                     message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
                 else {
                     tab_report(t, out, &leaks, scrubs(t, job->has_pages ? &job->pages : NULL) || job->dpi);
+                    if (job->open_saved) tab_load(t, out, NULL);
                     if (job->optimize) {
                         char *msg = pt_format("Optimized copy saved: %.1f MB -> %.1f MB (%d%% smaller)",
                                               before / 1048576.0, data->len / 1048576.0,
@@ -1900,6 +2063,28 @@ static void write_copy(tab *t, const pt_ints *pages, const char *default_name, i
     file_dialog(FD_SAVE, "Save copy", start, "PDF", "*.pdf", write_copy_chosen, job);
     free(dir);
     free(start);
+}
+
+/* A tab converted from another format saves to a new <stem>.pdf (<stem>-1.pdf, ... when taken) beside the original,
+ * which stays as it is; the tab then shows that PDF. */
+static void save_converted(tab *t)
+{
+    char *dir = pt_dirname(t->path), *stem = pt_stem(t->path), *out = NULL;
+    for (int i = 0; !out || pt_exists(out); i++) {
+        free(out);
+        char *name = i ? pt_format("%s-%d.pdf", stem, i) : pt_format("%s.pdf", stem);
+        out = pt_join(dir, name);
+        free(name);
+    }
+    copy_job *job = calloc(1, sizeof *job);
+    job->tab_id = t->id;
+    job->keep_password = 1;
+    job->open_saved = 1;
+    pt_strs paths = {0};
+    pt_push(paths, out);
+    write_copy_chosen(job, &paths);
+    pt_strs_free(&paths);
+    free(dir), free(stem);
 }
 
 void tab_save_optimized(tab *t)
@@ -2461,21 +2646,24 @@ void toggle_favourite_colour(const unsigned char rgb[3])
 /* Replaces the tab's file and document with the file as it is now on disk, dropping edits and undo history. */
 static void reload_now(tab *t)
 {
-    pdf_document *fresh = NULL;
+    fz_document *fresh = NULL;
     fz_buffer *file = NULL;
+    float layout[3];
     fz_var(fresh), fz_var(file);
     fz_try(CTX)
     {
         file = fz_read_file(CTX, t->path);
-        fresh = pt_open_pdf_buffer(CTX, file, t->path, t->password, NULL);
+        fresh = open_file(t, file, t->path, 0, layout);
+        if (fz_needs_password(CTX, fresh) && !fz_authenticate_password(CTX, fresh, t->password ? t->password : ""))
+            fz_throw(CTX, FZ_ERROR_ARGUMENT, "wrong password");
         /* a file still being written usually fails here, at its end, rather than while drawing */
-        fz_page *last = fz_load_page(CTX, (fz_document *)fresh, pdf_count_pages(CTX, fresh) - 1);
+        fz_page *last = fz_load_page(CTX, fresh, fz_count_pages(CTX, fresh) - 1);
         fz_drop_page(CTX, last);
     }
     fz_catch(CTX)
     {
         char *msg = pt_format("Cannot reload %s: %s", pt_basename(t->path), fz_caught_message(CTX));
-        pdf_drop_document(CTX, fresh);
+        fz_drop_document(CTX, fresh);
         fz_drop_buffer(CTX, file);
         /* still being written: try again shortly, a few times; broken for good (a failed build): the next change
          * tries again, not every poll */
@@ -2495,12 +2683,15 @@ static void reload_now(tab *t)
     close_popover(t, 0);
     fields_reset(t);
 
-    pdf_drop_document(CTX, t->doc);
+    fz_drop_document(CTX, t->doc);
     t->doc = fresh;
+    t->pdf = pdf_specifics(CTX, fresh);
+    t->converted = 0;
+    t->layout_w = layout[0], t->layout_h = layout[1], t->layout_em = layout[2];
     fz_drop_buffer(CTX, t->file);
     t->file = file;
     t->doc_is_file = 1;
-    t->own = pdf_count_pages(CTX, fresh);
+    t->own = fz_count_pages(CTX, fresh);
     pt_state_free(&t->st);
     pt_state_init(&t->st, t->own);
     free_history(&t->history, &t->nhist);
@@ -2807,6 +2998,8 @@ tab *tab_read_state(const char *file)
     fclose(f);
     if (!t->st.order.n)
         for (int p = 0; p < t->own; p++) pt_push(t->st.order, p);
+    /* edits exist only on a converted tab: its edits and undo steps apply to the conversion */
+    if (pt_count_edits(&t->st, t->own) || t->nhist || t->nfut) tab_editable(t);
     reload_display(t);
     t->pno = order_index(t, pno) >= 0 ? pno : t->st.order.v[0];
     t->zoom = zoom > 0 ? zoom : 1.5f;

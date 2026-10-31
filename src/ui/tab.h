@@ -1,7 +1,8 @@
 #ifndef PT_TAB_H
 #define PT_TAB_H
-/* One open PDF: the document tab's state, shared by document.c (model, undo, caches, saving), views.c (the page
- * canvas and form fields), edit.c (toolbar, find bar, the tools and their popovers, sidebar) and dialogs.c.
+/* One open document (a PDF, or another format until its first edit converts it): the document tab's state, shared by
+ * document.c (model, undo, caches, saving), views.c (the page canvas and form fields), edit.c (toolbar, find bar, the
+ * tools and their popovers, sidebar) and dialogs.c.
  *
  * Edits (pt_state) hold rects in the page space of the file's page as built by pt_open_pdf_buffer, before the rotation
  * the tab adds; the display copy (`doc`) has that rotation applied, so src_to_disp / disp_to_src convert.
@@ -198,7 +199,11 @@ typedef struct {
 struct tab {
     unsigned id; /* never reused: a callback that may outlive the tab keeps this and looks it up (app_doc_by_id) */
     char *path, *password;
-    pdf_document *doc;
+    fz_document *doc;
+    pdf_document *pdf; /* doc as a PDF; NULL while a document of another format shows as read */
+    /* the file is of another format and `file` holds its PDF conversion, made by the first edit (tab_editable) */
+    int converted;
+    float layout_w, layout_h, layout_em; /* the e-book layout `doc` has (w 0: none, a fixed-layout format) */
     int own, loaded;
     pt_state st;
     pt_state *history, *future;
@@ -254,8 +259,8 @@ struct tab {
     } tiles[TILE_CACHE];
 
     size_t tile_bytes;
-    unsigned render_gen;     /* tags this tab's background renders; a new one drops those of the old pages */
-    fz_buffer *file;         /* the file's bytes as read: everything opens these, never the file again */
+    unsigned render_gen; /* tags this tab's background renders; a new one drops those of the old pages */
+    fz_buffer *file;     /* the file's bytes as read (converted: their PDF): everything opens these, never the file */
     fz_buffer *render_bytes; /* the rebuilt document as render workers open it, written when it first renders */
     int doc_is_file;         /* doc is `file` as read (not rebuilt with edits), so workers open `file` itself */
     Texture2D *thumbs;
@@ -346,6 +351,17 @@ void reload_display(tab *t);
 /* Drops everything learnt about the pages (renders, words, fields, annotations, links, sizes, the outline) and sizes
  * the per-page tables for t->doc's page count; ticks stay. For after t->doc was opened again or its pages changed. */
 void tab_invalidate_pages(tab *t);
+/* Before the first edit of a document of another format (snapshot calls it): its PDF conversion replaces t->file and
+ * t->doc, and a status line says so. 0 when the conversion failed (reported); 1 when the tab is a PDF. */
+int tab_editable(tab *t);
+/* t->file as a PDF (one more reference), converted when the tab still shows another format; throws */
+fz_buffer *tab_pdf_file(tab *t);
+/* a new copy of t->file opened as the tab shows it (format, e-book layout, password); throws */
+fz_document *tab_open_file(tab *t);
+/* the file at `path` read and opened by its format, an e-book laid out as the tab's would be; throws */
+fz_document *open_document_file(tab *t, const char *path);
+/* An e-book not yet converted, laid out again at the E-book layout settings, staying on the page it showed. */
+void tab_relayout(tab *t);
 void tab_release_renders(tab *t); /* a tab out of view gives its renders back; they are made again when it is shown */
 fz_rect page_bounds(tab *t, int page); /* display page size, origin 0,0 */
 int page_rotation(tab *t, int page);   /* degrees the tab adds */
@@ -405,7 +421,9 @@ const char *annot_comment(tab *t, int page, const annot_info *a); /* with unsave
 /* median colour of a thin ring just outside `src`, so a redaction blends into the page; white when it cannot be drawn
  */
 void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3]);
-void tab_save(tab *t); /* asks, then replaces the file: the original goes to the trash and the tab reloads */
+/* asks, then replaces the file: the original goes to the trash and the tab reloads; a converted tab writes a new
+ * <stem>.pdf beside the original instead and shows it */
+void tab_save(tab *t);
 void tab_save_as(tab *t);
 void tab_save_optimized(tab *t);
 void tab_export(tab *t);

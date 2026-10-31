@@ -39,6 +39,9 @@ const pt_setting_def pt_settings_defs[] = {
     {"ocr_language", PT_SET_STR, "eng", 0, "Tesseract language(s) for text recognition, e.g. eng or deu+eng"},
     {"signing_certificate", PT_SET_STR, "", 0,
      "The .p12/.pfx certificate used last to sign (its password is never stored)"},
+    {"ebook_page_size", PT_SET_STR, PT_EBOOK_PAGE_SIZE, 0,
+     "Page size e-books and Office documents are laid out at: A5 | A4 | Letter | window"},
+    {"ebook_font_size", PT_SET_INT, NULL, PT_EBOOK_FONT_SIZE, "Font size in points e-books are laid out with"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 

@@ -4,6 +4,8 @@
 # linked statically: the app needs nothing installed. Needs the Xcode command line tools (xcode-select --install)
 # and CMake. Output: $PT_MACOS_OUT/out (default ~/Library/Caches/pdf-tools/macos/out). Re-runs are incremental.
 # The app is not signed with a Developer ID: open it the first time with right-click > Open.
+# MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from /System/Library/Fonts);
+# PT_FONTS=full bundles them.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -22,12 +24,12 @@ mkdir -p "$ROOT/dl" "$ROOT/src" "$ROOT/out"
 
 step "MuPDF $MUPDF_VERSION"
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
-MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG
+MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG-$FONTS_TAG
 fetch "$MUPDF_URL" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
 [ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src"
 # libs for the app; mutool (apps) only to draw the icon from logo.svg
 make -C "$MUPDF_SRC" -j"$JOBS" libs apps build=release tesseract=yes OUT="$MUPDF_OUT" HAVE_X11=no HAVE_GLUT=no USE_SYSTEM_LIBS=no \
-    XCFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET $SIZE_CFLAGS" \
+    XCFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET $SIZE_CFLAGS $MUPDF_FONT_CFLAGS" \
     XLDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" \
     >"$ROOT/mupdf-build.log" 2>&1 || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"

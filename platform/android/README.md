@@ -37,12 +37,12 @@ would cover the window, and raylib cannot inset its framebuffer.
 
 | File | Why |
 | --- | --- |
-| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (shared Download folder with storage access, else `files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `pt_app_main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), one- and two-finger drags into wheel scrolling, Back into Escape or a close prompt. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
+| `android_main.c` | `main()` for raylib's `android_main()`: sets `HOME` (`files/`), `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`, runs app.c's `pt_app_main`, then exits the process (the shared sources keep state in statics a relaunch would inherit). Turns touch, mouse and key events into widgets.c's GLFW callbacks, characters via `KeyEvent.getUnicodeChar()` (JNI), one- and two-finger drags into wheel scrolling, Back into Escape or a close prompt. Shows the soft keyboard while a text field has focus. Opens `ACTION_VIEW` documents. |
 | `glfw_stubs.c` | The GLFW symbols the shared sources call. Cursor, focus and close calls are no-ops; the mouse/key callback setters store widgets.c's handlers; `glfwWaitEventsTimeout` sleeps on the ALooper so an idle window does not redraw at 60 fps. |
 | `raylib_core.c` | `#include "rcore.c"` plus `pt_raylib_follow_window()`, which needs raylib's static `CORE`/`platform`: raylib sizes its framebuffer once at window creation and has no public resize on Android. Each frame it sets the buffer geometry to follow the window (0x0, also after a surface rebind), and when the EGL surface size differs from `GetScreenWidth/Height` it updates display/screen/render/current-FBO size, clears the render offset and screen scale, and resets rlgl's framebuffer size, viewport and projection (`SetupViewport`). Scissor and touch scaling read those fields. After a config change, resize or new window, `android_main.c` keeps drawing for 1 s so the surface reaches the new size. If raylib is upgraded, check that the field names still match. |
 | `file_dialog_android.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` for Android: the system document picker, copies of `content://` documents and writing them back (see below). |
 | `android_glue.h` | Declarations shared by the files above, including `pt_java()`, which calls a `String` method of the activity. |
-| `java/.../PdfToolsActivity.java` | `NativeActivity` subclass: keeps intents delivered while running (`onNewIntent` -> `setIntent`), runs the picker (`startActivityForResult`, result polled by the native side), takes persistable URI permissions, copies documents in and out through `ContentResolver`, maps documents to file paths, and asks for storage access. |
+| `java/.../PdfToolsActivity.java` | `NativeActivity` subclass: keeps intents delivered while running (`onNewIntent` -> `setIntent`), runs the picker (`startActivityForResult`, result polled by the native side), takes persistable URI permissions, copies documents in and out through `ContentResolver`. |
 | `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. Storage permission: MANAGE_EXTERNAL_STORAGE ("All files access"). |
 
 ### Substitutions in shared sources (keep in sync)
@@ -71,9 +71,9 @@ Every file dialog is the system document picker:
 
 | Dialog | Picker | What the window gets |
 | --- | --- | --- |
-| Open (one / several) | `ACTION_OPEN_DOCUMENT` (`EXTRA_ALLOW_MULTIPLE`), types from the patterns: `application/pdf`, `image/*`, else any | the file's own path when storage access maps it to one, else a copy `cache/saf/<hash of URI>/<name>` |
-| Save as / save copy | `ACTION_CREATE_DOCUMENT`, suggested name = basename of the start path | the file's own path (the picker created it), else such a copy; the window writes it while the callback runs and it is copied to the document right after |
-| Save N files in | `ACTION_OPEN_DOCUMENT_TREE` | the folder's own path, else a new folder `cache/saf-out/...`; each file written there gets a document in the tree (`DocumentsContract.createDocument`) |
+| Open (one / several) | `ACTION_OPEN_DOCUMENT` (`EXTRA_ALLOW_MULTIPLE`), types from the patterns: `application/pdf`, `image/*`, else any | a copy `cache/saf/<hash of URI>/<name>` |
+| Save as / save copy | `ACTION_CREATE_DOCUMENT`, suggested name = basename of the start path | such a copy; the window writes it while the callback runs and it is copied to the document right after |
+| Save N files in | `ACTION_OPEN_DOCUMENT_TREE` | a new folder `cache/saf-out/...`; each file written there gets a document in the tree (`DocumentsContract.createDocument`) |
 
 Cancel gives an empty list. Picked URIs keep their permission (`takePersistableUriPermission`).
 
@@ -87,19 +87,14 @@ Cancel gives an empty list. Picked URIs keep their permission (`takePersistableU
   are replaced in place; only the app's own files (signatures) go to its trash under `files/.local/share/Trash`.
 - **Recent files** list copies; they reopen from the copy, and a copy the system removed from the cache is
   fetched again from its document at start-up.
-- PDFs opened from a file manager, mail or browser (`ACTION_VIEW`) take the same path (own path or copy).
+- PDFs opened from a file manager, mail or browser (`ACTION_VIEW`) take the same path (a copy, written back).
 - Settings and signatures: `files/.config/pdf-tools/`. `files/external` links to the app's external folder,
   which a PC reaches over USB.
 
 ### Storage access
 
-With "All files access", picked documents on shared storage
-(`/storage/...`, also via the Downloads and media providers) open and save in place by path, and dialogs start
-in Download (`HOME`). Without it, everything works through copies and the dialogs start in `files/`.
-
-When the app asks: once at the first start (when its window first gets focus), and later at most once per run,
-when a file dialog opens without access (the picker follows when the request returns). The system's
-"All files access" page for PDF Tools opens; turn on "Allow access to manage all files", then go back.
+The app asks for no permissions. Every document comes through the system picker or another app's "Open with",
+works as a copy in the app's cache and is written back through its URI; `HOME` is `files/`.
 
 ## Touch
 

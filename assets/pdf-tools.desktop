@@ -7,5 +7,5 @@ Exec=pdf-tools %F
 Icon=pdf-tools
 Terminal=false
 Categories=Office;Viewer;
-MimeType=application/pdf;
+MimeType=application/pdf;application/vnd.ms-xpsdocument;application/oxps;application/epub+zip;application/x-mobipocket-ebook;application/x-fictionbook+xml;application/vnd.comicbook+zip;application/x-cbt;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.openxmlformats-officedocument.presentationml.presentation;image/svg+xml;image/png;image/jpeg;image/gif;image/bmp;image/tiff;image/jp2;image/jxr;image/vnd.adobe.photoshop;image/x-portable-anymap;
 StartupWMClass=pdf-tools

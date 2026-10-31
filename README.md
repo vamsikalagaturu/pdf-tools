@@ -75,6 +75,10 @@ platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-T
 The Windows script needs Visual Studio 2022 or 2026 with the C++ tools and Strawberry Perl, as on GitHub's
 `windows-latest` runner; it builds MuPDF through its Visual Studio solution and everything else with MSVC.
 
+The builds leave out MuPDF's CJK and Noto fallback fonts: text in a font a PDF does not embed is drawn with the
+system's fonts (fontconfig, /system/fonts, the macOS and Windows font folders). `PT_FONTS=full` before any of the
+scripts bundles them as well, for a larger program that needs no installed fonts.
+
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
 dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it with the English
 OCR data as the AppImage. To install the binary instead, with its man page, desktop entry, icon and OCR data:

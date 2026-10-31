@@ -1,7 +1,7 @@
 /* The document tab's dialogs (export pages, protect with a password, the signature pad and library), its
  * document-wide tools (personal data, Bates numbers, watermarks, properties, pages as images, certificate
- * signing), and the window's file choosers, trash and detached programs. Message boxes and the colour dialog are
- * widgets.c's, printing is system.c's; Android and Windows bring their own choosers (platform/). */
+ * signing), the e-book layout, and the window's file choosers, trash and detached programs. Message boxes and the
+ * colour dialog are widgets.c's, printing is system.c's; Android and Windows bring their own choosers (platform/). */
 #include "dialogs.h"
 #include <dirent.h>
 #include <errno.h>
@@ -879,6 +879,53 @@ void properties_dialog(tab *t)
     dialog_push(d);
 }
 
+/* ---- e-book layout ---- */
+
+static const char *EBOOK_SIZES[] = {"A5", "A4", "Letter", "window"};
+static const char *EBOOK_SIZE_LABELS[] = {"A5", "A4", "Letter", "Window"};
+
+typedef struct {
+    int size, font;
+} ebook_data;
+
+static void ebook_free(dialog *d) { free(d->data); }
+
+static int ebook_frame(dialog *d, Rectangle b)
+{
+    ebook_data *e = d->data;
+    float y = b.y;
+    draw_text_in("Page size:", (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    ui_combo(ui_id(d, 1), (Rectangle){b.x + 120, y, 160, 30}, EBOOK_SIZE_LABELS, 4, &e->size);
+    y += 38;
+    draw_text_in("Font size:", (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    ui_spin(ui_id(d, 2), (Rectangle){b.x + 120, y, 120, 30}, &e->font, 6, 48, 1, NULL, " pt");
+    y += 38;
+    draw_text("E-books and Office documents are laid out again; edited ones keep their pages.", b.x, y + 2, FS_SMALL,
+              F_REGULAR, pal.disabled_text);
+    Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
+    if (ui_button(ui_id(d, 3), ok, "OK", NULL, B_PRIMARY, NULL)) {
+        pt_settings_set_str(&app.settings, "ebook_page_size", EBOOK_SIZES[e->size]);
+        pt_settings_set_int(&app.settings, "ebook_font_size", e->font);
+        for (int i = 0; i < app.tabs.n; i++)
+            if (app.tabs.v[i].kind == TAB_DOC) tab_relayout(app.tabs.v[i].doc);
+        return 1;
+    }
+    return ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL);
+}
+
+void ebook_layout_dialog(void)
+{
+    dialog *d = calloc(1, sizeof *d);
+    ebook_data *e = calloc(1, sizeof *e);
+    const char *size = pt_settings_str(&app.settings, "ebook_page_size");
+    for (int i = 0; i < 4; i++)
+        if (!strcasecmp(size, EBOOK_SIZES[i])) e->size = i;
+    e->font = pt_settings_int(&app.settings, "ebook_font_size");
+    if (e->font < 6 || e->font > 48) e->font = PT_EBOOK_FONT_SIZE;
+    *d = (dialog){"E-book layout", 520, 190, ebook_frame, ebook_free, e, 1};
+    dialog_push(d);
+}
+
 /* ---- pages as images ---- */
 
 typedef struct {
@@ -1116,7 +1163,7 @@ fz_buffer *cert_sign_output(tab *t, fz_buffer *pdf, const pt_ints *pages, const 
     {
         /* the box in PDF user space, which page rotation and cropping leave as it is */
         fz_rect disp = rect_src_to_disp(t, t->st.cert.page, t->st.cert.rect);
-        pdf_page *page = pdf_load_page(CTX, t->doc, t->st.cert.page);
+        pdf_page *page = pdf_load_page(CTX, t->pdf, t->st.cert.page);
         fz_matrix ctm;
         pdf_page_transform(CTX, page, NULL, &ctm);
         fz_drop_page(CTX, (fz_page *)page);

@@ -139,6 +139,42 @@ static void test_ranges(void)
     pt_vec_free(r);
 }
 
+static void test_other_formats(void)
+{
+    float w = 0, h = 0;
+    CHECK(pt_page_size("letter", &w, &h) && w == 612 && h == 792);
+    CHECK(!pt_page_size("B5", &w, &h) && !pt_page_size(NULL, &w, &h));
+    CHECK(pt_is_other_format("/a.b/Book.EPUB") && !pt_is_other_format("x.pdf") && !pt_is_other_format("notes.txt"));
+    CHECK(!pt_is_other_format("/a.epub/plain") && pt_doc_format_of("scan.tiff")->image);
+    char *patterns = pt_doc_patterns();
+    CHECK(!strncmp(patterns, "*.pdf *.xps ", 12) && strstr(patterns, " *.docx "));
+    free(patterns);
+
+    static const char svg[] =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\">"
+        "<text x=\"10\" y=\"50\" font-family=\"Helvetica\" font-size=\"20\">Hotel India</text></svg>";
+    fz_buffer *file = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)svg, sizeof svg - 1), *pdf = NULL;
+    fz_document *doc = pt_open_document(ctx, file, "drawing.svg", 0, 0, 0);
+    pdf = pt_convert_to_pdf(ctx, doc);
+    fz_drop_document(ctx, doc);
+    pdf_document *out = pt_open_pdf_bytes(ctx, pdf->data, pdf->len, NULL);
+    fz_page *p = fz_load_page(ctx, (fz_document *)out, 0);
+    fz_rect b = fz_bound_page(ctx, p);
+    char *text = pt_page_text(ctx, p);
+    CHECK(pdf_count_pages(ctx, out) == 1 && b.x1 == 200 && b.y1 == 100 && strstr(text, "Hotel India"));
+    free(text);
+    fz_drop_page(ctx, p);
+    pdf_drop_document(ctx, out);
+    fz_drop_buffer(ctx, pdf);
+
+    /* a name convert does not read opens as a PDF, which SVG is not */
+    int threw = 0;
+    fz_try(ctx) fz_drop_document(ctx, pt_open_document(ctx, file, "drawing.txt", 0, 0, 0));
+    fz_catch(ctx) threw = 1;
+    CHECK(threw);
+    fz_drop_buffer(ctx, file);
+}
+
 static void test_blank_page(void)
 {
     char *src = text_pdf("blank-src.pdf", "One page");
@@ -538,7 +574,7 @@ static void test_stamps(void)
         fz_drop_page(ctx, p);
     }
     pt_meta meta;
-    pt_get_meta(ctx, doc, &meta);
+    pt_get_meta(ctx, (fz_document *)doc, &meta);
     CHECK(meta.title && !strcmp(meta.title, "Stamped"));
     pt_meta_free(&meta);
     pt_bookmarks marks = {0};
@@ -809,7 +845,9 @@ int main(void)
     if (!mkdtemp(tmpdir)) return 1;
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     fz_register_document_handlers(ctx);
+    pt_install_system_fonts(ctx);
     test_ranges();
+    test_other_formats();
     test_blank_page();
     test_shapes();
     test_optimize();

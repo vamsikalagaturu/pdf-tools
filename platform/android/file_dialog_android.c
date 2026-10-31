@@ -1,6 +1,6 @@
 /* The file dialog on Android: the system document picker (Storage Access Framework) via PdfToolsActivity.
- * The window works on file paths, so a picked document is used in place when storage access maps it to a
- * file, and otherwise copied to cache/saf/<hash of its URI>/<name>. Copies remember their URI (documents.tsv in
+ * The app has no storage permission and the window works on file paths, so a picked document is copied to
+ * cache/saf/<hash of its URI>/<name>. Copies remember their URI (documents.tsv in
  * the app's files folder) and are written back to it whenever the app changes them: Save replaces the copy,
  * "save as" targets a fresh copy, and a watcher exports any change once the file's size and time hold still.
  * Replaces file_dialog, file_dialogs_poll, file_dialog_busy and move_to_trash of dialogs.c (which renames its own
@@ -158,9 +158,6 @@ static int unsynced(const doc *d)
 
 char *pt_android_open_uri(const char *uri)
 {
-    char *real = pt_java("realPath", 1, uri);
-    if (real && !access(real, R_OK)) return real;
-    free(real);
     char *path = copy_path(uri);
     doc *d = by_path(path);
     if (d && unsynced(d)) return path; /* edits not yet written back: keep them */
@@ -308,6 +305,9 @@ static void pick_start(int mode, const char *mimes, const char *name, ui_files_d
     pick.reexport = reexport ? pt_strdup(reexport) : NULL;
 }
 
+/* room for every type of pt_doc_formats */
+#define MIME_TYPES_MAX 1024
+
 static void add_type(char *types, const char *type)
 {
     if (strstr(types, type)) return;
@@ -316,7 +316,7 @@ static void add_type(char *types, const char *type)
 }
 
 /* MIME types for patterns such as "*.pdf *.png"; "" (anything) when one is unknown */
-static void mime_types(const char *patterns, char types[128])
+static void mime_types(const char *patterns, char types[MIME_TYPES_MAX])
 {
     static const char *images[] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"};
     types[0] = 0;
@@ -326,8 +326,10 @@ static void mime_types(const char *patterns, char types[128])
         const char *dot = strrchr(p, '.');
         int image = 0;
         for (size_t i = 0; dot && i < sizeof images / sizeof *images; i++) image |= !strcasecmp(dot, images[i]);
+        const pt_doc_format *format = pt_doc_format_of(p);
         if (dot && !strcasecmp(dot, ".pdf")) add_type(types, "application/pdf");
         else if (image) add_type(types, "image/*");
+        else if (format) add_type(types, format->mime);
         else {
             types[0] = 0;
             break;
@@ -341,7 +343,7 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
 {
     (void)title, (void)filter_name;
     if (pick.active) return;
-    char types[128];
+    char types[MIME_TYPES_MAX];
     mime_types(patterns, types);
     if (mode == FD_SAVE)
         snprintf(types, sizeof types, "%s",
@@ -350,8 +352,6 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
 }
 
 int file_dialog_busy(void) { return pick.active; }
-
-static int writable_dir(const char *dir) { return dir && !access(dir, W_OK); }
 
 static void picked(int mode, ui_files_done done, void *ctx, char *reexport, pt_strs *uris)
 {
@@ -369,29 +369,17 @@ static void picked(int mode, ui_files_done done, void *ctx, char *reexport, pt_s
             }
         }
     } else if (mode == FD_SAVE && uris->n) {
-        char *real = pt_java("realPath", 1, uris->v[0]), *dir = real ? pt_dirname(real) : NULL;
-        if (real && writable_dir(dir)) pt_push(paths, real);
-        else {
-            free(real);
-            char *path = copy_path(uris->v[0]);
-            d = remember(path, uris->v[0]);
-            d->mtime = d->size = -2;
-            save_docs();
-            pt_push(paths, path);
-        }
-        free(dir);
+        char *path = copy_path(uris->v[0]);
+        d = remember(path, uris->v[0]);
+        d->mtime = d->size = -2;
+        save_docs();
+        pt_push(paths, path);
     } else if (mode == FD_DIR && uris->n) {
-        char *real = pt_java("realPath", 1, uris->v[0]);
-        if (real && writable_dir(real)) pt_push(paths, real);
-        else {
-            free(real);
-            char *dir =
-                pt_format("%s/saf-out/%016llx-%lld", pt_android_cache_dir, fnv(uris->v[0]), (long long)time(NULL));
-            pt_mkdirs(dir);
-            pt_push(outs, (out_dir){pt_strdup(dir), pt_strdup(uris->v[0]), {0}});
-            o = &outs.v[outs.n - 1];
-            pt_push(paths, dir);
-        }
+        char *dir = pt_format("%s/saf-out/%016llx-%lld", pt_android_cache_dir, fnv(uris->v[0]), (long long)time(NULL));
+        pt_mkdirs(dir);
+        pt_push(outs, (out_dir){pt_strdup(dir), pt_strdup(uris->v[0]), {0}});
+        o = &outs.v[outs.n - 1];
+        pt_push(paths, dir);
     } else if (mode == FD_REEXPORT && uris->n && reexport && (d = by_path(reexport))) {
         free(d->uri);
         d->uri = pt_strdup(uris->v[0]);

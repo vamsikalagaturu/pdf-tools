@@ -36,6 +36,7 @@ pdf-tools split in.pdf (--every 2 | --at 3,7) -d outdir/      # outdir/in-part1.
 pdf-tools protect in.pdf -o out.pdf --password NEW [--current-password OLD]
 pdf-tools unprotect in.pdf -o out.pdf --password PW
 pdf-tools flatten in.pdf -o out.pdf [--dpi 200]               # pages become images, no text left
+pdf-tools convert in.epub -o out.pdf [--page-size A5|A4|Letter] [--font-size 11]   # -> {"output": ..., "pages": N}
 pdf-tools synctex in.pdf --page 2 --at 150,133                # -> {"source": ..., "line": ...}
 pdf-tools synctex in.pdf --source main.tex --line 11          # -> {"page": ..., "rects": [[x0,y0,x1,y1]]}
 ```
@@ -51,6 +52,11 @@ Notes:
 - `pages`: `--order` lists the pages to keep in their new order (`5-1` counts down);
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
 - Field names for `fill` come from `info` (`fields[].name`); checkboxes take `true`/`false`.
+- Other formats, by file extension: XPS/OXPS, CBZ/CBT, images (PNG, JPEG, GIF, BMP, TIFF, JP2, JXR, PSD, PNM),
+  SVG, EPUB, MOBI, FB2, DOCX, XLSX, PPTX. `info`, `search`, `inspect`, `render`, `export-images`, `compare` and
+  `ocr` read them as they are (e-books and Office documents laid out at A5, 11 pt, as `convert` does by default);
+  the commands that edit fail with `"... is not a PDF; convert it first: pdf-tools convert IN -o OUT.pdf"`
+  (`merge` still takes images). `convert` keeps the text searchable, links and the outline.
 - `merge`: give each encrypted input's password as `--password-for FILE=PW`, FILE spelled as on the command
   line (repeat per file); the merged output is not encrypted.
 

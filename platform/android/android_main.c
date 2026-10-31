@@ -158,11 +158,8 @@ static void setup_environment(void)
     pt_mkdirs(run);
     chmod(run, 0700);
 
-    /* HOME is where dialogs start and what Home shortens to "~": the shared Download folder once storage access
-     * is granted; settings stay in files/ through XDG_CONFIG_HOME either way. */
-    char *shared = pt_java("sharedFolder", 0);
-    setenv("HOME", shared ? shared : files, 1);
-    free(shared);
+    /* the app has no storage permission: every document comes through the system picker, so HOME is its own */
+    setenv("HOME", files, 1);
     setenv("XDG_CONFIG_HOME", config, 1);
     setenv("XDG_DATA_HOME", data, 1);
     setenv("XDG_RUNTIME_DIR", run, 1);
