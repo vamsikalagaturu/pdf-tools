@@ -4,6 +4,8 @@
  * if it has glyphs for the text. */
 #include "pt_core.h"
 #include <ctype.h>
+#include <mupdf/ucdn.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef PT_USE_FONTCONFIG
@@ -327,11 +329,25 @@ static char *win_matched_font(const char *family, int bold, int italic)
 }
 #endif
 
+#ifdef PT_USE_FONTCONFIG
+static FcConfig *fc_loaded;
+
+static void fc_load(void) { fc_loaded = FcInitLoadConfigAndFonts(); }
+
+/* render workers look up fallback fonts while the window matches text box fonts */
+static FcConfig *fc_config(void)
+{
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, fc_load);
+    return fc_loaded;
+}
+#endif
+
 char *pt_system_font_file(const char *name)
 {
 #ifdef PT_USE_FONTCONFIG
-    static FcConfig *config;
-    if (!config && !(config = FcInitLoadConfigAndFonts())) return NULL;
+    FcConfig *config = fc_config();
+    if (!config) return NULL;
     char *spec = pt_fontconfig_pattern(name);
     FcPattern *pattern = FcNameParse((const FcChar8 *)spec);
     free(spec);
@@ -375,6 +391,316 @@ char *pt_system_font_file(const char *name)
     (void)name;
     return NULL;
 #endif
+}
+
+/* ---- fallback fonts: scripts a PDF's fonts lack, from the installed fonts ---- */
+
+/* cache keys: the four CJK orderings (FZ_ADOBE_*), then one per script */
+#define SCRIPT_KEY(s) (4 + (s))
+#define NKEYS SCRIPT_KEY(UCDN_LAST_SCRIPT + 1)
+
+/* a script as fontconfig's language, the locale Android's font matcher takes, and a letter its font must have */
+typedef struct {
+    int key;
+    const char *lang, *locale;
+    int sample;
+} script_font;
+
+static const script_font SCRIPTS[] = {
+    {FZ_ADOBE_CNS, "zh-tw", "zh-Hant", 0x6587},
+    {FZ_ADOBE_GB, "zh-cn", "zh-Hans", 0x6587},
+    {FZ_ADOBE_JAPAN, "ja", "ja", 0x3042},
+    {FZ_ADOBE_KOREA, "ko", "ko", 0xD55C},
+    {SCRIPT_KEY(UCDN_SCRIPT_LATIN), "en", "en", 'A'},
+    {SCRIPT_KEY(UCDN_SCRIPT_GREEK), "el", "el", 0x03B1},
+    {SCRIPT_KEY(UCDN_SCRIPT_CYRILLIC), "ru", "ru", 0x0436},
+    {SCRIPT_KEY(UCDN_SCRIPT_ARMENIAN), "hy", "hy", 0x0561},
+    {SCRIPT_KEY(UCDN_SCRIPT_HEBREW), "he", "he", 0x05D0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ARABIC), "ar", "ar", 0x0627},
+    {SCRIPT_KEY(UCDN_SCRIPT_SYRIAC), "syr", "syr", 0x0710},
+    {SCRIPT_KEY(UCDN_SCRIPT_THAANA), "dv", "dv", 0x0780},
+    {SCRIPT_KEY(UCDN_SCRIPT_DEVANAGARI), "hi", "hi", 0x0915},
+    {SCRIPT_KEY(UCDN_SCRIPT_BENGALI), "bn", "bn", 0x0995},
+    {SCRIPT_KEY(UCDN_SCRIPT_GURMUKHI), "pa", "pa", 0x0A15},
+    {SCRIPT_KEY(UCDN_SCRIPT_GUJARATI), "gu", "gu", 0x0A95},
+    {SCRIPT_KEY(UCDN_SCRIPT_ORIYA), "or", "or", 0x0B15},
+    {SCRIPT_KEY(UCDN_SCRIPT_TAMIL), "ta", "ta", 0x0B95},
+    {SCRIPT_KEY(UCDN_SCRIPT_TELUGU), "te", "te", 0x0C15},
+    {SCRIPT_KEY(UCDN_SCRIPT_KANNADA), "kn", "kn", 0x0C95},
+    {SCRIPT_KEY(UCDN_SCRIPT_MALAYALAM), "ml", "ml", 0x0D15},
+    {SCRIPT_KEY(UCDN_SCRIPT_SINHALA), "si", "si", 0x0D9A},
+    {SCRIPT_KEY(UCDN_SCRIPT_THAI), "th", "th", 0x0E01},
+    {SCRIPT_KEY(UCDN_SCRIPT_LAO), "lo", "lo", 0x0E81},
+    {SCRIPT_KEY(UCDN_SCRIPT_TIBETAN), "bo", "bo", 0x0F40},
+    {SCRIPT_KEY(UCDN_SCRIPT_MYANMAR), "my", "my", 0x1000},
+    {SCRIPT_KEY(UCDN_SCRIPT_GEORGIAN), "ka", "ka", 0x10D0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ETHIOPIC), "am", "am", 0x1200},
+    {SCRIPT_KEY(UCDN_SCRIPT_CHEROKEE), "chr", "chr", 0x13A0},
+    {SCRIPT_KEY(UCDN_SCRIPT_CANADIAN_ABORIGINAL), "iu", "iu", 0x1403},
+    {SCRIPT_KEY(UCDN_SCRIPT_KHMER), "km", "km", 0x1780},
+    {SCRIPT_KEY(UCDN_SCRIPT_MONGOLIAN), "mn-cn", "mn-Mong", 0x1820},
+    {SCRIPT_KEY(UCDN_SCRIPT_YI), "ii", "ii", 0xA000},
+};
+
+/* font files read so far, each read once however many scripts it serves; never freed, like the fonts MuPDF
+ * builds in */
+static struct {
+    char *path;
+    fz_buffer *buf;
+} files_read[16];
+
+static int nfiles_read;
+
+/* the file's data when face `index` of it has a glyph for `sample`, else NULL */
+static fz_buffer *usable_font_file(fz_context *ctx, const char *path, int index, int sample)
+{
+    fz_buffer *buf = NULL;
+    for (int i = 0; i < nfiles_read && !buf; i++)
+        if (!strcmp(files_read[i].path, path)) buf = files_read[i].buf;
+    int fresh = !buf, ok = 0;
+    fz_font *font = NULL;
+    fz_var(buf), fz_var(font), fz_var(ok);
+    fz_try(ctx)
+    {
+        if (!buf) buf = fz_read_file(ctx, path);
+        font = fz_new_font_from_buffer(ctx, NULL, buf, index, 0);
+        ok = fz_encode_character(ctx, font, sample) > 0;
+    }
+    fz_always(ctx) fz_drop_font(ctx, font);
+    fz_catch(ctx) fz_ignore_error(ctx);
+    if (!ok) {
+        if (fresh) fz_drop_buffer(ctx, buf);
+        return NULL;
+    }
+    if (fresh && nfiles_read < (int)(sizeof files_read / sizeof *files_read)) {
+        files_read[nfiles_read].path = pt_strdup(path);
+        files_read[nfiles_read++].buf = buf;
+    }
+    return buf;
+}
+
+#if defined(PT_USE_FONTCONFIG) || defined(__ANDROID__)
+static int outline_font_file(const char *path)
+{
+    static const char *suffixes[] = {".ttf", ".otf", ".ttc", ".otc"};
+    size_t n = strlen(path);
+    for (int i = 0; i < 4; i++)
+        if (n > 4 && !strcasecmp(path + n - 4, suffixes[i])) return 1;
+    return 0;
+}
+#endif
+
+#ifdef PT_USE_FONTCONFIG
+/* the best installed fonts for the language, in fontconfig's order */
+static fz_buffer *find_script_font(fz_context *ctx, const script_font *s, int serif, int *index)
+{
+    FcConfig *config = fc_config();
+    if (!config) return NULL;
+    char *spec = pt_format("%s:lang=%s", serif ? "serif" : "sans-serif", s->lang);
+    FcPattern *pattern = FcNameParse((const FcChar8 *)spec);
+    free(spec);
+    if (!pattern) return NULL;
+    FcConfigSubstitute(config, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+    FcResult result;
+    FcFontSet *set = FcFontSort(config, pattern, FcFalse, NULL, &result);
+    fz_buffer *buf = NULL;
+    /* the first fonts for the language are the ones to use; past those, more tries only read files */
+    for (int i = 0, tries = 0; set && i < set->nfont && !buf && tries < 4; i++) {
+        FcLangSet *langs;
+        FcChar8 *file;
+        int face = 0;
+        if (FcPatternGetLangSet(set->fonts[i], FC_LANG, 0, &langs) != FcResultMatch ||
+            FcLangSetHasLang(langs, (const FcChar8 *)s->lang) == FcLangDifferentLang)
+            continue;
+        if (FcPatternGetString(set->fonts[i], FC_FILE, 0, &file) != FcResultMatch || !outline_font_file((char *)file))
+            continue;
+        FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &face);
+        tries++;
+        if ((buf = usable_font_file(ctx, (char *)file, face, s->sample))) *index = face;
+    }
+    if (set) FcFontSetDestroy(set);
+    FcPatternDestroy(pattern);
+    return buf;
+}
+#elif defined(__ANDROID__)
+/* the system font for the locale, as /system/etc/fonts.xml lists them (a face of a .ttc for CJK) */
+static fz_buffer *find_script_font(fz_context *ctx, const script_font *s, int serif, int *index)
+{
+    AFontMatcher *m = AFontMatcher_create();
+    if (!m) return NULL;
+    AFontMatcher_setLocales(m, s->locale);
+    const uint16_t text[] = {(uint16_t)s->sample};
+    uint32_t run;
+    AFont *font = AFontMatcher_match(m, serif ? "serif" : "sans-serif", text, 1, &run);
+    fz_buffer *buf = NULL;
+    const char *path = AFont_getFontFilePath(font);
+    int face = (int)AFont_getCollectionIndex(font);
+    if (path && outline_font_file(path) && (buf = usable_font_file(ctx, path, face, s->sample))) *index = face;
+    AFont_close(font);
+    AFontMatcher_destroy(m);
+    return buf;
+}
+#elif defined(__APPLE__) || defined(_WIN32)
+#define ANY_SCRIPT (-1)
+
+/* fonts that ship with the system, tried in order; `serif` ones only when a serif font is asked for */
+static const struct {
+    int key, serif;
+    const char *file;
+    int index;
+} SYSTEM_FONTS[] = {
+#ifdef __APPLE__
+    {FZ_ADOBE_CNS, 0, "/System/Library/Fonts/STHeiti Light.ttc", 0},
+    {FZ_ADOBE_GB, 0, "/System/Library/Fonts/Hiragino Sans GB.ttc", 0},
+    {FZ_ADOBE_GB, 0, "/System/Library/Fonts/STHeiti Light.ttc", 1},
+    {FZ_ADOBE_JAPAN, 1, "/System/Library/Fonts/ヒラギノ明朝 ProN.ttc", 0},
+    {FZ_ADOBE_JAPAN, 0, "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0},
+    {FZ_ADOBE_KOREA, 1, "/System/Library/Fonts/Supplemental/AppleMyungjo.ttf", 0},
+    {FZ_ADOBE_KOREA, 0, "/System/Library/Fonts/AppleSDGothicNeo.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_LATIN), 1, "/System/Library/Fonts/Times.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_LATIN), 0, "/System/Library/Fonts/Helvetica.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_GREEK), 1, "/System/Library/Fonts/Times.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_GREEK), 0, "/System/Library/Fonts/Helvetica.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_CYRILLIC), 1, "/System/Library/Fonts/Times.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_CYRILLIC), 0, "/System/Library/Fonts/Helvetica.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_HEBREW), 0, "/System/Library/Fonts/ArialHB.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ARABIC), 0, "/System/Library/Fonts/GeezaPro.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_DEVANAGARI), 0, "/System/Library/Fonts/Kohinoor.ttc", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_THAI), 0, "/System/Library/Fonts/Thonburi.ttc", 0},
+    {ANY_SCRIPT, 0, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0},
+    {ANY_SCRIPT, 0, "/Library/Fonts/Arial Unicode.ttf", 0},
+#else
+    {FZ_ADOBE_CNS, 1, "mingliu.ttc", 0},
+    {FZ_ADOBE_CNS, 0, "msjh.ttc", 0},
+    {FZ_ADOBE_GB, 1, "simsun.ttc", 0},
+    {FZ_ADOBE_GB, 0, "msyh.ttc", 0},
+    {FZ_ADOBE_JAPAN, 1, "yumin.ttf", 0},
+    {FZ_ADOBE_JAPAN, 1, "msmincho.ttc", 0},
+    {FZ_ADOBE_JAPAN, 0, "YuGothR.ttc", 0},
+    {FZ_ADOBE_JAPAN, 0, "msgothic.ttc", 0},
+    {FZ_ADOBE_KOREA, 1, "batang.ttc", 0},
+    {FZ_ADOBE_KOREA, 0, "malgun.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ARMENIAN), 0, "sylfaen.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_GEORGIAN), 0, "sylfaen.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_DEVANAGARI), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_BENGALI), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_GURMUKHI), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_GUJARATI), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ORIYA), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_TAMIL), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_TELUGU), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_KANNADA), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_MALAYALAM), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_SINHALA), 0, "Nirmala.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_THAI), 0, "tahoma.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_THAI), 0, "LeelawUI.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_LAO), 0, "LeelawUI.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_KHMER), 0, "LeelawUI.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_ETHIOPIC), 0, "ebrima.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_MYANMAR), 0, "mmrtext.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_TIBETAN), 0, "himalaya.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_MONGOLIAN), 0, "monbaiti.ttf", 0},
+    {SCRIPT_KEY(UCDN_SCRIPT_YI), 0, "msyi.ttf", 0},
+    /* Latin, Greek, Cyrillic, Hebrew and Arabic */
+    {ANY_SCRIPT, 1, "times.ttf", 0},
+    {ANY_SCRIPT, 0, "arial.ttf", 0},
+#endif
+};
+
+static fz_buffer *find_script_font(fz_context *ctx, const script_font *s, int serif, int *index)
+{
+#ifdef _WIN32
+    const char *windir = getenv("WINDIR");
+#endif
+    for (int i = 0; i < (int)(sizeof SYSTEM_FONTS / sizeof *SYSTEM_FONTS); i++) {
+        if ((SYSTEM_FONTS[i].key != s->key && SYSTEM_FONTS[i].key != ANY_SCRIPT) || (SYSTEM_FONTS[i].serif && !serif))
+            continue;
+#ifdef _WIN32
+        char *path = pt_format("%s\\Fonts\\%s", windir ? windir : "C:\\Windows", SYSTEM_FONTS[i].file);
+#else
+        char *path = pt_strdup(SYSTEM_FONTS[i].file);
+#endif
+        fz_buffer *buf = usable_font_file(ctx, path, SYSTEM_FONTS[i].index, s->sample);
+        free(path);
+        if (buf) {
+            *index = SYSTEM_FONTS[i].index;
+            return buf;
+        }
+    }
+    return NULL;
+}
+#else
+static fz_buffer *find_script_font(fz_context *ctx, const script_font *s, int serif, int *index)
+{
+    (void)ctx, (void)s, (void)serif, (void)index;
+    return NULL;
+}
+#endif
+
+/* what each key found: the file's data and the face in it, or none; looked up once per process */
+static struct {
+    int looked, index;
+    fz_buffer *buf;
+} found[NKEYS][2];
+
+static pthread_mutex_t found_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A new font each time: MuPDF sets a PDF font's widths and flags on the fz_font it gets, so fonts are not shared;
+ * the data is. Created in the caller's context, as its FreeType library owns the face. */
+static fz_font *installed_font(fz_context *ctx, const char *name, int key, int serif)
+{
+    const script_font *s = NULL;
+    for (int i = 0; i < (int)(sizeof SCRIPTS / sizeof *SCRIPTS) && !s; i++)
+        if (SCRIPTS[i].key == key) s = &SCRIPTS[i];
+    if (!s) return NULL;
+    serif = !!serif;
+    pthread_mutex_lock(&found_lock);
+    if (!found[key][serif].looked) {
+        found[key][serif].buf = find_script_font(ctx, s, serif, &found[key][serif].index);
+        found[key][serif].looked = 1;
+    }
+    fz_buffer *buf = found[key][serif].buf;
+    int index = found[key][serif].index;
+    pthread_mutex_unlock(&found_lock);
+    if (!buf) return NULL;
+    unsigned char *data;
+    size_t len = fz_buffer_storage(ctx, buf, &data);
+    return fz_new_font_from_memory(ctx, name, data, (int)len, index, 0);
+}
+
+static fz_font *load_cjk_font(fz_context *ctx, const char *name, int ordering, int serif)
+{
+    if (ordering < FZ_ADOBE_CNS || ordering > FZ_ADOBE_KOREA) return NULL;
+    return installed_font(ctx, name, ordering, serif);
+}
+
+static fz_font *load_fallback_font(fz_context *ctx, int script, int language, int serif, int bold, int italic)
+{
+    (void)bold, (void)italic;
+    int key;
+    switch (script) {
+    case UCDN_SCRIPT_HIRAGANA:
+    case UCDN_SCRIPT_KATAKANA: key = FZ_ADOBE_JAPAN; break;
+    case UCDN_SCRIPT_HANGUL: key = FZ_ADOBE_KOREA; break;
+    case UCDN_SCRIPT_BOPOMOFO: key = FZ_ADOBE_CNS; break;
+    case UCDN_SCRIPT_HAN:
+        key = language == FZ_LANG_ja        ? FZ_ADOBE_JAPAN
+              : language == FZ_LANG_ko      ? FZ_ADOBE_KOREA
+              : language == FZ_LANG_zh_Hant ? FZ_ADOBE_CNS
+                                            : FZ_ADOBE_GB;
+        break;
+    default:
+        if (script < 0 || script > UCDN_LAST_SCRIPT) return NULL;
+        key = SCRIPT_KEY(script);
+    }
+    return installed_font(ctx, NULL, key, serif);
+}
+
+void pt_install_system_fonts(fz_context *ctx)
+{
+    /* no font-by-name hook: MuPDF's own base-14 stand-ins keep the metrics PDFs are laid out with */
+    fz_install_load_system_font_funcs(ctx, NULL, load_cjk_font, load_fallback_font);
 }
 
 /* ---- fonts of the PDF and resolving a font name ---- */

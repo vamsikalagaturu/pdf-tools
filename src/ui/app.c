@@ -169,7 +169,10 @@ static void opened_chosen(void *ctx, pt_strs *paths)
 void app_open_dialog(void)
 {
     const char *start = pt_settings_str(&app.settings, "last_folder");
-    file_dialog(FD_OPEN_MANY, "Open PDFs", *start ? start : getenv("HOME"), "PDF", "*.pdf", opened_chosen, NULL);
+    char *patterns = pt_doc_patterns();
+    file_dialog(FD_OPEN_MANY, "Open documents", *start ? start : getenv("HOME"), "Documents", patterns, opened_chosen,
+                NULL);
+    free(patterns);
 }
 
 void app_open_workspace(tab *t)
@@ -425,6 +428,7 @@ static void m_action(void *ctx, intptr_t a)
     case 11: app_about(); break;
     case 12: pick_accent(); break;
     case 13: reset_accent(); break;
+    case 14: ebook_layout_dialog(); break;
     }
 }
 
@@ -470,6 +474,7 @@ ui_menu *app_build_menu(tab *t)
     menu_item(v, "Next tab", "next", "Ctrl+Tab", m_action, NULL, 7, 1, 0);
     menu_item(v, "Previous tab", "prev", "Ctrl+Shift+Tab", m_action, NULL, 8, 1, 0);
     menu_sep(v);
+    menu_item(v, "E-book layout...", "two-pages", NULL, m_action, NULL, 14, 1, 0);
     ui_menu *a = menu_sub(v, "Appearance", "appearance");
     int dark = strcmp(pt_settings_str(&app.settings, "theme"), "light");
     menu_item(a, "Dark", "dark", NULL, m_action, NULL, 9, 1, dark);
@@ -1009,6 +1014,7 @@ int pt_app_main(int argc, char **argv)
     snprintf(app.exe, sizeof app.exe, "%s", exe_path(argv[0]));
     app.ctx = fz_new_context(NULL, render_locks(), FZ_STORE_DEFAULT);
     fz_register_document_handlers(app.ctx);
+    pt_install_system_fonts(app.ctx);
     pt_migrate_legacy();
     pt_settings_load(&app.settings, NULL);
     theme_apply(pt_settings_str(&app.settings, "theme"));

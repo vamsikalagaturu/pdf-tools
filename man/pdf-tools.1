@@ -1,6 +1,6 @@
 .TH PDF-TOOLS 1 2026-10-30 "PDF Tools" "User Commands"
 .SH NAME
-pdf-tools \- view, redact, fill, annotate, sign, OCR, compare, crop and merge PDF files
+pdf-tools \- view, redact, fill, annotate, sign, OCR, compare, crop, merge and convert PDF files
 .SH SYNOPSIS
 .B pdf-tools
 .RB [ \-\-new\-window ]
@@ -27,6 +27,20 @@ pdf-tools \- view, redact, fill, annotate, sign, OCR, compare, crop and merge PD
 .B pdf-tools
 opens PDF files in a window with one tab per document.
 Edits stay in the window until you save, and every edit can be undone.
+.PP
+It also opens XPS and OXPS, comic books (CBZ, CBT), images (PNG, JPEG, GIF,
+BMP, TIFF with all its pages, JPEG 2000, JPEG XR, PSD, PNM), SVG, e-books
+(EPUB, MOBI, FB2) and Office documents (DOCX, XLSX, PPTX) to read, search,
+copy, print, recognize and export like a PDF.
+E-books and Office documents are laid out at the page and font size of
+.BR "View > E-book layout" .
+The first edit of such a document turns it into a PDF in memory;
+.B Save
+then writes
+.IR name .pdf
+(or
+.IR name \-1.pdf ", ...)"
+next to the original, which stays as it is.
 .PP
 Redaction removes the text, images and drawings under each box from the file;
 it does not just paint over them.
@@ -161,6 +175,9 @@ The accent colour can be chosen per theme under
 .BR "View > Appearance" ,
 and so can the interface size: Auto follows the window system's scale (on X11
 without one, the screen's pixel density), or a fixed 75% to 200%.
+.B View > E-book layout
+sets the page size (A5, A4, Letter or the window's view) and font size open
+e-books are laid out at, keeping the place being read.
 .SS Saving
 .B Save
 replaces the file and moves the original to the trash.
@@ -339,6 +356,25 @@ Write a copy without the password.
 Turn every page into an image
 .RB ( \-\-dpi ,
 default 200), so no text, layers or hidden content remain.
+.TP
+.BI "convert " "input " \-o " output.pdf"
+Write a PDF of a document of another format, its text still searchable;
+e-books and Office documents are laid out at
+.B \-\-page\-size
+.RB ( A5 ", " A4 " or " Letter ,
+default A5) and
+.B \-\-font\-size
+(points, default 11).
+.BR info ,
+.BR search ,
+.BR inspect ,
+.BR render ,
+.BR export\-images ,
+.B compare
+and
+.B ocr
+read the other formats too, laid out at the defaults; the commands that edit a
+PDF ask for it to be converted first.
 .TP
 .BI "synctex " "input.pdf " "\-\-page " n " \-\-at " x,y
 Print the source file and line typeset at that point.

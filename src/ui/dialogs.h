@@ -16,6 +16,7 @@ void pii_dialog(tab *t);
 void bates_dialog(tab *t);
 void watermark_dialog(tab *t);
 void properties_dialog(tab *t);
+void ebook_layout_dialog(void); /* View > E-book layout: the settings, then every open e-book laid out again */
 void export_images_dialog(tab *t);
 void cert_sign_start(tab *t);
 int cert_placing(tab *t); /* the next band on the page is the signature box */

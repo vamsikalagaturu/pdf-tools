@@ -3,7 +3,7 @@
  * text, images, annotations, form values, crops and rotations, removes what a redaction leaves elsewhere in the
  * file, scrubs hidden data when anything was redacted or cropped, and selects the output pages; encryption is
  * put back by pt_keep_encryption. Also the page content helpers of content.h, flattening, optimizing, merging,
- * password protection, and the Edits list of unsaved edits. */
+ * password protection, the Edits list of unsaved edits, and opening and converting the other document formats. */
 #include "content.h"
 #include <ctype.h>
 #include <errno.h>
@@ -353,6 +353,197 @@ pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size
     fz_catch(ctx) fz_rethrow(ctx);
     authenticate(ctx, doc, password, "the document");
     return doc;
+}
+
+/* ---- other document formats ---- */
+
+/* MIME types as shared-mime-info names them, which desktop entries and Android intent filters match */
+const pt_doc_format pt_doc_formats[] = {
+    {"pdf", "application/pdf", 0},
+    {"xps", "application/vnd.ms-xpsdocument", 0},
+    {"oxps", "application/oxps", 0},
+    {"epub", "application/epub+zip", 0},
+    {"mobi", "application/x-mobipocket-ebook", 0},
+    {"fb2", "application/x-fictionbook+xml", 0},
+    {"cbz", "application/vnd.comicbook+zip", 0},
+    {"cbt", "application/x-cbt", 0},
+    {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 0},
+    {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 0},
+    {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", 0},
+    {"svg", "image/svg+xml", 0},
+    {"png", "image/png", 1},
+    {"jpg", "image/jpeg", 1},
+    {"jpeg", "image/jpeg", 1},
+    {"gif", "image/gif", 1},
+    {"bmp", "image/bmp", 1},
+    {"tif", "image/tiff", 1},
+    {"tiff", "image/tiff", 1},
+    {"jp2", "image/jp2", 1},
+    {"jxr", "image/jxr", 1},
+    {"psd", "image/vnd.adobe.photoshop", 1},
+    {"pnm", "image/x-portable-anymap", 1},
+};
+const int pt_doc_formats_count = sizeof pt_doc_formats / sizeof *pt_doc_formats;
+
+const pt_doc_format *pt_doc_format_of(const char *path)
+{
+    const char *dot = path ? strrchr(pt_basename(path), '.') : NULL;
+    for (int i = 0; dot && i < pt_doc_formats_count; i++)
+        if (!strcasecmp(dot + 1, pt_doc_formats[i].ext)) return &pt_doc_formats[i];
+    return NULL;
+}
+
+int pt_is_other_format(const char *path)
+{
+    const pt_doc_format *f = pt_doc_format_of(path);
+    return f && f != &pt_doc_formats[0];
+}
+
+char *pt_doc_patterns(void)
+{
+    size_t len = 1;
+    for (int i = 0; i < pt_doc_formats_count; i++) len += strlen(pt_doc_formats[i].ext) + 3;
+    char *s = calloc(len, 1);
+    for (int i = 0; i < pt_doc_formats_count; i++) {
+        if (i) strcat(s, " ");
+        strcat(s, "*.");
+        strcat(s, pt_doc_formats[i].ext);
+    }
+    return s;
+}
+
+/* ISO 216 (A4 210 x 297 mm, A5 148 x 210 mm) and ANSI letter (8.5 x 11 in), in points of 1/72 in */
+int pt_page_size(const char *name, float *w, float *h)
+{
+    static const struct {
+        const char *name;
+        float w, h;
+    } SIZES[] = {{"A5", 419.53f, 595.28f}, {"A4", 595.28f, 841.89f}, {"Letter", 612, 792}};
+
+    for (size_t i = 0; name && i < sizeof SIZES / sizeof *SIZES; i++)
+        if (!strcasecmp(name, SIZES[i].name)) {
+            *w = SIZES[i].w, *h = SIZES[i].h;
+            return 1;
+        }
+    return 0;
+}
+
+fz_document *pt_open_document(fz_context *ctx, fz_buffer *file, const char *name, float w, float h, float em)
+{
+    fz_stream *stm = fz_open_buffer(ctx, file);
+    fz_document *doc = NULL;
+    fz_var(doc);
+    fz_try(ctx)
+    {
+        if (pt_is_other_format(name)) doc = fz_open_document_with_stream(ctx, name, stm);
+        else doc = (fz_document *)pdf_open_document_with_stream(ctx, stm);
+        if (w > 0 && h > 0 && fz_is_document_reflowable(ctx, doc)) fz_layout_document(ctx, doc, w, h, em);
+    }
+    fz_always(ctx) fz_drop_stream(ctx, stm);
+    fz_catch(ctx)
+    {
+        fz_drop_document(ctx, doc);
+        fz_rethrow(ctx);
+    }
+    return doc;
+}
+
+/* Draws the page into a new last page of `out`, its top-left corner at the origin. The PDF device writes text as
+ * text, so the copy stays searchable and selectable. */
+static void convert_page(fz_context *ctx, pdf_document *out, fz_document *src, int number)
+{
+    fz_page *page = fz_load_page(ctx, src, number);
+    pdf_obj *res = NULL, *obj = NULL;
+    fz_buffer *contents = NULL;
+    fz_device *dev = NULL;
+    fz_var(res), fz_var(obj), fz_var(contents), fz_var(dev);
+    fz_try(ctx)
+    {
+        fz_rect b = fz_bound_page(ctx, page), box = fz_make_rect(0, 0, b.x1 - b.x0, b.y1 - b.y0);
+        dev = pdf_page_write(ctx, out, box, &res, &contents);
+        fz_run_page(ctx, page, dev, fz_translate(-b.x0, -b.y0), NULL);
+        fz_close_device(ctx, dev);
+        obj = pdf_add_page(ctx, out, box, 0, res, contents);
+        pdf_insert_page(ctx, out, -1, obj);
+    }
+    fz_always(ctx)
+    {
+        fz_drop_device(ctx, dev);
+        pdf_drop_obj(ctx, obj);
+        pdf_drop_obj(ctx, res);
+        fz_drop_buffer(ctx, contents);
+        fz_drop_page(ctx, page);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+/* The page's links as link annotations: web and mail links as they are, links into the document to the page they
+ * lead to. Every page must exist in `out` already. */
+static void convert_links(fz_context *ctx, pdf_document *out, fz_document *src, int number)
+{
+    fz_page *page = fz_load_page(ctx, src, number);
+    pdf_page *dst = NULL;
+    fz_link *links = NULL;
+    char *uri = NULL;
+    fz_var(dst), fz_var(links), fz_var(uri);
+    fz_try(ctx)
+    {
+        fz_rect b = fz_bound_page(ctx, page);
+        links = fz_load_links(ctx, page);
+        for (fz_link *l = links; l; l = l->next) {
+            if (!l->uri) continue;
+            if (fz_is_external_link(ctx, l->uri)) uri = fz_strdup(ctx, l->uri);
+            else {
+                fz_link_dest d = fz_resolve_link_dest(ctx, src, l->uri);
+                int target = fz_page_number_from_location(ctx, src, d.loc);
+                if (target < 0) continue;
+                uri = fz_format_link_uri(ctx, (fz_document *)out, fz_make_link_dest_xyz(0, target, d.x, d.y, 0));
+            }
+            if (!dst) dst = pdf_load_page(ctx, out, number);
+            fz_rect r = fz_make_rect(l->rect.x0 - b.x0, l->rect.y0 - b.y0, l->rect.x1 - b.x0, l->rect.y1 - b.y0);
+            fz_drop_link(ctx, pdf_create_link(ctx, dst, r, uri));
+            fz_free(ctx, uri);
+            uri = NULL;
+        }
+    }
+    fz_always(ctx)
+    {
+        fz_free(ctx, uri);
+        fz_drop_link(ctx, links);
+        fz_drop_page(ctx, (fz_page *)dst);
+        fz_drop_page(ctx, page);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+fz_buffer *pt_convert_to_pdf(fz_context *ctx, fz_document *src)
+{
+    static const char *META[] = {FZ_META_INFO_TITLE, FZ_META_INFO_AUTHOR, FZ_META_INFO_SUBJECT, FZ_META_INFO_KEYWORDS};
+    pdf_document *out = pdf_create_document(ctx);
+    fz_buffer *result = NULL;
+    pt_bookmarks outline = {0};
+    fz_var(result);
+    fz_try(ctx)
+    {
+        int n = fz_count_pages(ctx, src);
+        for (int p = 0; p < n; p++) convert_page(ctx, out, src, p);
+        for (int p = 0; p < n; p++) convert_links(ctx, out, src, p);
+        pt_read_outline(ctx, src, &outline);
+        if (outline.n) pt_write_outline(ctx, out, &outline);
+        for (size_t i = 0; i < sizeof META / sizeof *META; i++) {
+            char buf[2048];
+            if (fz_lookup_metadata(ctx, src, META[i], buf, sizeof buf) > 1 && *buf)
+                fz_set_metadata(ctx, (fz_document *)out, META[i], buf);
+        }
+        result = pt_doc_bytes(ctx, out, NULL);
+    }
+    fz_always(ctx)
+    {
+        pt_bookmarks_free(&outline);
+        pdf_drop_document(ctx, out);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+    return result;
 }
 
 static fz_buffer *write_doc(fz_context *ctx, pdf_document *doc, int method, int permissions, const char *upwd,

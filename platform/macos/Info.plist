@@ -38,6 +38,48 @@
                 <string>com.adobe.pdf</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.idpf.epub-container</string>
+                <string>org.openxmlformats.wordprocessingml.document</string>
+                <string>org.openxmlformats.spreadsheetml.sheet</string>
+                <string>org.openxmlformats.presentationml.presentation</string>
+                <string>public.svg-image</string>
+                <string>public.png</string>
+                <string>public.jpeg</string>
+                <string>com.compuserve.gif</string>
+                <string>com.microsoft.bmp</string>
+                <string>public.tiff</string>
+                <string>public.jpeg-2000</string>
+                <string>com.adobe.photoshop-image</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>xps</string>
+                <string>oxps</string>
+                <string>mobi</string>
+                <string>fb2</string>
+                <string>cbz</string>
+                <string>cbt</string>
+                <string>jxr</string>
+                <string>pnm</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>

@@ -5,12 +5,10 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.CancellationSignal;
-import android.os.Environment;
 import android.os.ParcelFileDescriptor;
 import android.print.PageRange;
 import android.print.PrintAttributes;
@@ -19,16 +17,17 @@ import android.print.PrintDocumentInfo;
 import android.print.PrintManager;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
-import android.provider.Settings;
 import android.text.InputType;
 import android.graphics.Insets;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.MimeTypeMap;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -38,17 +37,14 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
-/* The native window plus what only Java can reach: the system document picker (Storage Access Framework),
- * content:// I/O, the storage permission, the soft keyboard's text, the clipboard, printing and the system bar
+/* The native window plus what only Java can reach: the system document picker (Storage Access Framework; the app
+ * has no storage permission), content:// I/O, the soft keyboard's text, the clipboard, printing and the system bar
  * insets. Called from the native thread (android_main.c, file_dialog_android.c, printing.c); every public method
  * takes and returns strings, null meaning "no" or "nothing". */
 public class PdfToolsActivity extends NativeActivity {
-    private static final int REQ_PICK = 1, REQ_STORAGE = 2;
+    private static final int REQ_PICK = 1;
     private final Object lock = new Object();
     private String pickResult;        /* null while pending, "" when cancelled, else URIs separated by '\n' */
-    private Intent waitingPick;       /* a pick deferred until the storage request returns */
-    private boolean askedStorage;     /* asked in this run: a file dialog asks at most once per run */
-    private boolean checkedFirstStart;
 
     /* NativeActivity drops intents delivered to a running instance (launchMode singleTask); keeping the latest
      * lets the native side see a PDF opened from another app while the window is up. */
@@ -65,51 +61,6 @@ public class PdfToolsActivity extends NativeActivity {
         if (w == null) return null;
         Insets i = w.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
         return i.left + " " + i.top + " " + i.right + " " + i.bottom;
-    }
-
-    /* Ask for storage once, at the first start that reaches the window; later only when a file dialog opens. */
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus || checkedFirstStart) return;
-        checkedFirstStart = true;
-        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
-        if (prefs.getBoolean("storage_asked", false) || storageGranted()) return;
-        prefs.edit().putBoolean("storage_asked", true).apply();
-        askedStorage = true;
-        requestStorage();
-    }
-
-    private boolean storageGranted() { return Environment.isExternalStorageManager(); }
-
-    /* "All files access" is a Settings page, not a runtime prompt */
-    private void requestStorage() {
-        try {
-            startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                Uri.parse("package:" + getPackageName())), REQ_STORAGE);
-        } catch (Exception e) {
-            try {
-                startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), REQ_STORAGE);
-            } catch (Exception e2) {
-                storageAnswered();
-            }
-        }
-    }
-
-    private void storageAnswered() {
-        Intent pick = waitingPick;
-        waitingPick = null;
-        if (pick != null) startPick(pick);
-    }
-
-    public String hasStorage() { return storageGranted() ? "1" : null; }
-
-    /* The shared Download folder when storage access is granted. */
-    public String sharedFolder() {
-        if (!storageGranted()) return null;
-        File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (!d.isDirectory()) d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        return d.isDirectory() ? d.getAbsolutePath() : null;
     }
 
     /* Run on the UI thread and wait: the clipboard wants a Looper thread on older releases. */
@@ -134,6 +85,11 @@ public class PdfToolsActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        /* the window reaches into the camera cutout so the strip shows the app's background, not black; the
+         * native side keeps its controls clear of it through systemInsets() */
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        getWindow().setAttributes(lp);
         sink = new TextSink();
         addContentView(sink, new ViewGroup.LayoutParams(1, 1));
     }
@@ -350,13 +306,7 @@ public class PdfToolsActivity extends NativeActivity {
             | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         synchronized (lock) { pickResult = null; }
         final Intent intent = i;
-        runOnUiThread(() -> {
-            if (!storageGranted() && !askedStorage) {
-                askedStorage = true;
-                waitingPick = intent;
-                requestStorage();
-            } else startPick(intent);
-        });
+        runOnUiThread(() -> startPick(intent));
         return null;
     }
 
@@ -378,10 +328,6 @@ public class PdfToolsActivity extends NativeActivity {
 
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
-        if (code == REQ_STORAGE) {
-            storageAnswered();
-            return;
-        }
         if (code != REQ_PICK) {
             super.onActivityResult(code, result, data);
             return;
@@ -436,31 +382,25 @@ public class PdfToolsActivity extends NativeActivity {
         return Uri.parse(uri).getLastPathSegment();
     }
 
-    /* The file behind a document (or a picked folder) on shared storage, when storage access lets us use it. */
-    public String realPath(String uri) {
-        if (!storageGranted()) return null;
-        Uri u = Uri.parse(uri);
-        String path = null;
+    /* The usual extension for a document's type, for a name that came without one (the window picks the
+     * reader by extension); null when the type is unknown. */
+    public String extensionOf(String uri) {
+        String type;
         try {
-            boolean doc = DocumentsContract.isDocumentUri(this, u);
-            if ("com.android.externalstorage.documents".equals(u.getAuthority())) {
-                String id = doc ? DocumentsContract.getDocumentId(u) : DocumentsContract.getTreeDocumentId(u);
-                int colon = id.indexOf(':');
-                String volume = id.substring(0, colon), rel = id.substring(colon + 1);
-                File root = volume.equals("primary") ? Environment.getExternalStorageDirectory() : new File("/storage/" + volume);
-                path = rel.isEmpty() ? root.getPath() : new File(root, rel).getPath();
-            } else if (doc && DocumentsContract.getDocumentId(u).startsWith("raw:")) {
-                path = DocumentsContract.getDocumentId(u).substring(4);
-            } else if (doc || "file".equals(u.getScheme()) || "media".equals(u.getAuthority())) {
-                if ("file".equals(u.getScheme())) path = u.getPath();
-                else try (Cursor c = getContentResolver().query(u, new String[] {"_data"}, null, null, null)) {
-                    if (c != null && c.moveToFirst()) path = c.getString(0);
-                }
-            }
+            type = getContentResolver().getType(Uri.parse(uri));
         } catch (Exception e) {
-            path = null;
+            return null;
         }
-        return path != null && new File(path).exists() ? path : null;
+        if (type == null) return null;
+        switch (type) {
+        case "application/epub+zip": return "epub";
+        case "application/x-mobipocket-ebook": return "mobi";
+        case "application/x-fictionbook+xml": return "fb2";
+        case "application/vnd.comicbook+zip": return "cbz";
+        case "application/vnd.ms-xpsdocument": return "xps";
+        case "application/oxps": return "oxps";
+        default: return MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+        }
     }
 
     /* Copy a document to a local file (written beside it, then renamed). Returns null, or the error. */

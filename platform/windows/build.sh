@@ -6,6 +6,8 @@
 # pinned in platform/versions.sh and linked statically. The zip holds the program, the English OCR data and the
 # Visual C++ runtime DLLs it needs, so nothing has to be installed. Output: $PT_WINDOWS_OUT/out (default
 # ~/.cache/pdf-tools/windows). Re-runs are incremental.
+# MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from %WINDIR%\Fonts);
+# PT_FONTS=full bundles them.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -64,13 +66,16 @@ done
 cmake --version | head -1
 
 step "MuPDF $MUPDF_VERSION"
-MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
+# a source tree per font mode: the solution builds inside its tree
+MUPDF_SRC=$ROOT/src/mupdf-$FONTS_TAG/mupdf-$MUPDF_VERSION-source
 MUPDF_OUT=$MUPDF_SRC/platform/win32/x64/Release
 fetch "$MUPDF_URL" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
+mkdir -p "$ROOT/src/mupdf-$FONTS_TAG"
 # the symbolic links in the archive are in parts the library does not use, and need rights Windows rarely grants
-[ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src" \
+[ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src/mupdf-$FONTS_TAG" \
     --exclude='*/thirdparty/freeglut/progs' --exclude='*/thirdparty/zxing-cpp/wrappers'
-"$MSBUILD" "$(win "$MUPDF_SRC/platform/win32/mupdf.sln")" -t:libmupdf -p:Configuration=Release -p:Platform=x64 \
+# cl.exe adds the options in CL to every command line
+CL="$MUPDF_FONT_CFLAGS" "$MSBUILD" "$(win "$MUPDF_SRC/platform/win32/mupdf.sln")" -t:libmupdf -p:Configuration=Release -p:Platform=x64 \
     -p:PlatformToolset=$MSVC_TOOLSET -m -nologo -v:minimal >"$ROOT/mupdf-build.log" 2>&1 \
     || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT"/*.lib

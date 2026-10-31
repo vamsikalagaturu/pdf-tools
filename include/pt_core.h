@@ -185,6 +185,9 @@ char *pt_styled_font(const char *name, int bold, int italic, const pt_strs *cand
 char *pt_fontconfig_pattern(const char *name);
 char *pt_system_font_file(const char *name); /* the closest installed font file, NULL when none */
 int pt_have_fontconfig(void);                /* pt_system_font_file can find fonts on this platform */
+/* MuPDF's hooks for text in fonts a PDF does not embed (CJK, other scripts): installed fonts stand in for the
+ * fallback fonts the build leaves out of MuPDF. Once per fz_new_context; clones share it. */
+void pt_install_system_fonts(fz_context *ctx);
 /* the BaseFont names of every page's resources, subset prefix removed, each once */
 void pt_pdf_font_names(fz_context *ctx, pdf_document *doc, pt_strs *out);
 /* The font to draw `text` in for `name` (NULL: Helvetica), as the file header of fonts.c orders the fallbacks; `doc`
@@ -388,7 +391,7 @@ char *pt_bates_label(const pt_stamp *s, int n); /* the number on the n-th stampe
 /* Stamp doc's pages; out_index[p] is page p's place among the out_count output pages (-1: not output), NULL when
  * doc's pages are the output pages. */
 void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps, const int *out_index, int out_count);
-void pt_get_meta(fz_context *ctx, pdf_document *doc, pt_meta *out); /* every field set, "" when the file has none */
+void pt_get_meta(fz_context *ctx, fz_document *doc, pt_meta *out); /* every field set, "" when the file has none */
 void pt_set_meta(fz_context *ctx, pdf_document *doc, const pt_meta *m);
 /* depth-first; page -1 for an entry without a destination in doc */
 void pt_read_outline(fz_context *ctx, fz_document *doc, pt_bookmarks *out);
@@ -407,6 +410,31 @@ pdf_document *pt_open_pdf_buffer(fz_context *ctx, fz_buffer *file, const char *n
                                  const pt_inserts *inserted);
 /* Opens a copy of `data`; throws on a wrong password. */
 pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size_t len, const char *password);
+
+/* ---- edits.c: other document formats ---- */
+/* A format that opens besides PDF, by file extension; `image`: a picture (merge takes these as pages). */
+typedef struct {
+    const char *ext, *mime;
+    int image;
+} pt_doc_format;
+
+extern const pt_doc_format pt_doc_formats[]; /* PDF first */
+extern const int pt_doc_formats_count;
+/* e-book layout defaults (settings ebook_page_size and ebook_font_size, convert --page-size and --font-size) */
+#define PT_EBOOK_PAGE_SIZE "A5"
+#define PT_EBOOK_FONT_SIZE 11
+const pt_doc_format *pt_doc_format_of(const char *path); /* by the extension, case ignored; NULL: not listed */
+int pt_is_other_format(const char *path);                /* a listed format other than PDF */
+char *pt_doc_patterns(void);                             /* "*.pdf *.xps ..." for file choosers */
+/* "A5", "A4" or "Letter" (case ignored) in points; 0 for another name */
+int pt_page_size(const char *name, float *w, float *h);
+/* `file` (bytes read earlier; the document keeps its own reference) opened by the format `name`'s extension names
+ * (pt_is_other_format), else as a PDF, so a text or HTML file is never taken for a document. A reflowable document
+ * (e-book, Office) is laid out at w x h points with font size em when w and h are > 0. Callers authenticate. */
+fz_document *pt_open_document(fz_context *ctx, fz_buffer *file, const char *name, float w, float h, float em);
+/* An unencrypted PDF of every page of `doc` as it is laid out: content drawn with its text kept as text, links,
+ * outline, title, author, subject and keywords. */
+fz_buffer *pt_convert_to_pdf(fz_context *ctx, fz_document *doc);
 /* `doc` written out, garbage-collected and compressed; with `password` encrypted (AES-256) with it as the user and
  * the owner password. */
 fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password);

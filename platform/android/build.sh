@@ -3,6 +3,8 @@
 # platform/versions.sh and packages a debug-signed APK, without Gradle.
 # Output: $PT_ANDROID_OUT/out/pdf-tools.apk (default ~/.cache/pdf-tools-native/android, which also keeps the debug
 # signing key: a new key would stop the APK installing over an older one). Re-runs are incremental.
+# MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from /system/fonts);
+# PT_FONTS=full bundles them.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -12,7 +14,7 @@ SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
 NDK=${ANDROID_NDK:-$SDK/ndk/28.2.13676358}
 BT=$SDK/build-tools/36.1.0
 ANDROID_JAR=$SDK/platforms/android-36.1/android.jar
-# Android 11: all-files storage access, WindowInsets types and the NDK font matcher
+# Android 11: WindowInsets types and the NDK font matcher
 MIN_API=30
 # 35+ enforces edge-to-edge: system bars and display cutouts would cover the window, which raylib cannot inset
 TARGET_API=34
@@ -20,7 +22,7 @@ ABI=arm64-v8a
 JOBS=$(nproc)
 
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
-MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG
+MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG-$FONTS_TAG
 PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
 PCRE2_OUT=$ROOT/pcre2-install-$BUILD_TAG
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
@@ -50,7 +52,7 @@ PATH="$ROOT/nopkgconfig:$PATH" make -C "$MUPDF_SRC" -j"$JOBS" libs \
     CC="$TC/aarch64-linux-android$MIN_API-clang" CXX="$TC/aarch64-linux-android$MIN_API-clang++" \
     AR="$TC/llvm-ar" RANLIB="$TC/llvm-ranlib" \
     HAVE_X11=no HAVE_GLUT=no HAVE_LIBCRYPTO=no HAVE_OBJCOPY=no USE_SYSTEM_LIBS=no \
-    XCFLAGS="-fPIC -Wno-unused-but-set-variable $SIZE_CFLAGS" >"$ROOT/mupdf-build.log" 2>&1 \
+    XCFLAGS="-fPIC -Wno-unused-but-set-variable $SIZE_CFLAGS $MUPDF_FONT_CFLAGS" >"$ROOT/mupdf-build.log" 2>&1 \
     || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"
 

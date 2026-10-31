@@ -151,12 +151,12 @@ static char **meta_field(pt_meta *m, int i)
     return i == 0 ? &m->title : i == 1 ? &m->author : i == 2 ? &m->subject : &m->keywords;
 }
 
-void pt_get_meta(fz_context *ctx, pdf_document *doc, pt_meta *out)
+void pt_get_meta(fz_context *ctx, fz_document *doc, pt_meta *out)
 {
     memset(out, 0, sizeof *out);
     for (int i = 0; i < 4; i++) {
         char buf[2048] = "";
-        if (fz_lookup_metadata(ctx, (fz_document *)doc, META_KEYS[i], buf, sizeof buf) < 0) buf[0] = 0;
+        if (fz_lookup_metadata(ctx, doc, META_KEYS[i], buf, sizeof buf) < 0) buf[0] = 0;
         *meta_field(out, i) = pt_strdup(buf);
     }
 }

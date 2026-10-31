@@ -269,6 +269,40 @@ static pdf_document *opened(const char *path, const char *password)
     return doc;
 }
 
+/* A document of any format the read-only commands take (pt_doc_formats); e-books at the default e-book layout,
+ * as convert lays them out without options. */
+static fz_document *opened_any(const char *path, const char *password)
+{
+    fz_buffer *file = NULL;
+    fz_document *doc = NULL;
+    fz_var(file), fz_var(doc);
+    fz_try(ctx)
+    {
+        float w, h;
+        pt_page_size(PT_EBOOK_PAGE_SIZE, &w, &h);
+        file = fz_read_file(ctx, path);
+        doc = pt_open_document(ctx, file, path, w, h, PT_EBOOK_FONT_SIZE);
+        if (fz_needs_password(ctx, doc) && !fz_authenticate_password(ctx, doc, password ? password : "")) {
+            fz_drop_document(ctx, doc);
+            doc = NULL;
+        }
+    }
+    fz_always(ctx) fz_drop_buffer(ctx, file);
+    fz_catch(ctx) fail("cannot open %s: %s", path, fz_caught_message(ctx));
+    if (!doc) fail("%s is password protected: pass the right --password", path);
+    return doc;
+}
+
+/* the error of the commands that edit a PDF, for an input of another format */
+static void refuse_other_format(const char *path)
+{
+    if (!pt_is_other_format(path)) return;
+    /* static: fail() exits with it still in use */
+    static char *stem;
+    stem = pt_stem(path);
+    fail("%s is not a PDF; convert it first: %s convert %s -o %s.pdf", path, prog, path, stem);
+}
+
 static void page_list(const char *spec, int count, pt_ints *out)
 {
     out->n = 0;
@@ -419,18 +453,20 @@ static void json_field_value(pt_json *j, pdf_annot *w)
 
 static int cmd_info(args *a)
 {
-    pdf_document *doc = opened(input(a), get(a, "--password"));
+    fz_document *any = opened_any(input(a), get(a, "--password"));
+    /* another format has no fonts list, form fields or annotations: those stay empty */
+    pdf_document *doc = pdf_specifics(ctx, any);
     static pt_json j;
     emit_begin(&j);
     char *real = pt_realpath(input(a));
     pt_json_key(&j, "path");
     pt_json_string(&j, real);
     free(real);
-    int n = pdf_count_pages(ctx, doc);
+    int n = fz_count_pages(ctx, any);
     pt_json_key(&j, "pages");
     pt_json_int(&j, n);
     pt_json_key(&j, "encrypted");
-    pt_json_bool(&j, pdf_needs_password(ctx, doc));
+    pt_json_bool(&j, fz_needs_password(ctx, any));
 
     /* Info keys as PyMuPDF's metadata names them */
     static const struct {
@@ -453,7 +489,7 @@ static int cmd_info(args *a)
     pt_json_begin_object(&j);
     for (size_t i = 0; i < sizeof META / sizeof *META; i++) {
         char buf[1024];
-        if (fz_lookup_metadata(ctx, (fz_document *)doc, META[i].meta, buf, sizeof buf) <= 1 || !*buf) continue;
+        if (fz_lookup_metadata(ctx, any, META[i].meta, buf, sizeof buf) <= 1 || !*buf) continue;
         if (!strcmp(META[i].key, "encryption") && !strcmp(buf, "None")) continue;
         pt_json_key(&j, META[i].key);
         pt_json_string(&j, buf);
@@ -463,19 +499,20 @@ static int cmd_info(args *a)
     pt_json_key(&j, "page_sizes");
     pt_json_begin_array(&j);
     for (int p = 0; p < n; p++) {
-        pdf_page *page = pdf_load_page(ctx, doc, p);
-        fz_rect r = fz_bound_page(ctx, (fz_page *)page);
+        fz_page *page = fz_load_page(ctx, any, p);
+        pdf_page *pp = pdf_page_from_fz_page(ctx, page);
+        fz_rect r = fz_bound_page(ctx, page);
         pt_json_begin_array(&j);
         pt_json_number(&j, r.x1 - r.x0);
         pt_json_number(&j, r.y1 - r.y0);
-        pt_json_int(&j, (pdf_dict_get_inheritable_int(ctx, page->obj, PDF_NAME(Rotate)) % 360 + 360) % 360);
+        pt_json_int(&j, pp ? (pdf_dict_get_inheritable_int(ctx, pp->obj, PDF_NAME(Rotate)) % 360 + 360) % 360 : 0);
         pt_json_end_array(&j);
-        fz_drop_page(ctx, (fz_page *)page);
+        fz_drop_page(ctx, page);
     }
     pt_json_end_array(&j);
 
     pt_strs fonts = {0};
-    for (int p = 0; p < n; p++)
+    for (int p = 0; doc && p < n; p++)
         resource_fonts(pdf_dict_get_inheritable(ctx, pdf_lookup_page_obj(ctx, doc, p), PDF_NAME(Resources)), &fonts, 0);
     qsort(fonts.v, (size_t)fonts.n, sizeof(char *), cmp_str);
     pt_json_key(&j, "fonts");
@@ -486,7 +523,7 @@ static int cmd_info(args *a)
 
     pt_json_key(&j, "fields");
     pt_json_begin_array(&j);
-    for (int p = 0; p < n; p++) {
+    for (int p = 0; doc && p < n; p++) {
         pdf_page *page = pdf_load_page(ctx, doc, p);
         for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
             pt_json_begin_object(&j);
@@ -508,7 +545,7 @@ static int cmd_info(args *a)
 
     pt_json_key(&j, "annotations");
     pt_json_begin_array(&j);
-    for (int p = 0; p < n; p++) {
+    for (int p = 0; doc && p < n; p++) {
         pdf_page *page = pdf_load_page(ctx, doc, p);
         for (pdf_annot *an = pdf_first_annot(ctx, page); an; an = pdf_next_annot(ctx, an)) {
             pt_json_begin_object(&j);
@@ -530,7 +567,7 @@ static int cmd_info(args *a)
     pt_json_key(&j, "synctex");
     pt_json_bool(&j, sync != NULL);
     free(sync);
-    pdf_drop_document(ctx, doc);
+    fz_drop_document(ctx, any);
     return emit_end(&j, OK);
 }
 
@@ -550,9 +587,9 @@ static void matches_free(matches *m)
 
 /* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`, each with the text under it,
  * appended to out. */
-static void find_matches(pdf_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
+static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
 {
-    fz_page *page = fz_load_page(ctx, (fz_document *)doc, p);
+    fz_page *page = fz_load_page(ctx, doc, p);
     fz_stext_page *st = pt_stext(ctx, page);
     pt_rects rects = {0};
     for (int t = 0; t < texts->n; t++) {
@@ -612,7 +649,7 @@ static int cmd_redact(args *a)
     page_list(get(a, "--pages"), n, &pages);
     matches found = {0};
     for (int i = 0; i < pages.n; i++)
-        find_matches(doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
+        find_matches((fz_document *)doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
     for (int i = 0; i < areas->n; i++) {
         const char *box;
         int p = page_and_value(areas->v[i], "--rect", &box);
@@ -964,6 +1001,8 @@ static int cmd_merge(args *a)
             path = pt_strdup(spec);
             ranges = pt_strdup("");
         }
+        const pt_doc_format *format = pt_doc_format_of(path);
+        if (format && !format->image) refuse_other_format(path);
         pt_part part = {path, {0}, password_for(given, path, used)};
         page_list(ranges, page_count_of(path, part.password), &part.pages);
         free(ranges);
@@ -1240,13 +1279,13 @@ static int write_item(args *a, pt_item it)
 
 static int cmd_search(args *a)
 {
-    pdf_document *doc = opened(input(a), get(a, "--password"));
+    fz_document *doc = opened_any(input(a), get(a, "--password"));
     /* static: a MuPDF error unwinds past the frees (fail), and the process ends with them still reachable */
     static pt_ints pages;
     static pt_strs texts;
     static matches found;
     pt_strs none = {0};
-    page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
+    page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
     pt_push(texts, pt_strdup(get(a, "--text")));
     for (int i = 0; i < pages.n; i++)
         find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
@@ -1271,20 +1310,21 @@ static int cmd_search(args *a)
     matches_free(&found);
     pt_strs_free(&texts);
     pt_vec_free(pages);
-    pdf_drop_document(ctx, doc);
+    fz_drop_document(ctx, doc);
     return emit_end(&j, code);
 }
 
 static int cmd_render(args *a)
 {
-    pdf_document *doc = opened(input(a), get(a, "--password"));
-    int p = one_page(a, doc), dpi = int_arg(a, "--dpi", 144);
+    fz_document *doc = opened_any(input(a), get(a, "--password"));
+    int p = int_arg(a, "--page", 1) - 1, dpi = int_arg(a, "--dpi", 144);
+    if (p < 0 || p >= fz_count_pages(ctx, doc)) fail("--page %d does not exist", p + 1);
     if (dpi < 18 || dpi > 2400) fail("--dpi wants 18 to 2400");
     const char *out = get(a, "--output");
     if (pt_same_file(out, input(a))) fail("refusing to overwrite the input; write to another file");
     fz_try(ctx)
     {
-        fz_page *page = fz_load_page(ctx, (fz_document *)doc, p);
+        fz_page *page = fz_load_page(ctx, doc, p);
         fz_pixmap *pix = pt_render_page(ctx, page, dpi / 72.0f, 0);
         fz_save_pixmap_as_png(ctx, pix, out);
         fz_drop_pixmap(ctx, pix);
@@ -1299,7 +1339,7 @@ static int cmd_render(args *a)
     pt_json_int(&j, p + 1);
     pt_json_key(&j, "dpi");
     pt_json_int(&j, dpi);
-    pdf_drop_document(ctx, doc);
+    fz_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1469,8 +1509,17 @@ static int cmd_watermark(args *a)
 static int cmd_ocr(args *a)
 {
     const char *path = input(a), *pw = get(a, "--password"), *language = get(a, "--language");
-    pdf_document *check = opened(path, pw);
-    pdf_drop_document(ctx, check);
+    /* another format is recognized in its PDF conversion, which the output then is */
+    static fz_buffer *converted;
+    if (pt_is_other_format(path)) {
+        fz_document *src = opened_any(path, pw);
+        fz_try(ctx) converted = pt_convert_to_pdf(ctx, src);
+        fz_always(ctx) fz_drop_document(ctx, src);
+        fz_catch(ctx) fail("cannot convert %s: %s", path, fz_caught_message(ctx));
+    } else {
+        pdf_document *check = opened(path, pw);
+        pdf_drop_document(ctx, check);
+    }
     char *exe_dir = pt_exe_dir();
     char *datadir = get(a, "--tessdata") ? pt_strdup(get(a, "--tessdata")) : pt_tessdata_dir(language, exe_dir);
     free(exe_dir);
@@ -1484,7 +1533,7 @@ static int cmd_ocr(args *a)
     int chars = 0;
     fz_try(ctx)
     {
-        doc = pt_open_pdf(ctx, path, pw, NULL);
+        doc = converted ? pt_open_pdf_buffer(ctx, converted, path, NULL, NULL) : pt_open_pdf(ctx, path, pw, NULL);
         page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
         for (int i = 0; i < pages.n; i++) chars += pt_ocr_page(ctx, doc, pages.v[i], language, datadir);
         data = finish(doc, pt_doc_bytes(ctx, doc, NULL), pw);
@@ -1503,6 +1552,7 @@ static int cmd_ocr(args *a)
     fz_drop_buffer(ctx, data);
     pt_vec_free(pages);
     pdf_drop_document(ctx, doc);
+    fz_drop_buffer(ctx, converted);
     free(datadir);
     return emit_end(&j, OK);
 }
@@ -1510,9 +1560,10 @@ static int cmd_ocr(args *a)
 static int cmd_compare(args *a)
 {
     if (a->positional.n != 2) usage_error(a->c, "compare wants exactly two PDFs");
-    pdf_document *doc[2];
-    for (int k = 0; k < 2; k++) doc[k] = opened(a->positional.v[k], k ? get(a, "--password2") : get(a, "--password"));
-    int n[2] = {pdf_count_pages(ctx, doc[0]), pdf_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1],
+    fz_document *doc[2];
+    for (int k = 0; k < 2; k++)
+        doc[k] = opened_any(a->positional.v[k], k ? get(a, "--password2") : get(a, "--password"));
+    int n[2] = {fz_count_pages(ctx, doc[0]), fz_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1],
         changed = 0;
     static pt_json j;
     emit_begin(&j);
@@ -1523,7 +1574,7 @@ static int cmd_compare(args *a)
         fz_page *pg[2] = {NULL, NULL};
         fz_try(ctx)
         {
-            for (int k = 0; k < 2; k++) pg[k] = p < n[k] ? fz_load_page(ctx, (fz_document *)doc[k], p) : NULL;
+            for (int k = 0; k < 2; k++) pg[k] = p < n[k] ? fz_load_page(ctx, doc[k], p) : NULL;
             pt_compare_pages(ctx, pg[0], pg[1], &only[0], &only[1]);
         }
         fz_always(ctx) fz_drop_page(ctx, pg[0]), fz_drop_page(ctx, pg[1]);
@@ -1551,8 +1602,8 @@ static int cmd_compare(args *a)
     pt_json_begin_array(&j);
     pt_json_int(&j, n[0]), pt_json_int(&j, n[1]);
     pt_json_end_array(&j);
-    pdf_drop_document(ctx, doc[0]);
-    pdf_drop_document(ctx, doc[1]);
+    fz_drop_document(ctx, doc[0]);
+    fz_drop_document(ctx, doc[1]);
     return emit_end(&j, OK);
 }
 
@@ -1563,9 +1614,9 @@ static int cmd_export_images(args *a)
     if (!jpeg && strcmp(format, "png")) fail("--format wants png or jpeg, got '%s'", format);
     int dpi = int_arg(a, "--dpi", 150);
     if (dpi < 18 || dpi > 2400) fail("--dpi wants 18 to 2400");
-    pdf_document *doc = opened(path, pw);
+    fz_document *doc = opened_any(path, pw);
     pt_ints pages = {0};
-    page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
+    page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
     if (pt_mkdirs(dir)) fail("cannot create %s", dir);
     char *stem = pt_stem(path);
     static pt_json j;
@@ -1578,7 +1629,7 @@ static int cmd_export_images(args *a)
         fz_page *p = NULL;
         fz_try(ctx)
         {
-            p = fz_load_page(ctx, (fz_document *)doc, pages.v[i]);
+            p = fz_load_page(ctx, doc, pages.v[i]);
             img = pt_page_image(ctx, p, dpi, jpeg);
         }
         fz_always(ctx) fz_drop_page(ctx, p);
@@ -1594,7 +1645,7 @@ static int cmd_export_images(args *a)
     pt_json_int(&j, dpi);
     free(stem);
     pt_vec_free(pages);
-    pdf_drop_document(ctx, doc);
+    fz_drop_document(ctx, doc);
     return emit_end(&j, OK);
 }
 
@@ -1692,8 +1743,10 @@ static int cmd_scrub(args *a)
 
 static int cmd_inspect(args *a)
 {
-    pdf_document *doc = opened(input(a), get(a, "--password"));
-    int n = pdf_count_pages(ctx, doc);
+    fz_document *any = opened_any(input(a), get(a, "--password"));
+    /* another format has neither: both lists stay empty */
+    pdf_document *doc = pdf_specifics(ctx, any);
+    int n = doc ? pdf_count_pages(ctx, doc) : 0;
     static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "annotations");
@@ -1743,7 +1796,49 @@ static int cmd_inspect(args *a)
         fz_drop_page(ctx, (fz_page *)page);
     }
     pt_json_end_array(&j);
-    pdf_drop_document(ctx, doc);
+    fz_drop_document(ctx, any);
+    return emit_end(&j, OK);
+}
+
+static int cmd_convert(args *a)
+{
+    const char *path = input(a), *size = get(a, "--page-size"), *font = get(a, "--font-size");
+    float w, h, em = PT_EBOOK_FONT_SIZE;
+    if (!pt_page_size(size, &w, &h)) usage_error(a->c, "argument --page-size: A5, A4 or Letter, got '%s'", size);
+    if (font) {
+        char *end;
+        em = strtof(font, &end);
+        if (!*font || *end || !(em >= 4 && em <= 96))
+            usage_error(a->c, "argument --font-size: points from 4 to 96, got '%s'", font);
+    }
+    if (!pt_is_other_format(path)) fail("%s is already a PDF (or not a format convert reads)", path);
+    fz_buffer *file = NULL, *data = NULL;
+    fz_document *doc = NULL;
+    int pages = 0;
+    fz_var(file), fz_var(doc);
+    fz_try(ctx)
+    {
+        file = fz_read_file(ctx, path);
+        doc = pt_open_document(ctx, file, path, w, h, em);
+        pages = fz_count_pages(ctx, doc);
+        if (pages < 1) fz_throw(ctx, FZ_ERROR_FORMAT, "no pages");
+        data = pt_convert_to_pdf(ctx, doc);
+    }
+    fz_always(ctx)
+    {
+        fz_drop_document(ctx, doc);
+        fz_drop_buffer(ctx, file);
+    }
+    fz_catch(ctx) fail("cannot convert %s: %s", path, fz_caught_message(ctx));
+    char *out = write_out(get(a, "--output"), data, path);
+    static pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    pt_json_key(&j, "pages");
+    pt_json_int(&j, pages);
+    free(out);
+    fz_drop_buffer(ctx, data);
     return emit_end(&j, OK);
 }
 
@@ -1891,6 +1986,17 @@ static const cmd COMMANDS[] = {
      0,
      cmd_flatten,
      {OUTPUT, PASSWORD, {"--dpi", NULL, VALUE, 0, "DPI", NULL, "200"}},
+     {0}},
+    {"convert",
+     "Write a PDF of an XPS, e-book (EPUB, MOBI, FB2), Office (DOCX, XLSX, PPTX), comic book, SVG or image file",
+     "input",
+     "the document to convert",
+     0,
+     cmd_convert,
+     {OUTPUT,
+      {"--page-size", NULL, VALUE, 0, "SIZE", "A5 | A4 | Letter: the page size e-books are laid out at (default A5)",
+       PT_EBOOK_PAGE_SIZE},
+      {"--font-size", NULL, VALUE, 0, "POINTS", "font size e-books are laid out with (default 11)", NULL}},
      {0}},
     {"synctex",
      "SyncTeX lookups",
@@ -2116,7 +2222,7 @@ void pt_cli_usage(FILE *out)
           "  pdf-tools --install-desktop | --uninstall-desktop\n"
           "  pdf-tools --version\n"
           "  pdf-tools COMMAND ...                          without the window, JSON output:\n"
-          "      info redact fill pages merge split protect unprotect flatten synctex\n"
+          "      info redact fill pages merge split protect unprotect flatten convert synctex\n"
           "      search inspect render export-images annotate draw insert-text insert-image sign\n"
           "      prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
@@ -2153,11 +2259,18 @@ int pt_cli_main(int argc, char **argv)
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     if (!ctx) fail("cannot create MuPDF context");
     fz_register_document_handlers(ctx);
+    pt_install_system_fonts(ctx);
     /* MuPDF's own messages go to the log (stderr), never to stdout, which holds only the JSON */
     pt_log_mupdf(ctx);
     args a;
     parse(c, argc - 2, argv + 2, &a);
     read_password_files(&a);
+    /* the commands that write an edited copy of a PDF (merge checks each of its inputs itself) */
+    static const char *EDITS_PDF[] = {"redact",      "redact-text",  "fill",    "pages", "annotate",       "draw",
+                                      "insert-text", "insert-image", "sign",    "bates", "watermark",      "scrub",
+                                      "protect",     "unprotect",    "flatten", "split", "edit-annotation"};
+    for (size_t i = 0; i < sizeof EDITS_PDF / sizeof *EDITS_PDF; i++)
+        if (!strcmp(c->name, EDITS_PDF[i])) refuse_other_format(input(&a));
 
     int code = FAILED;
     fz_var(code);

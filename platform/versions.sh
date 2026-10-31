@@ -1,6 +1,7 @@
 # The third-party sources every build script uses, in one place: versions and SHA-256 checksums, and the size
 # settings all of them are compiled with. Sourced by platform/{linux,macos,android,windows}/build.sh; the CI
-# workflow runs those scripts. (SIZE_CFLAGS are GCC/clang flags: the MSVC build leaves them out.)
+# workflow runs those scripts. (SIZE_CFLAGS are GCC/clang flags: the MSVC build leaves them out; cl.exe takes
+# MUPDF_FONT_CFLAGS' -D as it is.)
 
 # the app's own version, from project() in CMakeLists.txt
 PT_VERSION=$(sed -n 's/^project(pdf_tools VERSION \([0-9.]*\).*/\1/p' "$(dirname "${BASH_SOURCE[0]}")/../CMakeLists.txt")
@@ -9,6 +10,14 @@ PT_VERSION=$(sed -n 's/^project(pdf_tools VERSION \([0-9.]*\).*/\1/p' "$(dirname
 SIZE_CFLAGS="-O2 -ffunction-sections -fdata-sections"
 # build folders named after the settings, so a change rebuilds everything with them
 BUILD_TAG=o2
+
+# MuPDF without its CJK and Noto fallback fonts: the app takes fonts a PDF does not embed from the system.
+# PT_FONTS=full bundles them as well (MuPDF's TOFU and TOFU_CJK in include/mupdf/fitz/config.h).
+case "${PT_FONTS:-}" in
+'') FONTS_TAG=slim MUPDF_FONT_CFLAGS="-DTOFU -DTOFU_CJK" ;;
+full) FONTS_TAG=full MUPDF_FONT_CFLAGS= ;;
+*) echo "PT_FONTS is either unset or full, not '$PT_FONTS'" >&2; exit 1 ;;
+esac
 
 MUPDF_VERSION=1.28.5
 MUPDF_SHA256=98a5c10cda20c3992cdf76ff6b2a1149c32bd79cc796d3f703230b1185b7e934

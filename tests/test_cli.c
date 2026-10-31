@@ -444,6 +444,180 @@ static void test_owner_only_encryption(const char *statement)
     free(locked), free(o);
 }
 
+/* ---- other formats ---- */
+
+/* a zip of `n` entries; the first is stored, as an EPUB's mimetype must be */
+static char *zip_fixture(const char *name, int n, const char *const *names, fz_buffer *const *data)
+{
+    char *path = tmp(name);
+    fz_zip_writer *zip = fz_new_zip_writer(ctx, path);
+    for (int i = 0; i < n; i++) fz_write_zip_entry(ctx, zip, names[i], data[i], i > 0);
+    fz_close_zip_writer(ctx, zip);
+    fz_drop_zip_writer(ctx, zip);
+    return path;
+}
+
+static char *text_zip(const char *name, int n, const char *const *names, const char *const *texts)
+{
+    fz_buffer *data[8];
+    for (int i = 0; i < n; i++)
+        data[i] = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)texts[i], strlen(texts[i]));
+    char *path = zip_fixture(name, n, names, data);
+    for (int i = 0; i < n; i++) fz_drop_buffer(ctx, data[i]);
+    return path;
+}
+
+/* two chapters, the first linking to the second */
+static char *epub_fixture(void)
+{
+    static const char *names[] = {"mimetype", "META-INF/container.xml", "content.opf", "c1.xhtml", "c2.xhtml"};
+    static const char *texts[] = {
+        "application/epub+zip",
+        "<?xml version=\"1.0\"?><container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">"
+        "<rootfiles><rootfile full-path=\"content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles>"
+        "</container>",
+        "<?xml version=\"1.0\"?><package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" "
+        "unique-identifier=\"id\">"
+        "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>Test Book</dc:title>"
+        "<dc:identifier id=\"id\">t1</dc:identifier></metadata><manifest>"
+        "<item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>"
+        "<item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+        "<spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine></package>",
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>Chapter One</h1><p>Alpha Bravo Charlie</p>"
+        "<p><a href=\"c2.xhtml\">To chapter two</a></p></body></html>",
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>Chapter Two</h1><p>Delta Echo "
+        "Foxtrot</p></body></html>",
+    };
+    return text_zip("book.epub", 5, names, texts);
+}
+
+static char *docx_fixture(void)
+{
+    static const char *names[] = {"[Content_Types].xml", "_rels/.rels", "word/document.xml",
+                                  "word/_rels/document.xml.rels"};
+    static const char *texts[] = {
+        "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+        "<Override PartName=\"/word/document.xml\" ContentType=\"application/"
+        "vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>",
+        "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+        "officeDocument\" Target=\"word/document.xml\"/></Relationships>",
+        "<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        "<w:body><w:p><w:r><w:t>Hello Docx Golf</w:t></w:r></w:p></w:body></w:document>",
+        "<?xml version=\"1.0\"?><Relationships "
+        "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"/>",
+    };
+    return text_zip("letter.docx", 4, names, texts);
+}
+
+static fz_buffer *png_bytes(int w, int h, int grey)
+{
+    fz_pixmap *pix = fz_new_pixmap(ctx, fz_device_rgb(ctx), w, h, NULL, 0);
+    fz_clear_pixmap_with_value(ctx, pix, grey);
+    fz_buffer *png = fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
+    fz_drop_pixmap(ctx, pix);
+    return png;
+}
+
+static char *cbz_fixture(void)
+{
+    static const char *names[] = {"p1.png", "p2.png"};
+    fz_buffer *data[2] = {png_bytes(60, 80, 90), png_bytes(60, 80, 180)};
+    char *path = zip_fixture("comic.cbz", 2, names, data);
+    fz_drop_buffer(ctx, data[0]), fz_drop_buffer(ctx, data[1]);
+    return path;
+}
+
+static void le16(unsigned char *p, unsigned v) { p[0] = (unsigned char)v, p[1] = (unsigned char)(v >> 8); }
+
+static void le32(unsigned char *p, unsigned v) { le16(p, v & 0xffff), le16(p + 2, v >> 16); }
+
+/* `pages` uncompressed 8 x 8 grey images, one IFD each (TIFF 6.0, baseline) */
+static char *tiff_fixture(int pages)
+{
+    enum { W = 8, H = 8, ENTRIES = 8, IFD = 2 + ENTRIES * 12 + 4, PAGE = IFD + W * H };
+
+    static const unsigned short tags[ENTRIES] = {256, 257, 258, 259, 262, 273, 278, 279};
+    size_t len = 8 + (size_t)pages * PAGE;
+    unsigned char *f = calloc(len, 1);
+    memcpy(f, "II*\0", 4);
+    le32(f + 4, 8);
+    for (int p = 0; p < pages; p++) {
+        unsigned char *ifd = f + 8 + (size_t)p * PAGE;
+        unsigned pixels = (unsigned)(8 + p * PAGE + IFD);
+        const unsigned values[ENTRIES] = {W, H, 8, 1, 1, pixels, H, W * H};
+        le16(ifd, ENTRIES);
+        for (int e = 0; e < ENTRIES; e++) {
+            unsigned char *entry = ifd + 2 + e * 12;
+            le16(entry, tags[e]);
+            le16(entry + 2, e < 5 ? 3 : 4);
+            le32(entry + 4, 1);
+            le32(entry + 8, values[e]);
+        }
+        le32(ifd + 2 + ENTRIES * 12, p + 1 < pages ? (unsigned)(8 + (p + 1) * PAGE) : 0);
+        memset(f + pixels, p ? 200 : 60, W * H);
+    }
+    char *path = tmp("scan.tiff");
+    pt_write_file(path, f, len);
+    free(f);
+    return path;
+}
+
+static int pages_of(const char *pdf)
+{
+    int n = -1;
+    fz_try(ctx)
+    {
+        pdf_document *doc = pdf_open_document(ctx, pdf);
+        n = pdf_count_pages(ctx, doc);
+        pdf_drop_document(ctx, doc);
+    }
+    fz_catch(ctx) n = -1;
+    return n;
+}
+
+static void test_other_formats(const char *statement)
+{
+    char *epub = epub_fixture(), *docx = docx_fixture(), *cbz = cbz_fixture(), *tiff = tiff_fixture(3);
+    char *o = tmp("book.pdf"), *big = tmp("book-a4.pdf"), *r = tmp("never.pdf"), *png = tmp("scan.png");
+
+    CHECK(run("info", epub, NULL) == OK && has("\"pages\":2") && has("EPUB") && has("\"fields\":[]"));
+    CHECK(run("search", epub, "--text", "bravo", NULL) == OK && has("\"page\":1") && has("\"count\":1"));
+    CHECK(run("inspect", epub, NULL) == OK && has("\"annotations\":[]"));
+
+    CHECK(run("convert", epub, "-o", o, NULL) == OK && has("\"pages\":2") && has("book.pdf"));
+    CHECK(pages_of(o) == 2 && text_has(o, 0, "Alpha Bravo") && text_has(o, 1, "Delta Echo"));
+    pdf_document *doc = pdf_open_document(ctx, o);
+    fz_page *page = fz_load_page(ctx, (fz_document *)doc, 0);
+    fz_rect b = fz_bound_page(ctx, page);
+    CHECK(fabsf(b.x1 - 419.53f) < 1 && fabsf(b.y1 - 595.28f) < 1);
+    fz_link *links = fz_load_links(ctx, page);
+    float x, y;
+    CHECK(links && !fz_is_external_link(ctx, links->uri) &&
+          fz_page_number_from_location(ctx, (fz_document *)doc,
+                                       fz_resolve_link(ctx, (fz_document *)doc, links->uri, &x, &y)) == 1);
+    fz_drop_link(ctx, links);
+    fz_drop_page(ctx, page);
+    pdf_drop_document(ctx, doc);
+    CHECK(run("convert", epub, "-o", big, "--page-size", "a4", "--font-size", "8", NULL) == OK);
+    CHECK(run("info", big, NULL) == OK && has("[[595.28"));
+
+    CHECK(run("convert", docx, "-o", o, NULL) == OK && text_has(o, 0, "Hello Docx Golf"));
+    CHECK(run("convert", cbz, "-o", o, NULL) == OK && has("\"pages\":2") && pages_of(o) == 2);
+    CHECK(run("convert", tiff, "-o", o, NULL) == OK && has("\"pages\":3") && pages_of(o) == 3);
+    CHECK(run("render", tiff, "-o", png, "--page", "3", NULL) == OK && exists(png));
+
+    CHECK(run("redact", epub, "-o", r, "--text", "Bravo", NULL) == FAILED && one_object() &&
+          has("is not a PDF; convert it first: pdf-tools convert ") && has(" -o book.pdf") && !exists(r));
+    CHECK(run("watermark", docx, "-o", r, "--text", "X", NULL) == FAILED && has("convert it first"));
+    CHECK(run("merge", statement, epub, "-o", r, NULL) == FAILED && has("convert it first") && !exists(r));
+    CHECK(run("convert", statement, "-o", r, NULL) == FAILED && one_object() && has("already a PDF"));
+    CHECK(run("convert", epub, "-o", r, "--page-size", "B5", NULL) == FAILED && has("\"error\":\"usage:"));
+    CHECK(run("convert", epub, "-o", epub, NULL) == FAILED && has("overwrite"));
+    free(epub), free(docx), free(cbz), free(tiff), free(o), free(big), free(r), free(png);
+}
+
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
     (void)st, (void)flag, (void)ftw;
@@ -464,6 +638,7 @@ int main(int argc, char **argv)
     if (!mkdtemp(tmpdir)) return 1;
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     fz_register_document_handlers(ctx);
+    pt_install_system_fonts(ctx);
     pt_log_mupdf(ctx);
     char *statement = statement_pdf(), *form = form_pdf();
     test_info(form);
@@ -483,6 +658,7 @@ int main(int argc, char **argv)
     test_password_files(statement);
     test_synctex_bounds();
     test_owner_only_encryption(statement);
+    test_other_formats(statement);
     free(statement), free(form);
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;

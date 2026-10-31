@@ -5,6 +5,8 @@
 # the window system's libraries come from the system at run time.
 # Needs a C/C++ compiler, make, CMake, pkg-config, curl, git and the X11/Wayland development headers (README.md).
 # Output: $PT_LINUX_OUT/out (default ~/.cache/pdf-tools/linux). Re-runs are incremental.
+# MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from fontconfig);
+# PT_FONTS=full bundles them.
 # `build.sh install PREFIX` installs the program with its man page, launcher entry, icon and OCR data into PREFIX
 # (e.g. ~/.local) instead of packing the AppImage.
 set -euo pipefail
@@ -38,11 +40,12 @@ mkdir -p "$ROOT/dl" "$ROOT/src" "$ROOT/out" "$ROOT/pkgconfig"
 
 step "MuPDF $MUPDF_VERSION"
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
-MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG
+MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG-$FONTS_TAG
 fetch "$MUPDF_URL" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
 [ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src"
 make -C "$MUPDF_SRC" -j"$JOBS" libs build=release tesseract=yes OUT="$MUPDF_OUT" HAVE_X11=no HAVE_GLUT=no \
-    HAVE_LIBCRYPTO=no USE_SYSTEM_LIBS=no XCFLAGS="-fPIC $SIZE_CFLAGS" >"$ROOT/mupdf-build.log" 2>&1 || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
+    HAVE_LIBCRYPTO=no USE_SYSTEM_LIBS=no XCFLAGS="-fPIC $SIZE_CFLAGS $MUPDF_FONT_CFLAGS" \
+    >"$ROOT/mupdf-build.log" 2>&1 || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 # MuPDF's makefile writes no pkg-config file for a build tree; its third-party libraries (HarfBuzz, Tesseract)
 # are C++
 cat >"$ROOT/pkgconfig/mupdf.pc" <<EOF

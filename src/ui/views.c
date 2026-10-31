@@ -239,7 +239,7 @@ static cached_tex *text_texture(tab *t, const pt_item *it)
         pdf_page *page = pdf_load_page(CTX, tmp, 0);
         pt_item copy = *it;
         copy.rect = fz_make_rect(0, 0, w, h);
-        pt_draw_text(CTX, tmp, page, &copy, t->doc);
+        pt_draw_text(CTX, tmp, page, &copy, t->pdf);
         fz_drop_page(CTX, (fz_page *)page);
         page = pdf_load_page(CTX, tmp, 0);
         fz_matrix m =
@@ -1624,8 +1624,8 @@ static void other_chosen(void *ctx, pt_strs *paths)
     /* the tab's file as last read (t->file), not what is on disk now */
     fz_try(CTX)
     {
-        mine = (fz_document *)pt_open_pdf_buffer(CTX, t->file, t->path, t->password, NULL);
-        doc = fz_open_document(CTX, paths->v[0]);
+        mine = tab_open_file(t);
+        doc = open_document_file(t, paths->v[0]);
     }
     fz_catch(CTX)
     {
@@ -1650,9 +1650,9 @@ void compare_start(tab *t)
 {
     if (!t->doc) return;
     if (tab_edit_count(t)) status("Compare uses the saved file; unsaved edits are not part of it", 6);
-    char *dir = pt_dirname(t->path);
-    file_dialog(FD_OPEN, "Compare with", dir, "PDF", "*.pdf", other_chosen, (void *)(uintptr_t)t->id);
-    free(dir);
+    char *dir = pt_dirname(t->path), *patterns = pt_doc_patterns();
+    file_dialog(FD_OPEN, "Compare with", dir, "Documents", patterns, other_chosen, (void *)(uintptr_t)t->id);
+    free(dir), free(patterns);
 }
 
 /* ---- text recognition ----
@@ -1701,7 +1701,14 @@ static void out_chosen(void *ctx, pt_strs *paths)
                     NULL);
         return;
     }
-    fz_try(CTX) o->doc = pt_open_pdf_buffer(CTX, t->file, t->path, t->password, NULL);
+    fz_buffer *pdf = NULL;
+    fz_var(pdf);
+    fz_try(CTX)
+    {
+        pdf = tab_pdf_file(t);
+        o->doc = pt_open_pdf_buffer(CTX, pdf, t->path, t->password, NULL);
+    }
+    fz_always(CTX) fz_drop_buffer(CTX, pdf);
     fz_catch(CTX)
     {
         char *msg = pt_format("Cannot open %s:\n%s", pt_basename(t->path), fz_caught_message(CTX));

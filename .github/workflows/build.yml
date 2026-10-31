@@ -1,7 +1,15 @@
 name: Build
+# pull requests only; a build of any branch (e.g. for a release) is started by hand from the Actions tab.
+# Each job caches its downloaded sources and built libraries, keyed on the pinned versions and its build script:
+# the scripts skip a library that is already built, so only a change to either rebuilds them. No partial-key
+# fallback: a script change may alter flags that the "already built" checks do not see. A pull request reads only
+# its own caches and main's, so main builds when the versions or scripts change, to fill the caches new PRs start from.
 on:
-  push:
   pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [platform/versions.sh, 'platform/*/build.sh', .github/workflows/build.yml]
 jobs:
   linux:
     runs-on: ubuntu-latest
@@ -13,6 +21,16 @@ jobs:
           sudo apt-get install -y build-essential cmake pkg-config libfontconfig-dev libx11-dev libxrandr-dev \
             libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev libwayland-dev \
             wayland-protocols
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/pdf-tools-linux/dl
+            ${{ runner.temp }}/pdf-tools-linux/src
+            ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
+          key: deps-linux-${{ hashFiles('platform/versions.sh', 'platform/linux/build.sh') }}
       - name: Build, test and pack the AppImage (platform/linux/build.sh)
         run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/build.sh
       - uses: actions/upload-artifact@v4
@@ -30,6 +48,15 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36.1" \
             "ndk;28.2.13676358" >/dev/null
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/pdf-tools-android/dl
+            ${{ runner.temp }}/pdf-tools-android/src
+            ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-android/openssl-install-*
+          key: deps-android-${{ hashFiles('platform/versions.sh', 'platform/android/build.sh') }}
       - name: Build the APK (platform/android/build.sh)
         run: |
           PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" ANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
@@ -42,6 +69,16 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/pdf-tools-macos/dl
+            ${{ runner.temp }}/pdf-tools-macos/src
+            ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
+          key: deps-macos-${{ hashFiles('platform/versions.sh', 'platform/macos/build.sh') }}
       - name: Build, test and pack PDF Tools.app and PDF-Tools.dmg (platform/macos/build.sh)
         run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" platform/macos/build.sh
       - uses: actions/upload-artifact@v4
@@ -57,6 +94,16 @@ jobs:
       - name: Keep line endings as committed (bash scripts break on CRLF)
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          # MuPDF builds inside its source tree (src/mupdf-<fonts>), so src holds its build too
+          path: |
+            ${{ runner.temp }}/pdf-tools-windows/dl
+            ${{ runner.temp }}/pdf-tools-windows/src
+            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
+            ${{ runner.temp }}/pdf-tools-windows/openssl-install
+            ${{ runner.temp }}/pdf-tools-windows/raylib-install
+          key: deps-windows-${{ hashFiles('platform/versions.sh', 'platform/windows/build.sh') }}
       - name: Build, test and pack PDF-Tools-Windows.zip (platform/windows/build.sh, MSVC)
         run: PT_WINDOWS_OUT="$(cygpath -u "$RUNNER_TEMP")/pdf-tools-windows" platform/windows/build.sh
       - uses: actions/upload-artifact@v4

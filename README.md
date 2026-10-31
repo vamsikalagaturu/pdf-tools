@@ -15,11 +15,14 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
   password, print. Undo and redo, find with regular expressions, two pages side by side, presentation mode (F5).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
+- **Other documents**: XPS, comics (CBZ), images, SVG, e-books (EPUB, MOBI, FB2) and Office files (DOCX, XLSX,
+  PPTX) open like PDFs; editing one makes a PDF copy, saved next to the original.
 
 ## Install
 
-Each push builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub Actions
-(artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`).
+Each pull request builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub
+Actions (artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`); Actions >
+Build > Run workflow builds any branch by hand.
 
 On Linux, make the AppImage executable and run `./PDF_Tools-x86_64.AppImage --install-desktop` once to add it to
 the applications menu and to "Open with" for PDFs (`--uninstall-desktop` removes it; after moving the AppImage, run
@@ -75,6 +78,10 @@ platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-T
 The Windows script needs Visual Studio 2022 or 2026 with the C++ tools and Strawberry Perl, as on GitHub's
 `windows-latest` runner; it builds MuPDF through its Visual Studio solution and everything else with MSVC.
 
+The builds leave out MuPDF's CJK and Noto fallback fonts: text in a font a PDF does not embed is drawn with the
+system's fonts (fontconfig, /system/fonts, the macOS and Windows font folders). `PT_FONTS=full` before any of the
+scripts bundles them as well, for a larger program that needs no installed fonts.
+
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
 dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it with the English
 OCR data as the AppImage. To install the binary instead, with its man page, desktop entry, icon and OCR data:
@@ -107,6 +114,7 @@ Without raylib, `pdf-tools` is built with the commands only.
 pdf-tools file.pdf                          # open in the window
 pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}'
 pdf-tools info in.pdf
+pdf-tools convert book.epub -o book.pdf     # any supported document to PDF
 pdf-tools COMMAND --help
 pdf-tools --version
 ```
