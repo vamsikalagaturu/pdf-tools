@@ -453,7 +453,7 @@ static void test_reading_order_threads(void)
     free(want_a), free(want_b), free(a), free(b);
 }
 
-/* An encrypted part is named in the error: merge has no way to take its password. */
+/* An encrypted part without its password is named in the error; with it, it merges. */
 static void test_merge_encrypted(void)
 {
     pdf_write_options o = pdf_default_write_options;
@@ -471,9 +471,14 @@ static void test_merge_encrypted(void)
     fz_catch(ctx)
     {
         failed = 1;
-        CHECK(strstr(fz_caught_message(ctx), "merge-enc.pdf is password protected") != NULL);
+        CHECK(strstr(fz_caught_message(ctx), "Wrong password for") && strstr(fz_caught_message(ctx), "merge-enc.pdf"));
     }
     CHECK(failed && !out);
+    parts.v[0].password = "user";
+    fz_try(ctx) out = pt_merge(ctx, &parts);
+    fz_catch(ctx) out = NULL;
+    CHECK(out != NULL);
+    fz_drop_buffer(ctx, out);
     pt_vec_free(parts.v[0].pages);
     pt_vec_free(parts);
     free(path);

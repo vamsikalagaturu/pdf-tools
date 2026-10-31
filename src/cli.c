@@ -903,7 +903,7 @@ static int cmd_pages(args *a)
     return emit_end(&j, OK);
 }
 
-static int page_count_of(const char *path)
+static int page_count_of(const char *path, const char *password)
 {
     int image = 0;
     fz_try(ctx) image = pt_is_image_file(ctx, path);
@@ -918,10 +918,9 @@ static int page_count_of(const char *path)
     pdf_document *doc = NULL;
     fz_try(ctx) doc = pdf_open_document(ctx, path);
     fz_catch(ctx) fail("cannot open %s: %s", path, fz_caught_message(ctx));
-    /* merge takes no passwords */
-    if (pdf_needs_password(ctx, doc)) {
+    if (pdf_needs_password(ctx, doc) && !pdf_authenticate_password(ctx, doc, password ? password : "")) {
         pdf_drop_document(ctx, doc);
-        fail("%s is password protected; merge cannot open it (remove the password first with unprotect)", path);
+        fail("%s is password protected: pass the right --password-for %s=PASSWORD", path, path);
     }
     int n = pdf_count_pages(ctx, doc);
     pdf_drop_document(ctx, doc);
@@ -937,9 +936,24 @@ static int only_range_chars(const char *s)
     return 1;
 }
 
+/* the password --password-for gives `path` ("PATH=PASSWORD": the path is matched whole, so either may hold '='),
+ * or NULL; *used gets a mark for each entry that named an input */
+static const char *password_for(const pt_strs *given, const char *path, char *used)
+{
+    size_t len = strlen(path);
+    for (int i = 0; given && i < given->n; i++)
+        if (!strncmp(given->v[i], path, len) && given->v[i][len] == '=') {
+            used[i] = 1;
+            return given->v[i] + len + 1;
+        }
+    return NULL;
+}
+
 static int cmd_merge(args *a)
 {
     pt_parts parts = {0};
+    const pt_strs *given = list(a, "--password-for");
+    char *used = calloc(given ? (size_t)given->n + 1 : 1, 1);
     for (int i = 0; i < a->positional.n; i++) {
         const char *spec = a->positional.v[i], *colon = strrchr(spec, ':');
         char *path, *ranges;
@@ -950,12 +964,15 @@ static int cmd_merge(args *a)
             path = pt_strdup(spec);
             ranges = pt_strdup("");
         }
-        pt_part part = {path, {0}};
-        page_list(ranges, page_count_of(path), &part.pages);
+        pt_part part = {path, {0}, password_for(given, path, used)};
+        page_list(ranges, page_count_of(path, part.password), &part.pages);
         free(ranges);
         pt_push(parts, part);
         refuse_overwrite(get(a, "--output"), path);
     }
+    for (int i = 0; given && i < given->n; i++)
+        if (!used[i]) usage_error(a->c, "--password-for %s names no input (use the path as given)", given->v[i]);
+    free(used);
 
     fz_buffer *data = NULL;
     int pages = 0;
@@ -1834,7 +1851,9 @@ static const cmd COMMANDS[] = {
      "PDF, PDF:PAGES or an image file",
      1,
      cmd_merge,
-     {OUTPUT},
+     {OUTPUT,
+      {"--password-for", NULL, APPEND, 0, "FILE=PASSWORD", "password of an encrypted input, FILE as given (repeatable)",
+       NULL}},
      {0}},
     {"split",
      "Split into PART files",

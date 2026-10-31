@@ -441,11 +441,12 @@ fz_buffer *pt_optimize(fz_context *ctx, fz_buffer *data);         /* a smaller c
 typedef struct {
     char *path;
     pt_ints pages;
+    const char *password; /* for an encrypted PDF; NULL: none */
 } pt_part;
 
 PT_VEC(pt_parts, pt_part);
 /* The `pages` of each part in turn, as one unencrypted PDF; a part that is not a PDF is an image file
- * (pt_image_document). */
+ * (pt_image_document). Throws for an encrypted part without its right password. */
 fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts);
 /* Removes what a redacted file must not carry: metadata, attachments (embedded files and associated files),
  * scripts, hidden text (invisible text such as OCR layers, text in hidden layers or outside the page), private

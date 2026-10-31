@@ -31,7 +31,7 @@ pdf-tools info in.pdf                     # pages, sizes, fonts, form fields, an
 pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}' [--pages 1-3] [--case-sensitive] [--fill '#000000']
 pdf-tools fill in.pdf -o out.pdf --field name=Jane --field agree=true
 pdf-tools pages in.pdf -o out.pdf [--order 3,1,2] [--remove 4-5] [--rotate 2:90] [--crop 1:x0,y0,x1,y1] [--crop-content [PAGES]]
-pdf-tools merge a.pdf b.pdf:1-3 scan.jpg -o out.pdf          # images become pages
+pdf-tools merge a.pdf b.pdf:1-3 scan.jpg -o out.pdf [--password-for b.pdf=PW]   # images become pages
 pdf-tools split in.pdf (--every 2 | --at 3,7) -d outdir/      # outdir/in-part1.pdf, ...
 pdf-tools protect in.pdf -o out.pdf --password NEW [--current-password OLD]
 pdf-tools unprotect in.pdf -o out.pdf --password PW
@@ -51,6 +51,8 @@ Notes:
 - `pages`: `--order` lists the pages to keep in their new order (`5-1` counts down);
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
 - Field names for `fill` come from `info` (`fields[].name`); checkboxes take `true`/`false`.
+- `merge`: give each encrypted input's password as `--password-for FILE=PW`, FILE spelled as on the command
+  line (repeat per file); the merged output is not encrypted.
 
 ## More commands
 

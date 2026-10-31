@@ -1696,8 +1696,9 @@ fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts)
             pdf_document *src = is_pdf_path(ctx, path) ? pdf_open_document(ctx, path) : pt_image_document(ctx, path);
             fz_try(ctx)
             {
-                if (pdf_needs_password(ctx, src))
-                    fz_throw(ctx, FZ_ERROR_ARGUMENT, "%s is password protected; merge cannot open it", path);
+                const char *pw = parts->v[i].password;
+                if (pdf_needs_password(ctx, src) && !pdf_authenticate_password(ctx, src, pw ? pw : ""))
+                    fz_throw(ctx, FZ_ERROR_ARGUMENT, "Wrong password for %s", path);
                 pt_graft_pages(ctx, out, src, parts->v[i].pages.v, parts->v[i].pages.n);
             }
             fz_always(ctx) pdf_drop_document(ctx, src);

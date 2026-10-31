@@ -311,6 +311,12 @@ Content outside a crop is deleted.
 .BI "merge " "a.pdf b.pdf:1-3 photo.jpg ... " \-o " output.pdf"
 Join PDFs, each optionally limited to some pages, and images, each of which
 becomes a page.
+.B \-\-password\-for
+.IR file = password
+gives an encrypted input's password, with
+.I file
+written as on the command line; repeat it for each encrypted input. The
+merged output is not encrypted.
 .TP
 .BI "split " "input.pdf " "\-\-every " n " \-d " folder
 .TQ

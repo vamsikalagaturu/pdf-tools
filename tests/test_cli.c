@@ -278,12 +278,15 @@ static void test_protect_and_unprotect(const char *statement)
     CHECK(needs_password(r) == 1);
     CHECK(run("unprotect", locked, "-o", unlocked, "--password", "pw", NULL) == OK);
     CHECK(needs_password(unlocked) == 0);
-    /* protect reads the input's password from --current-password, merge takes none */
+    /* protect reads the input's password from --current-password, merge one per input from --password-for */
     CHECK(run("protect", locked, "-o", r, "--password", "new", NULL) == FAILED &&
           has("pass the right --current-password"));
     CHECK(run("protect", locked, "-o", r, "--password", "new", "--current-password", "pw", NULL) == OK);
-    CHECK(run("merge", statement, locked, "-o", r, NULL) == FAILED &&
-          has("locked.pdf is password protected; merge cannot open it"));
+    CHECK(run("merge", statement, locked, "-o", r, NULL) == FAILED && has("pass the right --password-for"));
+    char given[1024];
+    snprintf(given, sizeof given, "%s=pw", locked);
+    CHECK(run("merge", statement, locked, "-o", r, "--password-for", given, NULL) == OK && needs_password(r) == 0);
+    CHECK(run("merge", statement, "-o", r, "--password-for", given, NULL) == FAILED && has("names no input"));
     free(locked), free(unlocked), free(r);
 }
 
