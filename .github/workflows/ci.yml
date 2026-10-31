@@ -1,0 +1,192 @@
+name: CI
+# Pull requests build the app on each platform and run its tests, without packing (packages come from release.yml).
+# The libraries from platform/<os>/deps.sh are cached under a key of the runner image, the compiler and the hash of
+# versions.sh and deps.sh, so only a change to one of those rebuilds them; deps.sh does not run at all on a hit.
+# No partial-key fallback: deps.sh skips a library that is already built, so a stale one would be linked as it is.
+# A pull request reads its own caches and main's: a push to main that changes the versions or a deps.sh only fills
+# the caches (no build), so new pull requests start from them.
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [platform/versions.sh, 'platform/*/deps.sh', .github/workflows/ci.yml]
+permissions:
+  contents: read
+jobs:
+  linux:
+    # the oldest supported Ubuntu (24.04 and later, Arch): the binary needs the glibc it was built with or newer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache key (runner image, compiler, pinned versions, deps.sh)
+        id: key
+        run: |
+          cc_version=$(cc --version)
+          cc_version=${cc_version%%$'\n'*}
+          echo "key=deps-linux-$ImageOS-${cc_version//[^A-Za-z0-9.-]/_}-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/linux/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: restore
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-linux/dl
+            ${{ runner.temp }}/pdf-tools-linux/src
+            ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
+      - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
+        if: steps.restore.outputs.cache-hit != 'true' || github.event_name != 'push'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libfontconfig-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols
+      - name: Build the libraries (platform/linux/deps.sh)
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/deps.sh
+      - uses: actions/cache/save@v4
+        if: steps.restore.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-linux/dl
+            ${{ runner.temp }}/pdf-tools-linux/src
+            ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
+      - name: Build and test (platform/linux/build.sh check)
+        if: github.event_name != 'push'
+        run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/build.sh check
+  android:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 28.2.13676358
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache key (runner image, NDK, pinned versions, deps.sh)
+        id: key
+        run: |
+          echo "key=deps-android-$ImageOS-ndk$NDK_VERSION-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/android/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: restore
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-android/dl
+            ${{ runner.temp }}/pdf-tools-android/src
+            ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-android/openssl-install-*
+      - name: Ninja, Android build-tools, platform and NDK
+        if: steps.restore.outputs.cache-hit != 'true' || github.event_name != 'push'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36.1" \
+            "ndk;$NDK_VERSION" >/dev/null
+      - name: Build the libraries (platform/android/deps.sh)
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: |
+          PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" ANDROID_NDK="$ANDROID_HOME/ndk/$NDK_VERSION" \
+            platform/android/deps.sh
+      - uses: actions/cache/save@v4
+        if: steps.restore.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-android/dl
+            ${{ runner.temp }}/pdf-tools-android/src
+            ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-android/openssl-install-*
+      - name: Compile libpdf-tools.so (platform/android/build.sh check)
+        if: github.event_name != 'push'
+        run: |
+          PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" ANDROID_NDK="$ANDROID_HOME/ndk/$NDK_VERSION" \
+            platform/android/build.sh check
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache key (runner image, compiler, pinned versions, deps.sh)
+        id: key
+        run: |
+          cc_version=$(cc --version)
+          cc_version=${cc_version%%$'\n'*}
+          echo "key=deps-macos-$ImageOS-${cc_version//[^A-Za-z0-9.-]/_}-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/macos/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: restore
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-macos/dl
+            ${{ runner.temp }}/pdf-tools-macos/src
+            ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
+      - name: Build the libraries (platform/macos/deps.sh)
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" platform/macos/deps.sh
+      - uses: actions/cache/save@v4
+        if: steps.restore.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-macos/dl
+            ${{ runner.temp }}/pdf-tools-macos/src
+            ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
+      - name: Build and test (platform/macos/build.sh check)
+        if: github.event_name != 'push'
+        run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" platform/macos/build.sh check
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as committed (bash scripts break on CRLF)
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Cache key (runner image, MSVC, pinned versions, deps.sh)
+        id: key
+        # the MSVC version vcvars64.bat selects, as deps.sh finds Visual Studio
+        run: |
+          vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')
+          msvc=$(tr -d '\r\n' <"$(cygpath -u "$vs")/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+          echo "key=deps-windows-$ImageOS-msvc$msvc-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/windows/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: restore
+        with:
+          key: ${{ steps.key.outputs.key }}
+          # MuPDF builds inside its source tree (src/mupdf-<fonts>), so src holds its build too
+          path: |
+            ${{ runner.temp }}/pdf-tools-windows/dl
+            ${{ runner.temp }}/pdf-tools-windows/src
+            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
+            ${{ runner.temp }}/pdf-tools-windows/openssl-install
+            ${{ runner.temp }}/pdf-tools-windows/raylib-install
+      - name: Build the libraries (platform/windows/deps.sh, MSVC)
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: PT_WINDOWS_OUT="$(cygpath -u "$RUNNER_TEMP")/pdf-tools-windows" platform/windows/deps.sh
+      - uses: actions/cache/save@v4
+        if: steps.restore.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-windows/dl
+            ${{ runner.temp }}/pdf-tools-windows/src
+            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
+            ${{ runner.temp }}/pdf-tools-windows/openssl-install
+            ${{ runner.temp }}/pdf-tools-windows/raylib-install
+      - name: Build and test (platform/windows/build.sh check, MSVC)
+        if: github.event_name != 'push'
+        run: PT_WINDOWS_OUT="$(cygpath -u "$RUNNER_TEMP")/pdf-tools-windows" platform/windows/build.sh check

@@ -1,6 +1,6 @@
 # The third-party sources every build script uses, in one place: versions and SHA-256 checksums, and the size
-# settings all of them are compiled with. Sourced by platform/{linux,macos,android,windows}/build.sh; the CI
-# workflow runs those scripts. (SIZE_CFLAGS are GCC/clang flags: the MSVC build leaves them out; cl.exe takes
+# settings all of them are compiled with. Sourced by platform/{linux,macos,android,windows}/deps.sh, which each
+# build.sh runs first; the CI workflows run those scripts. (SIZE_CFLAGS are GCC/clang flags: the MSVC build leaves them out; cl.exe takes
 # MUPDF_FONT_CFLAGS' -D as it is.)
 
 # the app's own version, from project() in CMakeLists.txt
