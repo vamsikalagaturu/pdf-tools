@@ -20,8 +20,9 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 
 ## Install
 
-Each push builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub Actions
-(artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`).
+Each pull request builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub
+Actions (artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`); Actions >
+Build > Run workflow builds any branch by hand.
 
 On Linux, make the AppImage executable and run `./PDF_Tools-x86_64.AppImage --install-desktop` once to add it to
 the applications menu and to "Open with" for PDFs (`--uninstall-desktop` removes it; after moving the AppImage, run
