@@ -44,6 +44,10 @@ while IFS= read -r line; do
     *) if [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then export "$name=$value"; fi ;;
     esac
 done < <(comm -13 <(cmd_env "$ROOT/env-before.bat") <(cmd_env "$ROOT/env-msvc.bat"))
+# vcvars64.bat sets up the compiler, not MSBuild: vswhere says where that is
+MSBUILD=$("$VSWHERE" -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+    tr -d '\r' | head -1)
+[ -n "$MSBUILD" ] && PATH="$(dirname "$(cygpath -u "$MSBUILD")"):$PATH"
 export PATH CC=cl CXX=cl
 for tool in cl link nmake msbuild cmake ctest ninja; do
     command -v $tool >/dev/null || { echo "missing after vcvars64.bat: $tool" >&2; exit 1; }
