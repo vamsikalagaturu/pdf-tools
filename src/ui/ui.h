@@ -378,6 +378,16 @@ void workspace_add_paths(workspace *w, pt_strs *paths);
 void workspace_add_document(workspace *w, fz_buffer *pdf, const char *name, const char *password);
 void workspace_shortcuts(workspace *w);
 
+/* ---- updates (update.c): GitHub's latest release, checked in the background ---- */
+void update_start(void); /* at startup: checks when check_updates is on and a day has passed since the last check */
+void update_poll(void);  /* each turn of the main loop: takes a finished check or download; never blocks */
+float update_bar_height(void); /* 0 while no bar is shown */
+void update_bar(Rectangle r);  /* the "is available" bar with Update and Later, or the download's progress */
+void update_menu_items(ui_menu *m);
+/* at exit, after ipc_stop(): stops a running download, starts the updated program when a restart was asked for and
+ * on Windows the helper that swaps the folders */
+void update_stop(void);
+
 /* ---- printing and other windows (system.c) ---- */
 void print_document(tab *t, int preview); /* prints the edited document (tab_edited), not the file */
 /* the folder of the windows' state files (and macOS sockets), private to this user; caller frees */

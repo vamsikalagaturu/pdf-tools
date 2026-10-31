@@ -597,11 +597,73 @@ float wheel_step(float extent)
 #endif
 }
 
+/* a mouse wheel's whole notches, which glide; a touchpad's or a high-resolution wheel's fractions scroll directly, as
+ * does Android, where the wheel is the finger */
+static int notches(float wheel)
+{
+#ifdef __ANDROID__
+    (void)wheel;
+    return 0;
+#else
+    return wheel == truncf(wheel);
+#endif
+}
+
+/* The notches' glide over WHEEL_GLIDE_S as a cubic Hermite curve from the speed it started with to rest, so a notch
+ * that extends a running glide keeps its speed instead of jolting it (an ease-out restarted each notch would). */
+static float glide_at(float total, float v0, float s)
+{
+    return v0 * WHEEL_GLIDE_S * (s - 2 * s * s + s * s * s) + total * (3 * s * s - 2 * s * s * s);
+}
+
+static float glide_speed(float total, float v0, float s)
+{
+    return v0 * (1 - 4 * s + 3 * s * s) + total * (6 * s - 6 * s * s) / WHEEL_GLIDE_S;
+}
+
+static float glide_s(tab *t) { return (float)fmin(1, (ui.now - t->wheel_t0) / WHEEL_GLIDE_S); }
+
+/* scrolls on along the notches' glide to where it is now */
+static void wheel_glide(tab *t)
+{
+    if (t->wheel_t0 <= 0) return;
+    float s = glide_s(t);
+    Vector2 at = {glide_at(t->wheel_total.x, t->wheel_v0.x, s), glide_at(t->wheel_total.y, t->wheel_v0.y, s)};
+    t->scroll_x += at.x - t->wheel_done.x;
+    t->scroll_y += at.y - t->wheel_done.y;
+    t->wheel_done = at;
+    /* at the start or end of the document the rest is dropped, so a notch back starts afresh instead of cancelling it
+     */
+    float sx = t->scroll_x, sy = t->scroll_y;
+    clamp_scroll(t);
+    int stopped = (t->wheel_total.x != 0 && sx != t->scroll_x) || (t->wheel_total.y != 0 && sy != t->scroll_y);
+    if (s >= 1 || stopped) t->wheel_t0 = 0;
+    else ui.dirty = 1;
+}
+
+/* notches add `d` to the distance still to glide, from the speed the glide has now; a new glide eases out (starting
+ * at twice its mean speed makes the Hermite curve a quadratic ease-out) */
+static void wheel_extend(tab *t, Vector2 d)
+{
+    Vector2 v = {2 * d.x / WHEEL_GLIDE_S, 2 * d.y / WHEEL_GLIDE_S}, left = {0, 0};
+    if (t->wheel_t0 > 0) {
+        float s = glide_s(t);
+        v = (Vector2){glide_speed(t->wheel_total.x, t->wheel_v0.x, s), glide_speed(t->wheel_total.y, t->wheel_v0.y, s)};
+        left = (Vector2){t->wheel_total.x - t->wheel_done.x, t->wheel_total.y - t->wheel_done.y};
+    }
+    t->wheel_total = (Vector2){left.x + d.x, left.y + d.y};
+    t->wheel_v0 = v;
+    t->wheel_done = (Vector2){0, 0};
+    t->wheel_t0 = ui.now;
+    ui.dirty = 1;
+}
+
 /* The page view's input: wheel and pinch scrolling and zoom, then the current tool's gesture on the pages
  * (t->gesture: started by a press, followed while held, finished on release). */
 static void handle_input(tab *t, Rectangle area)
 {
     int over = ui_hover(area);
+    wheel_glide(t);
     /* wheel: Ctrl zooms, Shift scrolls sideways */
     if (over && (ui.wheel || ui.wheel_x)) {
         if (ui.ctrl && ui.wheel) {
@@ -613,10 +675,11 @@ static void handle_input(tab *t, Rectangle area)
             /* keep the point under the pointer in place */
             t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
             if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
-        } else if (ui.shift) t->scroll_x -= ui.wheel * wheel_step(area.width);
-        else {
-            t->scroll_y -= ui.wheel * wheel_step(area.height);
-            t->scroll_x -= ui.wheel_x * wheel_step(area.width);
+        } else {
+            Vector2 d = ui.shift ? (Vector2){-ui.wheel * wheel_step(area.width), 0}
+                                 : (Vector2){-ui.wheel_x * wheel_step(area.width), -ui.wheel * wheel_step(area.height)};
+            if (notches(ui.wheel) && notches(ui.wheel_x)) wheel_extend(t, d);
+            else t->scroll_x += d.x, t->scroll_y += d.y;
         }
         close_popover(t, 1);
     }
@@ -816,13 +879,6 @@ static void handle_input(tab *t, Rectangle area)
 
 /* ---- pages and the view's frame ---- */
 
-/* the zoom at which page p is rendered whole; above it, tiles draw over that render */
-static float base_scale(tab *t, int p)
-{
-    fz_rect b = page_bounds(t, p);
-    return fminf(t->zoom * UI_PX, BASE_MAX_PX / fmaxf(b.x1 - b.x0, b.y1 - b.y0));
-}
-
 /* distance in device pixels from the middle of the view to the nearest point of r (screen units): 0 when visible */
 static float view_distance(tab *t, Rectangle r)
 {
@@ -831,10 +887,11 @@ static float view_distance(tab *t, Rectangle r)
     return hypotf(dx, dy) * UI_PX;
 }
 
-/* Tiles of page p (on screen at r) that meet `want` (screen units): drawn when `draw`, else only requested, nearest
- * the middle of the view first. They render at the zoom level just above the zoom and are drawn k <= 1 times that,
- * each edge on a whole device pixel so text stays crisp while scrolling; a new tile fades in. */
-static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
+/* Tiles of page p (on screen at r) that meet `want` (screen units): drawn when `draw`, else only requested (as wanted
+ * on screen when `visible`, else prefetched), nearest the middle of the view first. They render at the zoom level just
+ * above the zoom and are drawn k <= 1 times that, each edge on a whole device pixel so text stays crisp while
+ * scrolling; a new tile fades in. */
+static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw, int visible)
 {
     float px = UI_PX, zoom = t->zoom * px, level = tile_level(zoom), k = zoom / level;
     fz_irect all = page_pixels(t, p, level);
@@ -861,7 +918,7 @@ static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw)
             float ay = roundf(oy + ty * TILE_PX * k), by = roundf(oy + fminf((ty + 1) * TILE_PX, h) * k);
             Rectangle d = {ax / px, ay / px, (bx - ax) / px, (by - ay) / px};
             double born = 0;
-            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), draw ? &born : NULL);
+            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), draw || visible ? &born : NULL);
             if (!draw || !tex) continue;
             float a = fminf(1, (float)((ui.now - born) / TILE_FADE_S));
             if (a < 1) ui.dirty = 1;
@@ -877,8 +934,8 @@ static void draw_page(tab *t, int p)
     if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
     if (t->tool == T_VIEW || t->tool == T_HIGHLIGHT || t->tool == T_REDACT) words_prefetch(t, p);
     DrawRectangleRec(r, pal.paper);
-    float px = UI_PX, base = base_scale(t, p);
-    Texture2D *tex = page_texture(t, p, base, view_distance(t, r), 1);
+    float px = UI_PX, base = base_scale(t, p, t->zoom);
+    Texture2D *tex = page_texture(t, p, base_scale(t, p, render_zoom(t)), view_distance(t, r), 1);
     if (tex) {
         /* the same pixel-snapped origin as the tiles, so a stretched render sits exactly under them */
         Rectangle d = {roundf(r.x * px) / px, roundf(r.y * px) / px, r.width, r.height};
@@ -886,7 +943,7 @@ static void draw_page(tab *t, int p)
             d.width = tex->width / px, d.height = tex->height / px;
         DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, d, (Vector2){0, 0}, 0, WHITE);
     }
-    if (base < t->zoom * px - 0.001f) page_tiles(t, p, r, t->view, 1);
+    if (base < t->zoom * px - 0.001f) page_tiles(t, p, r, t->view, 1, 1);
 }
 
 static void draw_crop(tab *t, int i)
@@ -912,6 +969,52 @@ static void draw_crop(tab *t, int i)
     }
 }
 
+/* Asks for the renders of the pages (and tiles) within a screen of the view and of the pages just before and after
+ * those in view, so a scroll or a page step finds them ready: prefetched, or with `landing` those in view as wanted on
+ * screen. */
+static void request_pages(tab *t, Rectangle area, int landing)
+{
+    Rectangle near = {area.x, area.y - area.height, area.width, area.height * 3};
+    int first = -1, last = -1;
+    for (int i = 0; i < t->st.order.n; i++) {
+        int p = t->st.order.v[i];
+        if (t->off_y[p] > -1e8f && CheckCollisionRecs(scene_rect_to_screen(t, page_scene_rect(t, p)), area)) {
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
+    for (int i = 0; i < t->st.order.n; i++) {
+        int p = t->st.order.v[i];
+        if (t->off_y[p] < -1e8f) continue;
+        Rectangle pr = scene_rect_to_screen(t, page_scene_rect(t, p));
+        /* two either way: the next row of two pages side by side */
+        int next_to = first >= 0 && i >= first - 2 && i <= last + 2;
+        if ((pr.y + pr.height <= near.y || pr.y >= near.y + near.height) && !next_to) continue;
+        int in_view = landing && CheckCollisionRecs(pr, area);
+        float base = base_scale(t, p, t->zoom);
+        page_texture(t, p, base, view_distance(t, pr), in_view);
+        if (base < t->zoom * UI_PX - 0.001f) {
+            if (in_view) page_tiles(t, p, pr, area, 0, 1);
+            page_tiles(t, p, pr, near, 0, 0);
+        }
+    }
+}
+
+/* During a glide: the view as it is once the zoom lands, with the scroll it will have then, asks for its renders, so
+ * they are ready when the glide ends instead of only once the zoom rests. */
+static void request_landing(tab *t, Rectangle area)
+{
+    fz_point c = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2});
+    float zoom = t->zoom, sx = t->scroll_x, sy = t->scroll_y, z = t->zanim_to;
+    float cy = c.y + (t->zanim_cy1 - t->zanim_cy0) * (1 - t->zanim_e);
+    t->zoom = z;
+    t->scroll_y = (cy + PAGE_GAP) * z - area.height / 2;
+    t->scroll_x = t->scene_w * z > area.width ? (c.x + PAGE_GAP) * z - area.width / 2 : 0;
+    clamp_scroll(t);
+    request_pages(t, area, 1);
+    t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
+}
+
 void view_frame(tab *t, Rectangle area)
 {
     t->view = area;
@@ -933,7 +1036,10 @@ void view_frame(tab *t, Rectangle area)
         float old = t->zoom;
         set_zoom(t, z);
         t->want_scroll_page = -1;
-        t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
+        /* the middle follows its path from where it is now, so scrolling during the glide is kept */
+        float cy = anchor.y + (t->zanim_cy1 - t->zanim_cy0) * (e - t->zanim_e);
+        t->zanim_e = e;
+        t->scroll_y = (cy + PAGE_GAP) * t->zoom - area.height / 2;
         if (t->scene_w * t->zoom > area.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
         else t->scroll_x = 0;
         if (k >= 1) {
@@ -1003,18 +1109,12 @@ void view_frame(tab *t, Rectangle area)
         if (p >= 0 && p != t->pno) t->pno = p;
     }
 
+    if (t->zanim_t0 > 0) request_landing(t, area);
+    else request_pages(t, area, 0);
     ui_scissor_begin(area);
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
         if (t->off_y[p] < -1e8f) continue;
-        /* pages (and tiles) within half a screen of the view render ahead, so a scroll finds them ready */
-        Rectangle pr = scene_rect_to_screen(t, page_scene_rect(t, p));
-        Rectangle near = {area.x, area.y - area.height / 2, area.width, area.height * 2};
-        if (pr.y + pr.height > near.y && pr.y < near.y + near.height) {
-            float base = base_scale(t, p);
-            page_texture(t, p, base, view_distance(t, pr), 0);
-            if (base < t->zoom * UI_PX - 0.001f) page_tiles(t, p, pr, near, 0);
-        }
         draw_page(t, p);
         /* touch: one finger draws on the pages, and pans beside them */
         if (t->tool != T_VIEW)

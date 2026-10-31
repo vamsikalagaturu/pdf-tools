@@ -27,6 +27,9 @@ int pt_win_print(fz_context *ctx, const unsigned char *pdf, size_t len, const ch
                  int copies, int first, int last, int collate, int reverse);
 
 int pt_win_shell_open(const char *uri); /* a link in its default program; 0 on success */
+/* argv[0] as run_detached() finds it, without a console window; wait: its exit code once it ends, else 0 as soon
+ * as it started; -1 when it could not start */
+int pt_win_run(char *const argv[], int wait);
 
 /* the system file dialog, modal; patterns as "*.pdf *.png"; chosen paths are appended to out, which stays empty
  * when cancelled; -1 when no dialog could be shown */

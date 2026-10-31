@@ -10,8 +10,9 @@ import android.provider.OpenableColumns;
 import java.io.File;
 import java.io.FileNotFoundException;
 
-/* Read-only access to the copies tab_share() writes to cache/share/, for the app a document is shared with
- * (content://<package>.share/<name>, granted per share intent). */
+/* Read-only access to the copies tab_share() writes to cache/share/, for the app a document is shared with, and to
+ * a downloaded update's APK there, for the system installer (content://<package>.share/<name>, granted per
+ * intent). */
 public class ShareProvider extends ContentProvider {
     @Override
     public boolean onCreate() { return true; }
@@ -51,7 +52,10 @@ public class ShareProvider extends ContentProvider {
     }
 
     @Override
-    public String getType(Uri uri) { return "application/pdf"; }
+    public String getType(Uri uri) {
+        String name = uri.getLastPathSegment();
+        return name != null && name.endsWith(".apk") ? "application/vnd.android.package-archive" : "application/pdf";
+    }
 
     @Override
     public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException(); }

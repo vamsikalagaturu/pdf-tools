@@ -514,6 +514,14 @@ Nothing matched; nothing was written.
 .TP
 .I ~/.config/pdf-tools/settings.toml
 Settings, with a comment for each; edit while the program is closed.
+.B check_updates
+(default
+.BR true )
+lets the window ask GitHub for a newer release at startup, at most once a day,
+and offer to install it; the commands never use the network.
+.TP
+.I ~/.local/share/pdf-tools/update-check
+When the window last checked for updates, and the version it found.
 .TP
 .I ~/.config/pdf-tools/signatures/
 Saved signatures.

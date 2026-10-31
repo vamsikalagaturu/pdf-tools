@@ -20,9 +20,9 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 
 ## Install
 
-Each pull request builds a Linux AppImage and tarball, a macOS `.dmg`, a Windows `.zip` and an Android APK on
-GitHub Actions (artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`);
-Actions > Build > Run workflow builds any branch by hand.
+Each release on the [releases page](../../releases) has a Linux AppImage and tarball, a macOS `.dmg`, a Windows
+`.zip` and an Android APK, built on GitHub Actions when the release is published. Pull requests only build and
+test the app on each platform (Actions > CI > Run workflow does the same for any branch).
 
 ### Linux
 
@@ -87,6 +87,10 @@ platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.a
 platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-Tools-Windows.zip
 ```
 
+Each `build.sh` first runs the `deps.sh` next to it, which downloads and builds the third-party libraries and
+skips what is already built; `build.sh check` builds and tests without packing (on Android: compiles the native
+library, no APK).
+
 The Windows script needs Visual Studio 2022 or 2026 with the C++ tools and Strawberry Perl, as on GitHub's
 `windows-latest` runner; it builds MuPDF through its Visual Studio solution and everything else with MSVC.
 
@@ -145,6 +149,18 @@ Commands print one JSON object and exit with a meaningful code; `AGENTS.md` docu
 - Interface size: View > Appearance > Interface size, or Ctrl+Alt++ / Ctrl+Alt+- (Ctrl+Alt+0: automatic); saved as
   `ui_scale` in the settings.
 - Logging: `PDF_TOOLS_LOG=error|warn|info|debug`.
+
+### Updates
+
+At startup, at most once a day, the window asks GitHub for the latest release
+(`https://api.github.com/repos/vamsikalagaturu/pdf-tools/releases/latest`, with a `pdf-tools/VERSION` user agent
+and nothing else). When it is newer, a bar offers **Update**: it downloads that release's package for this install,
+checks it against the SHA-256 digest GitHub lists for it, and replaces the AppImage, the tarball's folder, the macOS
+app or (after the app closes) the Windows folder; on Android the system installer takes the APK. Installs the app
+cannot replace itself (a distro package, `build.sh install`, a folder it may not write) get the release page
+instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
+settings) turns the check off. Desktop downloads go through the system's `curl`. The commands never use the
+network.
 
 ## Safety
 

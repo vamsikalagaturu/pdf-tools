@@ -914,6 +914,23 @@ void zoom_to(tab *t, float target, fit_mode fit)
     t->zanim_to = fminf(fmaxf(target, 0.3f), 6);
     t->zanim_fit = fit;
     t->zanim_t0 = ui.now;
+    t->zanim_e = 0;
+    /* the scene point in the middle of the view glides to where it is once the zoom lands, so fitting the height
+     * (which shows the current page from its top) ends without a jump */
+    float h = t->view.height, z = t->zanim_to;
+    t->zanim_cy0 = t->zanim_cy1 = (t->scroll_y + h / 2) / t->zoom - PAGE_GAP;
+    if (fit == FIT_HEIGHT && t->off_y && t->off_y[t->pno] > -1e8f) {
+        float top = fminf((t->off_y[t->pno] + PAGE_GAP / 2) * z, fmaxf(0, t->scene_h * z - h));
+        t->zanim_cy1 = (fmaxf(top, 0) + h / 2) / z - PAGE_GAP;
+    }
+}
+
+float render_zoom(const tab *t) { return t->zanim_t0 > 0 ? t->zanim_to : t->zoom; }
+
+float base_scale(tab *t, int page, float zoom)
+{
+    fz_rect b = page_bounds(t, page);
+    return fminf(zoom * UI_PX, BASE_MAX_PX / fmaxf(b.x1 - b.x0, b.y1 - b.y0));
 }
 
 void zoom_by(tab *t, float factor) { zoom_to(t, (t->zanim_t0 > 0 ? t->zanim_to : t->zoom) * factor, 0); }
@@ -1315,24 +1332,28 @@ static Texture2D reuse_texture(Texture2D *old, fz_pixmap *pix)
     return texture_from_pixmap(pix);
 }
 
-static int pix_free_slot(tab *t, int page)
+/* A free slot (or the page's own), else that of the page farthest from the current one; for a prefetched render only
+ * when that page is farther than this one and not in view, so prefetching never pushes out what it prefetched or what
+ * is shown. -1: none. */
+static int pix_slot(tab *t, int page, int visible)
 {
-    for (int i = 0; i < PIX_CACHE; i++)
+    int far = -1, fd = -1, here = order_index(t, t->pno);
+    for (int i = 0; i < PIX_CACHE; i++) {
         if (!t->pix[i].ok || t->pix[i].page == page) return i;
-    return -1;
-}
-
-/* into a free slot (or the page's own), else in place of the page farthest from the current one; a prefetched
- * render only into free room */
-static void cache_insert(tab *t, const render_job *j)
-{
-    int slot = pix_free_slot(t, j->page), far = -1, fd = -1;
-    if (slot < 0 && !j->visible) return;
-    for (int i = 0; i < PIX_CACHE && slot < 0; i++) {
-        int d = abs(order_index(t, t->pix[i].page) - order_index(t, t->pno));
+        int p = t->pix[i].page;
+        if (!visible && t->off_y[p] > -1e8f &&
+            CheckCollisionRecs(scene_rect_to_screen(t, page_scene_rect(t, p)), t->view))
+            continue;
+        int d = abs(order_index(t, p) - here);
         if (d > fd) fd = d, far = i;
     }
-    if (slot < 0) slot = far;
+    return visible || fd > abs(order_index(t, page) - here) ? far : -1;
+}
+
+static void cache_insert(tab *t, const render_job *j)
+{
+    int slot = pix_slot(t, j->page, j->visible);
+    if (slot < 0) return;
     int page = j->page;
     float scale = j->scale;
     fz_pixmap *pix = j->pix;
@@ -1382,9 +1403,18 @@ static void tile_insert(tab *t, const render_job *j)
 /* takes this tab's finished renders, uploading for a few ms per frame; results nobody took for a second go */
 static void render_collect(tab *t)
 {
-    static double frame = -1, spent;
+    static double frame = -1, spent, budget = UPLOAD_BUDGET_S;
+#ifndef __ANDROID__
+    /* at most a quarter of a refresh, so uploads do not make a frame miss it on a fast display */
+    static int sized;
+    if (!sized) {
+        int hz = GetMonitorRefreshRate(GetCurrentMonitor());
+        if (hz >= 30) budget = fmin(budget, 0.25 / hz);
+        sized = 1;
+    }
+#endif
     if (frame != ui.now) frame = ui.now, spent = 0;
-    while (spent < UPLOAD_BUDGET_S) {
+    while (spent < budget) {
         render_job *mine = NULL, *stale = NULL;
         pthread_mutex_lock(&R.lock);
         for (render_job **q = &R.done; *q;) {
@@ -1445,7 +1475,8 @@ Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, 
         for (int i = 0; i < TILE_CACHE && !free_slot; i++) free_slot = !t->tiles[i].ok;
         if (!free_slot || t->tile_bytes + (size_t)TILE_PX * TILE_PX * 4 > TILE_BUDGET) return NULL;
     }
-    if (ui.now - t->zoom_t < ZOOM_SETTLE_S) {
+    int glide_target = t->zanim_t0 > 0 && fabsf(scale - tile_level(t->zanim_to * UI_PX)) < 0.001f;
+    if (ui.now - t->zoom_t < ZOOM_SETTLE_S && !glide_target) {
         if (born) ui_redraw_at(t->zoom_t + ZOOM_SETTLE_S);
         return NULL;
     }
@@ -1476,9 +1507,11 @@ Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible)
         other = pt;
     }
     if (visible) ui_redraw_at(ui.now + RENDER_RECHECK_S);
-    else if (pix_free_slot(t, page) < 0) return other ? &other->tex : NULL;
-    /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
-    if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S))
+    else if (pix_slot(t, page, 0) < 0) return other ? &other->tex : NULL;
+    /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests. A glide
+     * knows where it lands, so the render at that zoom starts with it. */
+    int glide_target = t->zanim_t0 > 0 && fabsf(scale - base_scale(t, page, t->zanim_to)) < 0.001f;
+    if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S) || glide_target)
         render_request(t, (render_job){.page = page, .scale = scale, .prio = prio, .visible = visible});
     else if (visible) ui_redraw_at(t->zoom_t + ZOOM_SETTLE_S);
     if (other) return &other->tex;

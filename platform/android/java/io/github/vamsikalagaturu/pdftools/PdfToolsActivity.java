@@ -17,6 +17,7 @@ import android.print.PrintDocumentInfo;
 import android.print.PrintManager;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.text.InputType;
 import android.graphics.Insets;
 import android.view.View;
@@ -33,14 +34,17 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
 /* The native window plus what only Java can reach: the system document picker (Storage Access Framework; the app
- * has no storage permission), content:// I/O, the soft keyboard's text, the clipboard, printing and the system bar
- * insets. Called from the native thread (android_main.c, file_dialog_android.c, printing.c); every public method
- * takes and returns strings, null meaning "no" or "nothing". */
+ * has no storage permission), content:// I/O, the soft keyboard's text, the clipboard, printing, the system bar
+ * insets, and downloading and installing updates. Called from the native thread (android_main.c,
+ * file_dialog_android.c, printing.c) and update.c's worker thread (download); every public method takes and returns
+ * strings, null meaning "no" or "nothing". */
 public class PdfToolsActivity extends NativeActivity {
     private static final int REQ_PICK = 1;
     private final Object lock = new Object();
@@ -238,6 +242,64 @@ public class PdfToolsActivity extends NativeActivity {
         });
     }
 
+    /* ---- updates (update.c) ---- */
+
+    /* url into path (replaced), from update.c's worker thread. Returns null, or the error; nothing is left at path
+     * when it fails. Redirects stay on the same scheme (HttpURLConnection never follows https to http). */
+    public String download(String url, String path, String agent) {
+        File file = new File(path);
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(30000);
+            c.setReadTimeout(60000);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("User-Agent", agent);
+            int code = c.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) return "HTTP " + code;
+            try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(file)) {
+                byte[] buf = new byte[1 << 16];
+                for (int n; (n = in.read(buf)) > 0;) out.write(buf, 0, n);
+            }
+            return null;
+        } catch (Exception e) {
+            file.delete();
+            return e.toString();
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private static final int REQ_INSTALL_PERMISSION = 2;
+    private String pendingApk;
+
+    /* Hands cache/share/<name> to the system installer. Returns "1", or "settings" when the app may not install
+     * packages yet: the "Install unknown apps" page opens, and the installer follows once that is allowed. */
+    public String installApk(String name) {
+        return onUi(() -> {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                pendingApk = name;
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName())), REQ_INSTALL_PERMISSION);
+                return "settings";
+            }
+            startInstaller(name);
+            return "1";
+        });
+    }
+
+    private void startInstaller(String name) {
+        Uri uri = new Uri.Builder().scheme("content").authority(getPackageName() + ".share").appendPath(name).build();
+        Intent i = new Intent(Intent.ACTION_VIEW);
+        i.setDataAndType(uri, "application/vnd.android.package-archive");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(i);
+        } catch (Exception e) {
+            /* no installer: the window's bar stays, Update can be tried again */
+        }
+    }
+
     /* ---- printing ---- */
 
     /* Hand a PDF to the system print dialog, which renders it and picks printer, copies and pages. The file is
@@ -328,6 +390,12 @@ public class PdfToolsActivity extends NativeActivity {
 
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
+        if (code == REQ_INSTALL_PERMISSION) {
+            String name = pendingApk;
+            pendingApk = null;
+            if (name != null && getPackageManager().canRequestPackageInstalls()) startInstaller(name);
+            return;
+        }
         if (code != REQ_PICK) {
             super.onActivityResult(code, result, data);
             return;

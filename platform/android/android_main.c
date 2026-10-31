@@ -103,6 +103,13 @@ char *pt_java(const char *method, int nargs, ...)
     return r;
 }
 
+/* ART aborts the process when a thread that pt_java() attached ends without detaching */
+void pt_android_thread_end(void)
+{
+    JavaVM *vm = GetAndroidApp()->activity->vm;
+    (*vm)->DetachCurrentThread(vm);
+}
+
 /* ---- clipboard (raylib's Android platform has none) ---- */
 
 void pt_android_set_clipboard(const char *text) { free(pt_java("setClipboard", 1, text ? text : "")); }
