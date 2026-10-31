@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pdf_tools VERSION 0.3.1 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
+project(pdf_tools VERSION 0.4.0 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
