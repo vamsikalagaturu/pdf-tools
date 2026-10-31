@@ -20,13 +20,25 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 
 ## Install
 
-Each pull request builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub
-Actions (artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`); Actions >
-Build > Run workflow builds any branch by hand.
+Each pull request builds a Linux AppImage and tarball, a macOS `.dmg`, a Windows `.zip` and an Android APK on
+GitHub Actions (artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`);
+Actions > Build > Run workflow builds any branch by hand.
 
-On Linux, make the AppImage executable and run `./PDF_Tools-x86_64.AppImage --install-desktop` once to add it to
-the applications menu and to "Open with" for PDFs (`--uninstall-desktop` removes it; after moving the AppImage, run
-it again).
+### Linux
+
+Both Linux downloads run on Ubuntu 24.04 and later, Arch and other distributions with glibc 2.39 or newer, and use
+fontconfig and OpenGL from the system (installed on any desktop). Pick one:
+
+- **AppImage**: `chmod +x PDF_Tools-x86_64.AppImage`, then run it.
+- **Tarball**: unpack it anywhere:
+
+  ```sh
+  mkdir -p ~/.local/opt && tar xzf PDF-Tools-Linux-x86_64.tar.gz -C ~/.local/opt
+  ln -s ~/.local/opt/pdf-tools/bin/pdf-tools ~/.local/bin/    # for the command line
+  ```
+
+Run it once with `--install-desktop` to add it to the applications menu and to "Open with" for PDFs
+(`--uninstall-desktop` removes it; after moving the AppImage or the folder, run it again).
 
 ### macOS
 
@@ -69,7 +81,7 @@ Settings are in `%APPDATA%\pdf-tools`, reading positions and window messages in 
 ## Build
 
 ```sh
-platform/linux/build.sh      # ~/.cache/pdf-tools/linux/out/PDF_Tools-<arch>.AppImage
+platform/linux/build.sh      # ~/.cache/pdf-tools/linux/out/PDF_Tools-<arch>.AppImage and PDF-Tools-Linux-<arch>.tar.gz
 platform/macos/build.sh      # ~/Library/Caches/pdf-tools/macos/out/PDF-Tools.dmg
 platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.apk (details: platform/android/README.md)
 platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-Tools-Windows.zip
@@ -84,7 +96,8 @@ scripts bundles them as well, for a larger program that needs no installed fonts
 
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
 dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it with the English
-OCR data as the AppImage. To install the binary instead, with its man page, desktop entry, icon and OCR data:
+OCR data, man page and icon as the AppImage and the tarball. Both run on the build machine's glibc or newer, so
+release builds come from Ubuntu 24.04. To install the binary instead, with its man page, desktop entry, icon and OCR data:
 
 ```sh
 platform/linux/build.sh install ~/.local
@@ -126,7 +139,7 @@ Commands print one JSON object and exit with a meaningful code; `AGENTS.md` docu
 - Settings: `~/.config/pdf-tools/settings.toml`, on Windows `%APPDATA%\pdf-tools\settings.toml` (e.g.
   `editor_command = "code -g %f:%l"` for SyncTeX).
 - OCR needs Tesseract's `LANG.traineddata` in `$TESSDATA_PREFIX`, `$XDG_DATA_HOME/pdf-tools/tessdata` or the
-  system's data folders; the AppImage, the macOS app, the Windows zip and the APK include English.
+  system's data folders; the Linux tarball, the macOS app, the Windows zip and the APK include English.
 - LaTeX: compile with `-synctex=1`. Ctrl+click in the PDF opens the source line in your editor;
   `pdf-tools --forward file.pdf LINE file.tex` shows a source line in the PDF.
 - Interface size: View > Appearance > Interface size, or Ctrl+Alt++ / Ctrl+Alt+- (Ctrl+Alt+0: automatic); saved as
