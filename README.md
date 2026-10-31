@@ -15,6 +15,8 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
   password, print. Undo and redo, find with regular expressions, two pages side by side, presentation mode (F5).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
+- **Other documents**: XPS, comics (CBZ), images, SVG, e-books (EPUB, MOBI, FB2) and Office files (DOCX, XLSX,
+  PPTX) open like PDFs; editing one makes a PDF copy, saved next to the original.
 
 ## Install
 
@@ -111,6 +113,7 @@ Without raylib, `pdf-tools` is built with the commands only.
 pdf-tools file.pdf                          # open in the window
 pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}'
 pdf-tools info in.pdf
+pdf-tools convert book.epub -o book.pdf     # any supported document to PDF
 pdf-tools COMMAND --help
 pdf-tools --version
 ```

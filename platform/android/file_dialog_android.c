@@ -40,10 +40,16 @@ static unsigned long long fnv(const char *s)
 static char *safe_name(const char *uri)
 {
     char *name = pt_java("displayName", 1, uri);
-    if (!name || !*name) free(name), name = pt_strdup("document.pdf");
+    if (!name || !*name) free(name), name = pt_strdup("document");
     for (char *p = name; *p; p++)
         if (*p == '/' || *p == '\\' || *p == '\n' || *p == '\t') *p = '_';
     if (*name == '.') *name = '_';
+    /* the reader is chosen by extension: a name without one gets its document type's */
+    if (!strchr(name, '.')) {
+        char *ext = pt_java("extensionOf", 1, uri), *named = pt_format("%s.%s", name, ext ? ext : "pdf");
+        free(ext), free(name);
+        name = named;
+    }
     return name;
 }
 

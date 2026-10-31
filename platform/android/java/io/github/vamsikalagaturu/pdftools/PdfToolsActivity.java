@@ -27,6 +27,7 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.MimeTypeMap;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -379,6 +380,27 @@ public class PdfToolsActivity extends NativeActivity {
             /* fall through */
         }
         return Uri.parse(uri).getLastPathSegment();
+    }
+
+    /* The usual extension for a document's type, for a name that came without one (the window picks the
+     * reader by extension); null when the type is unknown. */
+    public String extensionOf(String uri) {
+        String type;
+        try {
+            type = getContentResolver().getType(Uri.parse(uri));
+        } catch (Exception e) {
+            return null;
+        }
+        if (type == null) return null;
+        switch (type) {
+        case "application/epub+zip": return "epub";
+        case "application/x-mobipocket-ebook": return "mobi";
+        case "application/x-fictionbook+xml": return "fb2";
+        case "application/vnd.comicbook+zip": return "cbz";
+        case "application/vnd.ms-xpsdocument": return "xps";
+        case "application/oxps": return "oxps";
+        default: return MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+        }
     }
 
     /* Copy a document to a local file (written beside it, then renamed). Returns null, or the error. */
