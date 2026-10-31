@@ -54,9 +54,11 @@ MSBUILD=$("$VSWHERE" -latest -products '*' -requires Microsoft.Component.MSBuild
 [ -n "$MSBUILD" ] || MSBUILD=$(find "$(cygpath -u "$VS")/MSBuild" -iname msbuild.exe -ipath '*/bin/msbuild.exe' | head -1)
 echo "Visual Studio: $VS ($("$VSWHERE" -latest -products '*' -property catalog_productDisplayVersion | tr -d '\r'))"
 echo "MSBuild: ${MSBUILD:-not found}"
-[ -n "$MSBUILD" ] && PATH="$(dirname "$(cygpath -u "$MSBUILD")"):$PATH"
+# by its full path: Git Bash does not find MSBuild.exe as `msbuild`
+[ -n "$MSBUILD" ] && [ -x "$(cygpath -u "$MSBUILD")" ] || { echo "no MSBuild in $VS" >&2; exit 1; }
+MSBUILD=$(cygpath -u "$MSBUILD")
 export PATH CC=cl CXX=cl
-for tool in cl link nmake msbuild cmake ctest ninja; do
+for tool in cl link nmake cmake ctest ninja; do
     command -v $tool >/dev/null || { echo "missing after vcvars64.bat: $tool" >&2; exit 1; }
 done
 cmake --version | head -1
@@ -68,7 +70,7 @@ fetch "$MUPDF_URL" "$ROOT/dl/mupdf.tar.gz" "$MUPDF_SHA256"
 # the symbolic links in the archive are in parts the library does not use, and need rights Windows rarely grants
 [ -d "$MUPDF_SRC" ] || tar xzf "$ROOT/dl/mupdf.tar.gz" -C "$ROOT/src" \
     --exclude='*/thirdparty/freeglut/progs' --exclude='*/thirdparty/zxing-cpp/wrappers'
-msbuild "$(win "$MUPDF_SRC/platform/win32/mupdf.sln")" -t:libmupdf -p:Configuration=Release -p:Platform=x64 \
+"$MSBUILD" "$(win "$MUPDF_SRC/platform/win32/mupdf.sln")" -t:libmupdf -p:Configuration=Release -p:Platform=x64 \
     -p:PlatformToolset=$MSVC_TOOLSET -m -nologo -v:minimal >"$ROOT/mupdf-build.log" 2>&1 \
     || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT"/*.lib
