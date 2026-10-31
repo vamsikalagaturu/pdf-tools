@@ -22,9 +22,9 @@
     .sync_mark = HEXA(0xffc800, 110), .field_bg = HEX(0xdce8ff), .field_mark = HEX(0x1e1e1e),                          \
     .crop_dim = HEXA(0x202124, 150), .note_fill = HEX(0xffd54f), .note_line = HEX(0x8a6d00), .danger = HEX(0xd93025),  \
     .warning = HEX(0xe6a000), .success = HEX(0x1e8e3e), .thumb_bg = HEX(0xebebeb), .thumb_frame = HEXA(0x808080, 120), \
-    .check_border = HEX(0x6e6e6e), .pad_guide = HEX(0xc8c8c8), .paper = C_WHITE, .shadow = C_BLACK,                    \
-    .scrim = C_BLACK, .field_text = C_BLACK, .field_frame = HEX(0x505050), .on_danger = C_WHITE,                       \
-    .on_backdrop = C_WHITE, .present_bg = C_BLACK, .swatch_line = C_BLACK,                                             \
+    .check_border = HEX(0x6e6e6e), .pad_guide = HEX(0xc8c8c8), .paper = C_WHITE, .shadow = C_BLACK, .scrim = C_BLACK,  \
+    .field_text = C_BLACK, .field_frame = HEX(0x505050), .on_danger = C_WHITE, .on_backdrop = C_WHITE,                 \
+    .present_bg = C_BLACK, .swatch_line = C_BLACK,                                                                     \
     .source = {HEX(0x1a73e8), HEX(0xd93025), HEX(0x1e8e3e), HEX(0xf9ab00), HEX(0xa142f4), HEX(0x0096a0)}
 
 static const ui_palette LIGHT = {
