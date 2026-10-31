@@ -12,7 +12,8 @@ on:
     paths: [platform/versions.sh, 'platform/*/build.sh', .github/workflows/build.yml]
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    # the binary needs the glibc it was built with or newer: the oldest supported Ubuntu (24.04 and later, Arch)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
@@ -31,12 +32,14 @@ jobs:
             ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
             ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
           key: deps-linux-${{ hashFiles('platform/versions.sh', 'platform/linux/build.sh') }}
-      - name: Build, test and pack the AppImage (platform/linux/build.sh)
+      - name: Build, test and pack the AppImage and tarball (platform/linux/build.sh)
         run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: PDF-Tools-Linux
-          path: ${{ runner.temp }}/pdf-tools-linux/out/PDF_Tools-*.AppImage
+          path: |
+            ${{ runner.temp }}/pdf-tools-linux/out/PDF_Tools-*.AppImage
+            ${{ runner.temp }}/pdf-tools-linux/out/PDF-Tools-Linux-*.tar.gz
   android:
     runs-on: ubuntu-latest
     steps:

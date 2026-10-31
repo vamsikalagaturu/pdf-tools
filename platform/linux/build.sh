@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Builds pdf-tools for Linux and packs it as an AppImage, for this machine's architecture (x86_64 or aarch64).
+# Builds pdf-tools for Linux and packs it as an AppImage and as PDF-Tools-Linux-<arch>.tar.gz (a pdf-tools/
+# folder with bin/ and share/), for this machine's architecture (x86_64 or aarch64). Both run on systems with this
+# machine's glibc or newer, so release builds come from the oldest supported one (CI: ubuntu-24.04).
 # MuPDF (with Tesseract), PCRE2, OpenSSL and raylib (GLFW with both Wayland and X11) are built from the sources
 # pinned in platform/versions.sh and linked statically; CMake finds them through pkg-config. fontconfig, OpenGL and
 # the window system's libraries come from the system at run time.
@@ -8,7 +10,7 @@
 # MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from fontconfig);
 # PT_FONTS=full bundles them.
 # `build.sh install PREFIX` installs the program with its man page, launcher entry, icon and OCR data into PREFIX
-# (e.g. ~/.local) instead of packing the AppImage.
+# (e.g. ~/.local) instead of packing.
 set -euo pipefail
 
 USAGE="usage: $0 [appimage | install PREFIX]"
@@ -123,3 +125,13 @@ chmod +x "$ROOT/dl/appimagetool.AppImage"
 APPIMAGE_EXTRACT_AND_RUN=1 ARCH=$ARCH "$ROOT/dl/appimagetool.AppImage" --no-appstream "$APPDIR" \
     "$ROOT/out/PDF_Tools-$ARCH.AppImage" >"$ROOT/appimage.log" 2>&1 || { tail -20 "$ROOT/appimage.log" >&2; exit 1; }
 ls -l "$ROOT/out/PDF_Tools-$ARCH.AppImage"
+
+# the same files as one folder, runnable wherever it is unpacked: the program finds its OCR data in
+# bin/../share/pdf-tools
+TARBALL=PDF-Tools-Linux-$ARCH.tar.gz
+step "$TARBALL"
+STAGE=$ROOT/stage
+rm -rf "$STAGE"
+cmake --install "$ROOT/build" --prefix "$STAGE/pdf-tools" --component app --strip >/dev/null
+tar czf "$ROOT/out/$TARBALL" -C "$STAGE" --owner=0 --group=0 pdf-tools
+ls -l "$ROOT/out/$TARBALL"
