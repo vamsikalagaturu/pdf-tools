@@ -63,7 +63,11 @@ struct dirent {
     char d_name[1024]; /* UTF-8 */
 };
 
+/* renamed: raylib's Windows build defines its own opendir/readdir/closedir */
 typedef struct pt_dir DIR;
+#define opendir pt_win_opendir
+#define readdir pt_win_readdir
+#define closedir pt_win_closedir
 DIR *opendir(const char *path);
 struct dirent *readdir(DIR *d);
 int closedir(DIR *d);
