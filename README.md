@@ -72,7 +72,7 @@ platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.a
 platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-Tools-Windows.zip
 ```
 
-The Windows script needs Visual Studio 2022 with the C++ tools and Strawberry Perl, as on GitHub's
+The Windows script needs Visual Studio 2022 or 2026 with the C++ tools and Strawberry Perl, as on GitHub's
 `windows-latest` runner; it builds MuPDF through its Visual Studio solution and everything else with MSVC.
 
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its

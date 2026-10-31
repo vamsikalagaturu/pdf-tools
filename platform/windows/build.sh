@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds pdf-tools.exe for 64-bit Windows with MSVC and packs it as PDF-Tools-Windows.zip. Runs in Git Bash, as on
-# the windows-latest CI runner: needs Visual Studio 2022 with the C++ tools (MSBuild, cl, nmake, and the CMake and
+# the windows-latest CI runner: needs Visual Studio 2022 or 2026 with the C++ tools (MSBuild, cl, nmake, and the CMake and
 # Ninja it ships), Strawberry Perl (OpenSSL's Configure), curl and git.
 # MuPDF (with Tesseract, through its Visual Studio solution), PCRE2, OpenSSL and raylib are built from the sources
 # pinned in platform/versions.sh and linked statically. The zip holds the program, the English OCR data and the
@@ -13,8 +13,6 @@ REPO=$(cd "$HERE/../.." && pwd)
 . "$REPO/platform/versions.sh"
 ROOT=${PT_WINDOWS_OUT:-$HOME/.cache/pdf-tools/windows}
 JOBS=$(nproc)
-# MuPDF's solution targets an older toolset; VS 2022 builds it with its own
-MSVC_TOOLSET=v143
 
 for tool in curl git tar sha256sum cygpath cmd powershell; do
     command -v $tool >/dev/null || { echo "missing: $tool" >&2; exit 1; }
@@ -33,6 +31,12 @@ VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
 VS=$("$VSWHERE" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
     -property installationPath | tr -d '\r')
 [ -n "$VS" ] || { echo "no Visual Studio with the C++ tools" >&2; exit 1; }
+# MuPDF's solution targets an older toolset: build it with the installed Visual Studio's own
+case $("$VSWHERE" -latest -products '*' -property installationVersion | tr -d '\r' | cut -d. -f1) in
+17) MSVC_TOOLSET=v143 ;; # Visual Studio 2022
+18) MSVC_TOOLSET=v145 ;; # Visual Studio 2026
+*) echo "unknown Visual Studio version at $VS" >&2; exit 1 ;;
+esac
 # vcvars64.bat only runs in cmd: take over what it adds to cmd's environment
 printf '@set\r\n' >"$ROOT/env-before.bat"
 printf '@call "%s\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul\r\n@set\r\n' "$(cygpath -w "$VS")" >"$ROOT/env-msvc.bat"
@@ -47,6 +51,9 @@ done < <(comm -13 <(cmd_env "$ROOT/env-before.bat") <(cmd_env "$ROOT/env-msvc.ba
 # vcvars64.bat sets up the compiler, not MSBuild: vswhere says where that is
 MSBUILD=$("$VSWHERE" -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
     tr -d '\r' | head -1)
+[ -n "$MSBUILD" ] || MSBUILD=$(find "$(cygpath -u "$VS")/MSBuild" -iname msbuild.exe -ipath '*/bin/msbuild.exe' | head -1)
+echo "Visual Studio: $VS ($("$VSWHERE" -latest -products '*' -property catalog_productDisplayVersion | tr -d '\r'))"
+echo "MSBuild: ${MSBUILD:-not found}"
 [ -n "$MSBUILD" ] && PATH="$(dirname "$(cygpath -u "$MSBUILD")"):$PATH"
 export PATH CC=cl CXX=cl
 for tool in cl link nmake msbuild cmake ctest ninja; do
@@ -135,7 +142,7 @@ cp "$ROOT/build/pdf-tools.exe" "$STAGE/"
 cp "$ROOT/dl/eng.traineddata" "$STAGE/tessdata/"
 cp "$REPO/LICENSE" "$STAGE/LICENSE.txt"
 # the Visual C++ runtime next to the program (app-local deployment, as the Visual Studio license allows)
-CRT=$(cygpath -u "$VCToolsRedistDir")/x64/Microsoft.VC143.CRT
+CRT=$(ls -d "$(cygpath -u "$VCToolsRedistDir")"/x64/Microsoft.VC*.CRT | head -1)
 cp "$CRT"/*.dll "$STAGE/"
 ZIP=$ROOT/out/PDF-Tools-Windows.zip
 rm -f "$ZIP"
