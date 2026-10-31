@@ -22,6 +22,7 @@ import android.graphics.Insets;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -83,6 +84,11 @@ public class PdfToolsActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        /* the window reaches into the camera cutout so the strip shows the app's background, not black; the
+         * native side keeps its controls clear of it through systemInsets() */
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        getWindow().setAttributes(lp);
         sink = new TextSink();
         addContentView(sink, new ViewGroup.LayoutParams(1, 1));
     }
