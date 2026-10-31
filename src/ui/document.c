@@ -1,5 +1,8 @@
-/* The document tab's model: loading, the display copy, coordinates, undo, caches, saving, page commands, file
- * watching and SyncTeX. */
+/* The document tab's model (struct tab in tab.h), below the toolbar and tools (edit.c) and the page canvas
+ * (views.c): loading a file into memory (t->file) and the display copy rebuilt from it, coordinates, undo, the
+ * per-page caches and the render workers that fill them, links, saving, page commands, SyncTeX, mark and pen
+ * styles, file watching, and the state file that moves a tab to another window.
+ * Everything runs on the main thread except render_worker(), which shares only the R queues with it. */
 #include "tab.h"
 #include "dialogs.h"
 #include <math.h>
@@ -8,6 +11,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "pt_win32.h"
+#endif
+
+/* raylib's GLFW (glfw_stubs.c on Android); safe to call from any thread, so a render worker wakes the main loop */
+void glfwPostEmptyEvent(void);
 
 #define CTX app.ctx
 
@@ -45,9 +54,13 @@ const char *MARK_ICONS[5] = {"highlight", "underline", "strikeout", "squiggly", 
 const char *PEN_LABELS[PT_PEN_COUNT] = {"Pen", "Highlighter", "Marker", "Dashed"};
 const char *PEN_ICONS[PT_PEN_COUNT] = {"pen-pen", "pen-highlighter", "pen-marker", "pen-dashed"};
 
+/* ---- tab lifetime ---- */
+
 tab *tab_new(void)
 {
+    static unsigned last_id;
     tab *t = calloc(1, sizeof *t);
+    t->id = ++last_id;
     t->zoom = 1.5f;
     t->pen_rgb[0] = t->pen_rgb[1] = t->pen_rgb[2] = 0;
     t->pen_width = 2;
@@ -76,7 +89,8 @@ static void free_history(pt_state **v, int *n)
 static unsigned render_new_gen(void);
 static void render_forget(unsigned gen);
 
-/* the page renders: textures, the render thread's copy of the document and the renders still on their way */
+/* Frees the page renders (textures, the workers' copy of the document, renders queued or in progress) and starts a
+ * new render generation, so results of the old one are dropped when they arrive. */
 static void release_renders(tab *t)
 {
     for (int i = 0; i < PIX_CACHE; i++)
@@ -90,7 +104,6 @@ static void release_renders(tab *t)
     t->render_gen = render_new_gen();
 }
 
-/* a tab out of view gives its renders back; they are made again when it is shown */
 void tab_release_renders(tab *t)
 {
     int any = t->render_bytes != NULL;
@@ -102,6 +115,7 @@ void tab_release_renders(tab *t)
 void tab_invalidate_pages(tab *t)
 {
     release_renders(t);
+
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
         if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]);
@@ -130,12 +144,14 @@ void tab_invalidate_pages(tab *t)
     pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
     t->outline_drag = -1;
+
     int n = t->doc ? pdf_count_pages(CTX, t->doc) : 0;
     char *ticked = calloc((size_t)n + 1, 1);
     for (int p = 0; p < n && p < t->npages && t->ticked; p++) ticked[p] = t->ticked[p];
     free(t->ticked);
     t->ticked = ticked;
     t->npages = n;
+
     t->thumbs = calloc((size_t)n + 1, sizeof(Texture2D));
     t->thumb_ok = calloc((size_t)n + 1, 1);
     t->words = calloc((size_t)n + 1, sizeof(pt_words));
@@ -162,11 +178,15 @@ void tab_reset(tab *t)
     if (t->doc) pdf_drop_document(CTX, t->doc);
     t->doc = NULL;
     tab_invalidate_pages(t);
+    fz_drop_buffer(CTX, t->file);
+    t->file = NULL;
+
     pt_state_free(&t->st);
     pt_state_init(&t->st, 0);
     free_history(&t->history, &t->nhist);
     free_history(&t->future, &t->nfut);
     if (t->has_pending) pt_state_free(&t->pending), t->has_pending = 0;
+
     for (int i = 0; i < t->annot_types.n; i++) free(t->annot_types.v[i].type);
     t->annot_types.n = 0;
     t->matches.n = 0;
@@ -178,6 +198,7 @@ void tab_reset(tab *t)
     t->sel = SEL_NONE;
     if (t->sync) pt_synctex_free(t->sync), free(t->sync), t->sync = NULL;
     t->sync_marks.n = 0;
+
     free(t->password);
     t->password = NULL;
     t->own = 0;
@@ -197,6 +218,7 @@ void tab_free(tab *t)
     pt_vec_free(t->text_sel);
     pt_vec_free(t->annot_types);
     pt_vec_free(t->sync_marks);
+    pt_vec_free(t->editors);
     free(t->ticked);
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
@@ -277,6 +299,9 @@ void tab_save_position(tab *t)
     t->saved_page = page, t->saved_zoom = zoom, t->saved_top = top, t->position_saved = ui.now;
 }
 
+/* ---- loading ---- */
+
+/* -1, -1 when the file cannot be read */
 static void file_stamp(const char *path, double *mtime, long *size)
 {
     struct stat st;
@@ -291,9 +316,19 @@ static void file_stamp(const char *path, double *mtime, long *size)
 int tab_load(tab *t, const char *path, const char *password)
 {
     pdf_document *doc = NULL;
-    fz_try(CTX) doc = pdf_open_document(CTX, path);
+    fz_buffer *file = NULL;
+    fz_stream *stm = NULL;
+    fz_var(file), fz_var(stm);
+    fz_try(CTX)
+    {
+        file = fz_read_file(CTX, path);
+        stm = fz_open_buffer(CTX, file);
+        doc = pdf_open_document_with_stream(CTX, stm);
+    }
+    fz_always(CTX) fz_drop_stream(CTX, stm);
     fz_catch(CTX)
     {
+        fz_drop_buffer(CTX, file);
         char *msg = pt_format("Cannot open %s:\n%s", pt_basename(path), fz_caught_message(CTX));
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
@@ -302,14 +337,17 @@ int tab_load(tab *t, const char *path, const char *password)
     int locked = pdf_needs_password(CTX, doc);
     if (locked && !pdf_authenticate_password(CTX, doc, password ? password : "")) {
         pdf_drop_document(CTX, doc);
+        fz_drop_buffer(CTX, file);
         return 1;
     }
+
     tab_reset(t);
     char *real = pt_realpath(path);
     free(t->path);
     t->path = real;
     t->password = locked ? pt_strdup(password) : NULL;
     t->doc = doc;
+    t->file = file;
     t->doc_is_file = 1;
     t->own = pdf_count_pages(CTX, doc);
     pt_state_free(&t->st);
@@ -317,10 +355,12 @@ int tab_load(tab *t, const char *path, const char *password)
     tab_invalidate_pages(t);
     file_stamp(t->path, &t->stamp_mtime, &t->stamp_size);
     t->seen_mtime = t->stamp_mtime, t->seen_size = t->stamp_size;
+
     char *dir = pt_dirname(t->path);
     pt_settings_set_str(&app.settings, "last_folder", dir);
     free(dir);
     pt_settings_add_recent(&app.settings, t->path);
+
     t->pno = 0;
     t->loaded = 1;
     tool_set(t, T_VIEW);
@@ -336,12 +376,14 @@ int tab_load(tab *t, const char *path, const char *password)
         t->restore_pending = 1, t->restore_top = top;
     }
     current_position(t, &t->saved_page, &t->saved_zoom, &t->saved_top);
+
     if (t->find_open) run_search(t);
     app_publish_state();
     return 0;
 }
 
 const char *tab_path(const tab *t) { return t->path; }
+
 const char *tab_password(const tab *t) { return t->password; }
 
 char *tab_title(const tab *t)
@@ -350,16 +392,16 @@ char *tab_title(const tab *t)
     return pt_format("%s%s", tab_edit_count(t) ? "* " : "", pt_basename(t->path));
 }
 
-int tab_edit_count(const tab *t) { return t->doc ? pt_count_edits(&t->st, t->own, t->npages) : 0; }
+int tab_edit_count(const tab *t) { return t->doc ? pt_count_edits(&t->st, t->own) : 0; }
 
-/* The display copy as saving builds the output: inserted pages, removed annotations, the added rotation. */
 void reload_display(tab *t)
 {
     finish_text(t);
     pdf_document *fresh = NULL;
+    fz_var(fresh);
     fz_try(CTX)
     {
-        fresh = pt_open_pdf(CTX, t->path, t->password, &t->st.inserted);
+        fresh = pt_open_pdf_buffer(CTX, t->file, t->path, t->password, &t->st.inserted);
         for (int i = 0; i < t->st.deleted.n; i++) pt_remove_annot(CTX, fresh, t->st.deleted.v[i]);
         for (int i = 0; i < t->st.rotation.n; i++) {
             pdf_obj *page = pdf_lookup_page_obj(CTX, fresh, t->st.rotation.v[i].page);
@@ -378,6 +420,7 @@ void reload_display(tab *t)
     fz_catch(CTX)
     {
         char *msg = pt_format("Cannot reload %s:\n%s", pt_basename(t->path), fz_caught_message(CTX));
+        pdf_drop_document(CTX, fresh);
         message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
         free(msg);
         return;
@@ -630,11 +673,7 @@ void restore(tab *t, pt_state *snap)
         break;
     }
     free(touched);
-    for (int i = 0; i < t->editors.n; i++) {
-        field_editor *e = &t->editors.v[i];
-        text_free(&e->text);
-    }
-    t->editors.n = 0;
+    fields_reset(t);
 }
 
 void tab_undo(tab *t)
@@ -722,8 +761,6 @@ static float fit_zoom(tab *t, fit_mode fit)
     return t->view.width > 100 && page_w > 0 ? (t->view.width - 14) / (page_w + 2 * PAGE_GAP) : 0;
 }
 
-/* Zoom buttons and keys: the zoom glides to `target` around the middle of the view (page_view.c); a fit mode
- * lands in that mode. */
 void zoom_to(tab *t, float target, fit_mode fit)
 {
     if (!t->doc) return;
@@ -745,24 +782,14 @@ void tab_fit(tab *t, fit_mode fit)
     t->fit_w = t->view.width, t->fit_h = t->view.height;
 }
 
-/* ---- caches ---- */
-
-static Texture2D texture_from_pixmap(fz_pixmap *pix)
-{
-    if (!pix) return (Texture2D){0};
-    Image img = {pix->samples, pix->w, pix->h, 1,
-                 pix->n == 4 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : PIXELFORMAT_UNCOMPRESSED_R8G8B8};
-    Texture2D tex = LoadTextureFromImage(img);
-    SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
-    return tex;
-}
-
-/* ---- page renders on a worker thread ----
+/* ---- page renders on worker threads ----
  * Interpreting and rasterizing happen off the main thread, so scrolling never waits for a page. A MuPDF document is
- * used by one thread at a time, so each worker opens its own copy (see render_bytes) in a cloned context, records a
- * page's display list once and rasterizes the whole page or one tile of it, nearest the middle of the view first.
- * Finished pixmaps become textures on the main thread within a few ms per frame; until then the view shows the page
- * at another zoom, its thumbnail, or white. */
+ * used by one thread at a time, so each worker opens its own copy from bytes in memory (t->file as read, else
+ * render_bytes) in a cloned context, records a page's display list once and rasterizes the whole page or one tile of
+ * it, nearest the middle of the view first. Words for text selection are extracted the same way. A worker that
+ * finishes a render wanted on screen wakes the main loop (glfwPostEmptyEvent); finished pixmaps become textures on
+ * the main thread within UPLOAD_BUDGET_S per frame. Until then the view shows the page at another zoom, its
+ * thumbnail, or white, and a ui_redraw_at deadline looks again in case a request was dropped. */
 
 typedef struct render_job {
     unsigned gen;
@@ -772,8 +799,8 @@ typedef struct render_job {
     float scale, prio; /* prio: distance from the middle of the view; nearest first */
     int visible;       /* else prefetched: stored only in free room */
     fz_irect box;      /* a tile's device pixels */
-    fz_buffer *bytes;  /* the document of `gen`, or NULL: open `path` with `password` */
-    char *path, *password;
+    fz_buffer *bytes;  /* the document of `gen` */
+    char *password;    /* for `bytes` when they are the encrypted file itself */
     fz_pixmap *pix;
     double done_at;
     struct render_job *next;
@@ -781,17 +808,22 @@ typedef struct render_job {
 
 #define RENDER_QUEUE_MAX 32
 #define UPLOAD_BUDGET_S 0.004
+#define RENDER_RECHECK_S 0.25
 #define LIST_CACHE 8
 
 /* a screenful of tiles renders in parallel; each worker has its own context, open copy and display lists */
 #define RENDER_WORKERS_MAX 3
 
+/* busy, held_gen and forgotten are shared with the main thread under R.lock; the rest is the worker's own */
 typedef struct {
     pthread_t thread;
     fz_context *ctx;
     render_job *busy;
     unsigned doc_gen;
     fz_document *doc;
+    unsigned held_gen; /* doc_gen as the main thread may read it */
+    int forgotten;     /* held_gen's tab is gone: drop the document and the render in progress */
+
     struct {
         int page;
         fz_display_list *list;
@@ -802,14 +834,16 @@ typedef struct {
 static struct {
     pthread_mutex_t lock;
     pthread_cond_t wake;
-    render_job *queue, *done; /* queue: newest first */
+    render_job *queue, *done; /* queue: newest first; done: waiting for the main thread to take them */
     int started, quit, nworkers;
     unsigned gen;
     render_worker_state workers[RENDER_WORKERS_MAX];
 } R = {.lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER};
 
 static pthread_mutex_t mupdf_mutex[FZ_LOCK_MAX];
+
 static void lock_mupdf(void *user, int lock) { (void)user, pthread_mutex_lock(&mupdf_mutex[lock]); }
+
 static void unlock_mupdf(void *user, int lock) { (void)user, pthread_mutex_unlock(&mupdf_mutex[lock]); }
 
 fz_locks_context *render_locks(void)
@@ -829,7 +863,7 @@ static void job_free(fz_context *ctx, render_job *j)
     fz_drop_buffer(ctx, j->bytes);
     fz_drop_pixmap(ctx, j->pix);
     pt_words_free(&j->found);
-    free(j->path), free(j->password);
+    free(j->password);
     free(j);
 }
 
@@ -840,23 +874,18 @@ static void worker_drop_doc(render_worker_state *w)
     w->doc = NULL;
 }
 
-/* the worker's display list of a page of job j's document, opening that document first if it is another */
+/* the worker's display list of a page of job j's document, opening that document first if it is another; throws */
 static fz_display_list *worker_list(render_worker_state *w, render_job *j)
 {
     fz_context *ctx = w->ctx;
     if (j->gen != w->doc_gen || !w->doc) {
         worker_drop_doc(w);
-        if (j->bytes) {
-            fz_stream *s = fz_open_buffer(ctx, j->bytes);
-            fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
-            fz_always(ctx) fz_drop_stream(ctx, s);
-            fz_catch(ctx) fz_rethrow(ctx);
-        } else {
-            w->doc = fz_open_document(ctx, j->path);
-            if (fz_needs_password(ctx, w->doc) &&
-                !fz_authenticate_password(ctx, w->doc, j->password ? j->password : ""))
-                fz_throw(ctx, FZ_ERROR_ARGUMENT, "wrong password");
-        }
+        fz_stream *s = fz_open_buffer(ctx, j->bytes);
+        fz_try(ctx) w->doc = fz_open_document_with_stream(ctx, "application/pdf", s);
+        fz_always(ctx) fz_drop_stream(ctx, s);
+        fz_catch(ctx) fz_rethrow(ctx);
+        if (fz_needs_password(ctx, w->doc) && !fz_authenticate_password(ctx, w->doc, j->password ? j->password : ""))
+            fz_throw(ctx, FZ_ERROR_ARGUMENT, "wrong password");
         w->doc_gen = j->gen;
     }
     int slot = 0;
@@ -879,6 +908,7 @@ static fz_display_list *worker_list(render_worker_state *w, render_job *j)
     return list;
 }
 
+/* main thread */
 static void jobs_free(render_job *j)
 {
     while (j) {
@@ -888,23 +918,34 @@ static void jobs_free(render_job *j)
     }
 }
 
+/* A worker's loop: takes the queued request nearest the middle of the view, renders it with R.lock released and
+ * hands the result to the main thread in R.done. */
 static void *render_worker(void *arg)
 {
     render_worker_state *w = arg;
     fz_context *ctx = w->ctx;
     pthread_mutex_lock(&R.lock);
     while (!R.quit) {
+        if (w->forgotten) {
+            w->forgotten = 0;
+            w->held_gen = 0;
+            pthread_mutex_unlock(&R.lock);
+            worker_drop_doc(w);
+            pthread_mutex_lock(&R.lock);
+            continue;
+        }
         if (!R.queue) {
             pthread_cond_wait(&R.wake, &R.lock);
             continue;
         }
-        /* the request nearest the middle of the view */
+
         render_job **best = &R.queue;
         for (render_job **q = &R.queue; *q; q = &(*q)->next)
             if ((*q)->prio < (*best)->prio) best = q;
         render_job *j = w->busy = *best;
         *best = j->next;
         pthread_mutex_unlock(&R.lock);
+
         fz_device *dev = NULL;
         fz_var(dev);
         fz_try(ctx)
@@ -932,15 +973,26 @@ static void *render_worker(void *arg)
         fz_catch(ctx) fz_drop_pixmap(ctx, j->pix), j->pix = NULL;
         fz_drop_buffer(ctx, j->bytes);
         j->bytes = NULL;
+
         pthread_mutex_lock(&R.lock);
         w->busy = NULL;
+        w->held_gen = w->doc ? w->doc_gen : 0;
+        if (w->forgotten) {
+            pthread_mutex_unlock(&R.lock);
+            job_free(ctx, j);
+            pthread_mutex_lock(&R.lock);
+            continue;
+        }
         j->done_at = GetTime();
         j->next = R.done, R.done = j;
+        /* the window may be asleep waiting for this one */
+        if (j->visible) glfwPostEmptyEvent();
     }
     pthread_mutex_unlock(&R.lock);
     return NULL;
 }
 
+/* one worker per core but one, up to RENDER_WORKERS_MAX; with none started the next request tries again */
 static void render_start(void)
 {
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -985,6 +1037,12 @@ static void render_forget(unsigned gen)
             if (k->gen == gen) *q = k->next, k->next = dropped, dropped = k;
             else q = &k->next;
         }
+    /* a worker holding that document (or about to, with a render of it in progress) lets it go */
+    for (int i = 0; i < R.nworkers; i++) {
+        render_worker_state *w = &R.workers[i];
+        if ((w->busy ? w->busy->gen : w->held_gen) == gen) w->forgotten = 1;
+    }
+    pthread_cond_broadcast(&R.wake);
     pthread_mutex_unlock(&R.lock);
     jobs_free(dropped);
 }
@@ -1002,15 +1060,21 @@ static int render_known(const render_job *want)
     /* a waiting request takes its current distance, as the view may have moved */
     for (render_job *j = R.queue; j; j = j->next)
         if (same_job(j, want)) return j->prio = want->prio, j->visible |= want->visible, 1;
+    /* drawn and waiting to be taken: the next frame takes it */
     for (render_job *j = R.done; j; j = j->next)
-        if (same_job(j, want)) return 1;
+        if (same_job(j, want)) {
+            if (want->visible) ui.dirty = 1;
+            return 1;
+        }
+    /* being drawn: when it is done it wakes the window if it is wanted on screen by then */
     for (int i = 0; i < R.nworkers; i++)
-        if (R.workers[i].busy && same_job(R.workers[i].busy, want)) return 1;
+        if (R.workers[i].busy && same_job(R.workers[i].busy, want))
+            return R.workers[i].busy->visible |= want->visible, 1;
     return 0;
 }
 
-/* The tab's document as the worker opens it: written once per (re)load, since the tab's document is only changed by
- * being rebuilt (reload_display), which starts a new render_gen. Unencrypted, in memory only. */
+/* The rebuilt display copy as the workers open it, written once per render generation: t->doc only changes by being
+ * rebuilt (reload_display), which starts a new one. Unencrypted, in memory only; NULL when writing fails. */
 static fz_buffer *render_bytes(tab *t)
 {
     if (t->render_bytes) return t->render_bytes;
@@ -1040,6 +1104,7 @@ fz_irect page_pixels(tab *t, int page, float scale)
     return fz_round_rect(fz_transform_rect(page_bounds(t, page), fz_scale(scale, scale)));
 }
 
+/* queues `want` for the workers unless it is already queued, in progress or waiting to be taken */
 static void render_request(tab *t, render_job want)
 {
     if (!R.started) render_start();
@@ -1049,17 +1114,14 @@ static void render_request(tab *t, render_job want)
     int known = render_known(&want);
     pthread_mutex_unlock(&R.lock);
     if (known) return;
-    /* the file itself when the tab shows it as read; a copy of the rebuilt document otherwise */
-    double m;
-    long size;
-    file_stamp(t->path, &m, &size);
-    int from_file = t->doc_is_file && m == t->stamp_mtime && size == t->stamp_size;
-    fz_buffer *bytes = from_file ? NULL : render_bytes(t);
-    if (!from_file && !bytes) return;
+    /* the file's bytes while the tab shows them as read (they may be encrypted); a copy of the rebuilt document
+     * otherwise. Changing between the two goes through tab_invalidate_pages, which starts a new generation. */
+    fz_buffer *bytes = t->doc_is_file ? t->file : render_bytes(t);
+    if (!bytes) return;
     render_job *j = calloc(1, sizeof *j), *dropped = NULL;
     *j = want;
-    if (from_file) j->path = pt_strdup(t->path), j->password = t->password ? pt_strdup(t->password) : NULL;
-    else j->bytes = fz_keep_buffer(CTX, bytes);
+    j->bytes = fz_keep_buffer(CTX, bytes);
+    if (t->doc_is_file && t->password) j->password = pt_strdup(t->password);
     pthread_mutex_lock(&R.lock);
     /* the same page at another zoom is no longer wanted; past the limit the farthest requests go */
     j->next = R.queue, R.queue = j;
@@ -1083,6 +1145,16 @@ static void render_request(tab *t, render_job want)
     jobs_free(dropped);
 }
 
+static Texture2D texture_from_pixmap(fz_pixmap *pix)
+{
+    if (!pix) return (Texture2D){0};
+    Image img = {pix->samples, pix->w, pix->h, 1,
+                 pix->n == 4 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : PIXELFORMAT_UNCOMPRESSED_R8G8B8};
+    Texture2D tex = LoadTextureFromImage(img);
+    SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+    return tex;
+}
+
 /* a texture showing pix: `old`'s storage refilled when it has the same size and format (most tiles), else a new one;
  * refilling spares the GL driver an allocation per render */
 static Texture2D reuse_texture(Texture2D *old, fz_pixmap *pix)
@@ -1103,6 +1175,8 @@ static int pix_free_slot(tab *t, int page)
     return -1;
 }
 
+/* into a free slot (or the page's own), else in place of the page farthest from the current one; a prefetched
+ * render only into free room */
 static void cache_insert(tab *t, const render_job *j)
 {
     int slot = pix_free_slot(t, j->page), far = -1, fd = -1;
@@ -1192,6 +1266,17 @@ static void render_collect(tab *t)
         mine->next = NULL;
         job_free(CTX, mine);
     }
+    /* out of time with renders possibly left: the next frame takes them */
+    ui.dirty = 1;
+}
+
+int render_ready(const tab *t)
+{
+    int ready = 0;
+    pthread_mutex_lock(&R.lock);
+    for (render_job *j = R.done; j && !ready; j = j->next) ready = j->gen == t->render_gen && j->visible;
+    pthread_mutex_unlock(&R.lock);
+    return ready;
 }
 
 float tile_level(float scale) { return powf(2, ceilf(log2f(scale) * TILE_LEVELS - 0.01f) / TILE_LEVELS); }
@@ -1206,13 +1291,17 @@ Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, 
             if (born) *born = t->tiles[i].born;
             return &t->tiles[i].tex;
         }
-    if (born) ui.dirty = 1;
+    /* on screen: the worker wakes the window when it is done; the slow check only covers a request that got dropped */
+    if (born) ui_redraw_at(ui.now + RENDER_RECHECK_S);
     else {
         int free_slot = 0;
         for (int i = 0; i < TILE_CACHE && !free_slot; i++) free_slot = !t->tiles[i].ok;
         if (!free_slot || t->tile_bytes + (size_t)TILE_PX * TILE_PX * 4 > TILE_BUDGET) return NULL;
     }
-    if (ui.now - t->zoom_t < ZOOM_SETTLE_S) return NULL;
+    if (ui.now - t->zoom_t < ZOOM_SETTLE_S) {
+        if (born) ui_redraw_at(t->zoom_t + ZOOM_SETTLE_S);
+        return NULL;
+    }
     fz_irect all = page_pixels(t, page, scale);
     fz_irect box = {all.x0 + tx * TILE_PX, all.y0 + ty * TILE_PX, 0, 0};
     box.x1 = (int)fminf(box.x0 + TILE_PX, all.x1), box.y1 = (int)fminf(box.y0 + TILE_PX, all.y1);
@@ -1239,32 +1328,33 @@ Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible)
         if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
         other = pt;
     }
-    if (visible) ui.dirty = 1;
+    if (visible) ui_redraw_at(ui.now + RENDER_RECHECK_S);
     else if (pix_free_slot(t, page) < 0) return other ? &other->tex : NULL;
     /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests */
     if (!(other && ui.now - t->zoom_t < ZOOM_SETTLE_S))
         render_request(t, (render_job){.page = page, .scale = scale, .prio = prio, .visible = visible});
+    else if (visible) ui_redraw_at(t->zoom_t + ZOOM_SETTLE_S);
     if (other) return &other->tex;
     return t->thumb_ok && t->thumb_ok[page] ? &t->thumbs[page] : NULL;
 }
 
-/* NULL until the render thread has made it */
 Texture2D *thumb_texture(tab *t, int page)
 {
     if (t->thumb_ok[page]) return &t->thumbs[page];
     fz_rect b = page_bounds(t, page);
     float zoom = fminf(THUMB_W / b.x1, THUMB_H / b.y1) * UI_PX;
-    ui.dirty = 1;
+    ui_redraw_at(ui.now + RENDER_RECHECK_S);
     render_request(t, (render_job){.page = page, .thumb = 1, .scale = zoom, .prio = 1e6f, .visible = 1});
     return NULL;
 }
 
-/* the words of a page, made by the render thread ahead of use (words_prefetch); made here if still missing */
 void words_prefetch(tab *t, int page)
 {
     if (t->words_ok && !t->words_ok[page])
         render_request(t, (render_job){.page = page, .words = 1, .prio = 2e6f, .visible = 1});
 }
+
+/* ---- per-page caches: words, form fields, annotations, links ---- */
 
 pt_words *page_words(tab *t, int page)
 {
@@ -1362,6 +1452,14 @@ annot_infos *page_annots(tab *t, int page)
     return &t->annots[page];
 }
 
+const char *annot_comment(tab *t, int page, const annot_info *a)
+{
+    for (int i = 0; i < t->st.annot_text.n; i++)
+        if (t->st.annot_text.v[i].key.page == page && t->st.annot_text.v[i].key.xref == a->xref)
+            return t->st.annot_text.v[i].text;
+    return a->content ? a->content : "";
+}
+
 link_infos *page_links(tab *t, int page)
 {
     if (t->links_ok[page]) return &t->links[page];
@@ -1396,6 +1494,8 @@ link_infos *page_links(tab *t, int page)
     return &t->links[page];
 }
 
+/* ---- links ---- */
+
 const link_info *link_at(tab *t, fz_point scene)
 {
     int page = page_at(t, scene);
@@ -1406,15 +1506,45 @@ const link_info *link_at(tab *t, fz_point scene)
     return NULL;
 }
 
+static void open_uri(char *uri)
+{
+#ifdef _WIN32
+    if (pt_win_shell_open(uri)) status("Could not open the link", 4);
+#else
+#ifdef __APPLE__
+    char *argv[] = {"open", uri, NULL};
+#else
+    char *argv[] = {"xdg-open", uri, NULL};
+#endif
+    if (run_detached(argv)) status("Could not open the link", 4);
+#endif
+}
+
+static void link_answer(void *ctx, int yes)
+{
+    if (yes) open_uri(ctx);
+    free(ctx);
+}
+
+/* Web and mail links open on a click; any other scheme (file:, smb:, a custom handler that may start a program)
+ * only after the user has seen it. */
+static int opens_directly(const char *uri)
+{
+    static const char *SCHEMES[] = {"http:", "https:", "mailto:"};
+    for (size_t i = 0; i < sizeof SCHEMES / sizeof *SCHEMES; i++)
+        if (!strncasecmp(uri, SCHEMES[i], strlen(SCHEMES[i]))) return 1;
+    return 0;
+}
+
 void follow_link(tab *t, const link_info *l)
 {
     if (l->uri) {
-#ifdef __APPLE__
-        char *argv[] = {"open", l->uri, NULL};
-#else
-        char *argv[] = {"xdg-open", l->uri, NULL};
-#endif
-        if (run_detached(argv)) status("Could not open the link", 4);
+        if (opens_directly(l->uri)) open_uri(l->uri);
+        else {
+            char *msg = pt_format("Open this link?\n\n%s", l->uri);
+            question_box("Open link", msg, "Open", "Cancel", link_answer, pt_strdup(l->uri));
+            free(msg);
+        }
         return;
     }
     if (order_index(t, l->page) < 0) {
@@ -1429,17 +1559,10 @@ void follow_link(tab *t, const link_info *l)
     t->want_center_y = src.y + (t->view.height / 2 - 40) / t->zoom;
 }
 
-const char *annot_comment(tab *t, int page, const annot_info *a)
-{
-    for (int i = 0; i < t->st.annot_text.n; i++)
-        if (t->st.annot_text.v[i].key.page == page && t->st.annot_text.v[i].key.xref == a->xref)
-            return t->st.annot_text.v[i].text;
-    return a->content ? a->content : "";
-}
+/* ---- page background ---- */
 
 static int cmp_byte(const void *a, const void *b) { return *(const unsigned char *)a - *(const unsigned char *)b; }
 
-/* Median colour of a thin ring just outside `src` on `page`, so a redaction blends into the page. */
 void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3])
 {
     rgb[0] = rgb[1] = rgb[2] = 255;
@@ -1461,6 +1584,7 @@ void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3])
         dev = fz_new_draw_device(CTX, fz_identity, pix);
         fz_run_page(CTX, p, dev, fz_scale(scale, scale), NULL);
         fz_close_device(CTX, dev);
+
         int w = pix->w, h = pix->h, n = 0;
         unsigned char *ch[3];
         for (int k = 0; k < 3; k++) ch[k] = malloc((size_t)(2 * w + 2 * h) + 4);
@@ -1504,10 +1628,10 @@ fz_buffer *tab_edited(tab *t, const pt_ints *pages, pt_leaks *leaks)
     /* fields shrunk to fit keep that size */
     for (int i = 0; i < s.forms.n; i++)
         for (int k = 0; k < t->editors.n; k++)
-            if (!memcmp(&t->editors.v[k].key, &s.forms.v[i].key, sizeof(pt_key)) && t->editors.v[k].fit_px > 0)
-                s.forms.v[i].size = (float)t->editors.v[k].fit_px;
+            if (!memcmp(&t->editors.v[k]->key, &s.forms.v[i].key, sizeof(pt_key)) && t->editors.v[k]->fit_px > 0)
+                s.forms.v[i].size = (float)t->editors.v[k]->fit_px;
     fz_buffer *data = NULL;
-    fz_try(CTX) data = pt_apply_edits(CTX, t->path, t->password, &s, leaks);
+    fz_try(CTX) data = pt_apply_edits_buffer(CTX, t->file, t->path, t->password, &s, leaks);
     fz_catch(CTX)
     {
         char *msg = pt_format("Could not write the edited PDF:\n%s", fz_caught_message(CTX));
@@ -1556,23 +1680,38 @@ void tab_report(tab *t, const char *out, pt_leaks *leaks, int scrubbed)
     free(msg);
 }
 
+/* the whole edited document as Save writes it: encrypted as the input was, then certificate-signed; NULL on failure
+ * (reported) */
+static fz_buffer *tab_output(tab *t, pt_leaks *leaks)
+{
+    fz_buffer *data = tab_edited(t, NULL, leaks);
+    if (!data) return NULL;
+    fz_buffer *locked = NULL;
+    fz_try(CTX) locked = pt_keep_encryption(CTX, data, t->doc, t->password, NULL);
+    fz_catch(CTX)
+    {
+        char *msg = pt_format("Could not encrypt the document as the original is:\n%s", fz_caught_message(CTX));
+        message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+        free(msg);
+    }
+    fz_drop_buffer(CTX, data);
+    if (!locked) return NULL;
+    return cert_sign_output(t, locked, NULL, t->password);
+}
+
+/* Writes the result next to the original, then moves the original to the trash and the result into its place, so a
+ * failure at any step leaves one complete file at the path; then the tab reloads it. */
 static void save_confirmed(void *ctx, int yes)
 {
     tab *t = ctx;
     if (!yes) return;
     pt_leaks leaks = {0};
-    fz_buffer *data = tab_edited(t, NULL, &leaks);
-    if (!data) return;
-    if (t->password) {
-        fz_buffer *locked = NULL;
-        fz_try(CTX) locked = pt_protect(CTX, data, t->password);
-        fz_catch(CTX) locked = NULL;
-        fz_drop_buffer(CTX, data);
-        if (!locked) return;
-        data = locked;
+    fz_buffer *data = tab_output(t, &leaks);
+    if (!data) {
+        pt_leaks_free(&leaks);
+        return;
     }
-    data = cert_sign_output(t, data, NULL, t->password);
-    if (!data) return;
+
     char *dir = pt_dirname(t->path);
     char *tmp = pt_format("%s/.%s.XXXXXX", dir, pt_basename(t->path));
     free(dir);
@@ -1589,6 +1728,7 @@ static void save_confirmed(void *ctx, int yes)
         free(tmp);
         return;
     }
+
     int scrubbed = scrubs(t, NULL);
     char *path = pt_strdup(t->path), *password = pt_strdup(t->password);
     if (move_to_trash(path)) {
@@ -1615,6 +1755,9 @@ void tab_save(tab *t)
 #elif defined(__APPLE__)
     char *msg =
         pt_format("Overwrite %s with the edited version?\n\nThe original goes to the Trash.", pt_basename(t->path));
+#elif defined(_WIN32)
+    char *msg = pt_format("Overwrite %s with the edited version?\n\nThe original goes to the Recycle Bin.",
+                          pt_basename(t->path));
 #else
     char *msg = pt_format(
         "Overwrite %s with the edited version?\n\nThe original goes to the trash (restore with trash-restore).",
@@ -1624,18 +1767,21 @@ void tab_save(tab *t)
     free(msg);
 }
 
+/* file-chooser jobs name their tab by id: the tab may be closed before the chooser answers */
 typedef struct {
-    tab *t;
+    unsigned tab_id;
     pt_ints pages;
     int has_pages, dpi, keep_password, optimize;
     char *password;
 } copy_job;
 
+/* The edited document, then in this order: flattened, optimized, encrypted, certificate-signed (signing comes last
+ * because any later change breaks the signature; a flattened copy is not signed). */
 static void write_copy_chosen(void *ctx, pt_strs *paths)
 {
     copy_job *job = ctx;
-    tab *t = job->t;
-    if (paths->n) {
+    tab *t = app_doc_by_id(job->tab_id);
+    if (t && paths->n) {
         const char *out = paths->v[0];
         if (pt_exists(out) && pt_same_file(out, t->path)) {
             message_box(MSG_ERROR, APP_NAME, "That is the open file; use File > Save to overwrite it.", NULL, NULL);
@@ -1644,25 +1790,44 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
             fz_buffer *data = tab_edited(t, job->has_pages ? &job->pages : NULL, &leaks);
             if (data && job->dpi) {
                 fz_buffer *flat = NULL;
+                pdf_document *check = NULL;
+                fz_page *p = NULL;
+                char *text = NULL;
+                fz_var(flat), fz_var(check), fz_var(p), fz_var(text);
                 fz_try(CTX)
                 {
                     flat = pt_flatten(CTX, data, job->dpi);
-                    pdf_document *check = pt_open_pdf_bytes(CTX, flat->data, flat->len, NULL);
+                    check = pt_open_pdf_bytes(CTX, flat->data, flat->len, NULL);
                     for (int i = 0; i < pdf_count_pages(CTX, check); i++) {
-                        fz_page *p = fz_load_page(CTX, (fz_document *)check, i);
-                        char *text = pt_page_text(CTX, p);
+                        p = fz_load_page(CTX, (fz_document *)check, i);
+                        text = pt_page_text(CTX, p);
                         int any = 0;
                         for (char *s = text; *s; s++) any |= *s != ' ' && *s != '\n';
                         if (any) pt_push(leaks, (pt_leak){i + 1, pt_strdup("selectable text after flatten")});
                         free(text);
+                        text = NULL;
                         fz_drop_page(CTX, p);
+                        p = NULL;
                     }
+                }
+                fz_always(CTX)
+                {
+                    free(text);
+                    fz_drop_page(CTX, p);
                     pdf_drop_document(CTX, check);
                 }
-                fz_catch(CTX) fz_ignore_error(CTX);
+                fz_catch(CTX)
+                {
+                    char *msg = pt_format("Could not flatten the document:\n%s", fz_caught_message(CTX));
+                    message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+                    free(msg);
+                    fz_drop_buffer(CTX, flat);
+                    flat = NULL;
+                }
                 fz_drop_buffer(CTX, data);
                 data = flat;
             }
+
             size_t before = data ? data->len : 0;
             if (data && job->optimize) {
                 fz_buffer *small = NULL;
@@ -1676,15 +1841,24 @@ static void write_copy_chosen(void *ctx, pt_strs *paths)
                 fz_drop_buffer(CTX, data);
                 data = small;
             }
+
             const char *pw = job->keep_password ? t->password : job->password;
-            if (data && pw) {
+            /* keeping the password keeps the original's encryption and permissions; a new one replaces them */
+            if (data && (job->keep_password || pw)) {
                 fz_buffer *locked = NULL;
-                fz_try(CTX) locked = pt_protect(CTX, data, pw);
-                fz_catch(CTX) locked = NULL;
+                fz_try(CTX) locked =
+                    job->keep_password ? pt_keep_encryption(CTX, data, t->doc, pw, NULL) : pt_protect(CTX, data, pw);
+                fz_catch(CTX)
+                {
+                    char *msg = pt_format("Could not encrypt the copy:\n%s", fz_caught_message(CTX));
+                    message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+                    free(msg);
+                }
                 fz_drop_buffer(CTX, data);
                 data = locked;
             }
             if (data && !job->dpi) data = cert_sign_output(t, data, job->has_pages ? &job->pages : NULL, pw);
+
             if (data) {
                 if (pt_write_file(out, data->data, data->len))
                     message_box(MSG_ERROR, APP_NAME, "Could not write the file.", NULL, NULL);
@@ -1714,7 +1888,7 @@ static void write_copy(tab *t, const pt_ints *pages, const char *default_name, i
                        const char *password)
 {
     copy_job *job = calloc(1, sizeof *job);
-    job->t = t;
+    job->tab_id = t->id;
     if (pages) {
         job->has_pages = 1;
         for (int i = 0; i < pages->n; i++) pt_push(job->pages, pages->v[i]);
@@ -1733,7 +1907,7 @@ void tab_save_optimized(tab *t)
     if (!t->doc) return;
     char *stem = pt_stem(t->path), *name = pt_format("%s-optimized.pdf", stem);
     copy_job *job = calloc(1, sizeof *job);
-    job->t = t;
+    job->tab_id = t->id;
     job->keep_password = 1;
     job->optimize = 1;
     char *dir = pt_dirname(t->path), *start = pt_join(dir, name);
@@ -1748,13 +1922,6 @@ void tab_save_as(tab *t)
     write_copy(t, NULL, name, 0, 1, NULL);
     free(stem);
     free(name);
-}
-
-void ticked_pages(tab *t, pt_ints *out)
-{
-    out->n = 0;
-    for (int i = 0; i < t->st.order.n; i++)
-        if (t->ticked[t->st.order.v[i]]) pt_push(*out, t->st.order.v[i]);
 }
 
 static void export_chosen(void *ctx, const char *ranges, int flat, int dpi)
@@ -1833,6 +2000,18 @@ void tab_split(tab *t)
 
 /* ---- page commands ---- */
 
+void ticked_pages(tab *t, pt_ints *out)
+{
+    out->n = 0;
+    for (int i = 0; i < t->st.order.n; i++)
+        if (t->ticked[t->st.order.v[i]]) pt_push(*out, t->st.order.v[i]);
+}
+
+void tick_all(tab *t, int value)
+{
+    for (int p = 0; p < t->npages; p++) t->ticked[p] = (char)value;
+}
+
 void target_pages(tab *t, int clicked, pt_ints *out)
 {
     ticked_pages(t, out);
@@ -1904,7 +2083,7 @@ void remove_pages(tab *t, const pt_ints *pages)
 }
 
 typedef struct {
-    tab *t;
+    unsigned tab_id;
     int after;
 } insert_job;
 
@@ -1929,8 +2108,8 @@ static void insert_after(tab *t, int after, const char *path, int count)
 static void insert_chosen(void *ctx, pt_strs *paths)
 {
     insert_job *job = ctx;
-    tab *t = job->t;
-    if (paths->n) {
+    tab *t = app_doc_by_id(job->tab_id);
+    if (t && paths->n) {
         const char *path = paths->v[0];
         int count = 0, locked = 0, ok = 0;
         fz_try(CTX)
@@ -1970,7 +2149,7 @@ void insert_pages(tab *t, int after)
 {
     if (!t->doc) return;
     insert_job *job = calloc(1, sizeof *job);
-    job->t = t;
+    job->tab_id = t->id;
     job->after = after;
     char *dir = pt_dirname(t->path);
     file_dialog(FD_OPEN, "Insert pages from", dir, "PDF", "*.pdf", insert_chosen, job);
@@ -2026,11 +2205,6 @@ void reorder_pages(tab *t, const pt_ints *order)
     change_pages_end(t, &snap, 0);
 }
 
-void tick_all(tab *t, int value)
-{
-    for (int p = 0; p < t->npages; p++) t->ticked[p] = (char)value;
-}
-
 /* ---- SyncTeX ---- */
 
 pt_synctex *tab_synctex(tab *t)
@@ -2064,7 +2238,9 @@ static void open_source_now(const char *command, const char *path, int line)
     char **argv = calloc((size_t)args.n + 1, sizeof(char *));
     for (int i = 0; i < args.n; i++) {
         char *a = args.v[i];
-        size_t cap = strlen(a) * 2 + strlen(path) + 32;
+        size_t cap = strlen(a) + 1;
+        for (char *c = a; *c; c++)
+            if (c[0] == '%' && (c[1] == 'f' || c[1] == 'l')) cap += c[1] == 'f' ? strlen(path) : strlen(num), c++;
         char *out = calloc(cap, 1);
         for (char *c = a; *c; c++) {
             if (c[0] == '%' && c[1] == 'f') strcat(out, path), c++;
@@ -2106,6 +2282,7 @@ static void editor_chosen(void *ctx, const char *command)
     free(job);
 }
 
+/* in editor_command, asking for the command first when none is set */
 static void open_source(const char *path, int line)
 {
     const char *command = pt_settings_str(&app.settings, "editor_command");
@@ -2161,6 +2338,8 @@ void tab_forward_search(tab *t, const char *source, int line)
     pt_vec_free(hits);
 }
 
+/* ---- the file's path, sharing ---- */
+
 void tab_copy_path(tab *t)
 {
     if (!t->path) return;
@@ -2171,10 +2350,10 @@ void tab_copy_path(tab *t)
 #ifdef __ANDROID__
 char *pt_java(const char *method, int nargs, ...);
 
-/* The edited document, as a copy under the cache's share/ folder that PdfToolsActivity's provider serves. */
+/* the copy goes under the cache's share/ folder, which PdfToolsActivity's provider serves */
 void tab_share(tab *t)
 {
-    fz_buffer *data = tab_edited(t, NULL, NULL);
+    fz_buffer *data = tab_output(t, NULL);
     if (!data) return;
     const char *tmp = getenv("TMPDIR");
     char *dir = pt_format("%s/share", tmp ? tmp : "."), *path = pt_format("%s/%s", dir, pt_basename(t->path));
@@ -2194,7 +2373,7 @@ void tab_share(tab *t)
 }
 #endif
 
-/* ---- mark colours (settings) ---- */
+/* ---- mark and pen styles (settings) ---- */
 
 int mark_style(void)
 {
@@ -2224,6 +2403,24 @@ void set_mark_colour(tab *t, const unsigned char rgb[3])
     char h[16];
     snprintf(h, sizeof h, "#%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
     pt_settings_set_str(&app.settings, colour_key(mark_style()), h);
+}
+
+void set_mark_style(tab *t, int style)
+{
+    (void)t;
+    pt_settings_set_str(&app.settings, "highlight_style", pt_mark_names[style]);
+}
+
+pt_pen pen_style(void)
+{
+    int p = pt_pen_from_name(pt_settings_str(&app.settings, "pen_style"));
+    return p < 0 ? PT_PEN_PEN : (pt_pen)p;
+}
+
+void set_pen_style(tab *t, pt_pen pen)
+{
+    pt_settings_set_str(&app.settings, "pen_style", pt_pen_names[pen]);
+    t->ink_page = -1; /* the next stroke starts a drawing of its own */
 }
 
 /* ---- favourite colours (settings), newest first ---- */
@@ -2259,49 +2456,49 @@ void toggle_favourite_colour(const unsigned char rgb[3])
     status(had ? "Removed from favourites" : "Added to favourites", 2);
 }
 
-void set_mark_style(tab *t, int style)
-{
-    (void)t;
-    pt_settings_set_str(&app.settings, "highlight_style", pt_mark_names[style]);
-}
-
-pt_pen pen_style(void)
-{
-    int p = pt_pen_from_name(pt_settings_str(&app.settings, "pen_style"));
-    return p < 0 ? PT_PEN_PEN : (pt_pen)p;
-}
-
-void set_pen_style(tab *t, pt_pen pen)
-{
-    pt_settings_set_str(&app.settings, "pen_style", pt_pen_names[pen]);
-    t->ink_page = -1; /* the next stroke starts a drawing of its own */
-}
-
 /* ---- watching the file ---- */
 
+/* Replaces the tab's file and document with the file as it is now on disk, dropping edits and undo history. */
 static void reload_now(tab *t)
 {
     pdf_document *fresh = NULL;
+    fz_buffer *file = NULL;
+    fz_var(fresh), fz_var(file);
     fz_try(CTX)
     {
-        fresh = pt_open_pdf(CTX, t->path, t->password, NULL);
+        file = fz_read_file(CTX, t->path);
+        fresh = pt_open_pdf_buffer(CTX, file, t->path, t->password, NULL);
+        /* a file still being written usually fails here, at its end, rather than while drawing */
         fz_page *last = fz_load_page(CTX, (fz_document *)fresh, pdf_count_pages(CTX, fresh) - 1);
         fz_drop_page(CTX, last);
     }
     fz_catch(CTX)
     {
+        char *msg = pt_format("Cannot reload %s: %s", pt_basename(t->path), fz_caught_message(CTX));
         pdf_drop_document(CTX, fresh);
-        /* still being written: try again shortly, a few times */
+        fz_drop_buffer(CTX, file);
+        /* still being written: try again shortly, a few times; broken for good (a failed build): the next change
+         * tries again, not every poll */
         if (++t->reload_tries < RELOAD_TRIES) t->settle_until = ui.now + RELOAD_SETTLE;
+        else {
+            t->reload_tries = 0;
+            t->stamp_mtime = t->seen_mtime, t->stamp_size = t->seen_size;
+            status(msg, 6);
+        }
+        free(msg);
         return;
     }
+
     t->reload_tries = 0;
     int position = order_index(t, t->pno);
     finish_text(t);
     close_popover(t, 0);
     fields_reset(t);
+
     pdf_drop_document(CTX, t->doc);
     t->doc = fresh;
+    fz_drop_buffer(CTX, t->file);
+    t->file = file;
     t->doc_is_file = 1;
     t->own = pdf_count_pages(CTX, fresh);
     pt_state_free(&t->st);
@@ -2309,6 +2506,7 @@ static void reload_now(tab *t)
     free_history(&t->history, &t->nhist);
     free_history(&t->future, &t->nfut);
     tab_invalidate_pages(t);
+
     t->pno = t->st.order.v[position < 0 ? 0 : position < t->st.order.n ? position : t->st.order.n - 1];
     t->stamp_mtime = t->seen_mtime, t->stamp_size = t->seen_size;
     if (t->sync) pt_synctex_free(t->sync), free(t->sync), t->sync = NULL;
@@ -2329,7 +2527,6 @@ static void reload_answer(void *ctx, int yes)
     else t->stamp_mtime = t->seen_mtime, t->stamp_size = t->seen_size;
 }
 
-/* Reload after the file changed on disk and has stopped changing (TeX writes the PDF in steps). */
 void tab_poll(tab *t)
 {
     /* the reading position is saved a few seconds after it changes, in case the app is killed (Android) */
@@ -2339,6 +2536,8 @@ void tab_poll(tab *t)
         current_position(t, &page, &zoom, &top);
         if (page != t->saved_page || zoom != t->saved_zoom || fabsf(top - t->saved_top) > 1) tab_save_position(t);
     }
+
+    /* reload once the file changed on disk and has stopped changing (TeX writes the PDF in steps) */
     if (!t->doc || t->reload_asked || ui.now < t->next_poll) return;
     t->next_poll = ui.now + 0.3;
     double m;
@@ -2348,6 +2547,7 @@ void tab_poll(tab *t)
     if (m != t->seen_mtime || s != t->seen_size) {
         t->seen_mtime = m, t->seen_size = s;
         t->settle_until = ui.now + RELOAD_SETTLE;
+        t->reload_tries = 0;
         return;
     }
     if (ui.now < t->settle_until) return;
@@ -2368,26 +2568,32 @@ void tab_poll(tab *t)
 /* ---- moving a tab to another window: the state as a file ---- */
 
 static void w_int(FILE *f, int v) { fwrite(&v, sizeof v, 1, f); }
+
 static void w_float(FILE *f, float v) { fwrite(&v, sizeof v, 1, f); }
+
 static void w_str(FILE *f, const char *s)
 {
     int n = s ? (int)strlen(s) : -1;
     w_int(f, n);
     if (n > 0) fwrite(s, 1, (size_t)n, f);
 }
+
 static void w_rect(FILE *f, fz_rect r) { fwrite(&r, sizeof r, 1, f); }
+
 static int r_int(FILE *f)
 {
     int v = 0;
     if (fread(&v, sizeof v, 1, f) != 1) v = 0;
     return v;
 }
+
 static float r_float(FILE *f)
 {
     float v = 0;
     if (fread(&v, sizeof v, 1, f) != 1) v = 0;
     return v;
 }
+
 static char *r_str(FILE *f)
 {
     int n = r_int(f);
@@ -2396,6 +2602,7 @@ static char *r_str(FILE *f)
     if (n && fread(s, 1, (size_t)n, f) != (size_t)n) s[0] = 0;
     return s;
 }
+
 static fz_rect r_rect(FILE *f)
 {
     fz_rect r = {0};
@@ -2403,6 +2610,8 @@ static fz_rect r_rect(FILE *f)
     return r;
 }
 
+/* read_state reads back exactly what this writes, in this order, as native binary for the same build on the same
+ * machine: a field added here goes into read_state at the same place, with a new magic in tab_write_state. */
 static void write_state(FILE *f, const pt_state *s)
 {
     w_int(f, s->items.n);

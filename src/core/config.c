@@ -10,9 +10,12 @@
 #define APP_DIR "pdf-tools"
 #define LEGACY_DIR "pdf-redact"
 
+/* ---- the known settings ---- */
+
 const pt_setting_def pt_settings_defs[] = {
     {"theme", PT_SET_STR, "dark", 0, "dark | light"},
-    {"ui_scale", PT_SET_STR, "auto", 0, "Interface size: auto, or a factor from 0.75 to 3 (e.g. 1.25)"},
+    {"ui_scale", PT_SET_STR, "auto", 0,
+     "Interface size: \"auto\", or a factor from 0.75 to 3 as a quoted string (e.g. \"1.25\")"},
     {"view_mode", PT_SET_STR, "continuous", 0, "continuous | single"},
     {"show_sidebar", PT_SET_BOOL, NULL, 1, "Show the Pages / Annotations / Edits panel"},
     {"export_flatten", PT_SET_BOOL, NULL, 0, "Export pages as images without selectable text"},
@@ -43,6 +46,10 @@ char *pt_config_dir(void)
 {
     const char *xdg = getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) return pt_join(xdg, APP_DIR);
+#ifdef _WIN32
+    const char *roaming = getenv("APPDATA");
+    if (roaming && *roaming) return pt_join(roaming, APP_DIR);
+#endif
     const char *home = getenv("HOME");
     return pt_format("%s/.config/%s", home ? home : ".", APP_DIR);
 }
@@ -65,6 +72,7 @@ static void set_default(pt_setting_value *v, const pt_setting_def *d)
 /* ---- a small TOML reader: key = value lines with strings, booleans, integers and string arrays ---- */
 
 typedef enum { V_NONE, V_STR, V_BOOL, V_INT, V_FLOAT, V_LIST, V_OTHER } vtype;
+
 typedef struct {
     vtype type;
     char *str;
@@ -198,11 +206,45 @@ static const char *parse_value(const char *s, tvalue *v)
     return s;
 }
 
-/* Calls back for each top-level key; returns -1 when the text is not valid TOML (as far as this reader goes). */
+/* One key = value or [table] line (a value may span lines); NULL when it is not valid TOML as far as this reader
+ * goes. */
+static const char *parse_line(const char *s, int *in_table, void (*on)(void *, const char *, tvalue *), void *opaque)
+{
+    if (*s == '[') {
+        const char *end = strchr(s, ']');
+        const char *nl = strchr(s, '\n');
+        if (!end || (nl && nl < end)) return NULL;
+        *in_table = 1;
+        s = end + 1;
+        if (*s == ']') s++;
+        return s;
+    }
+    const char *k = s;
+    while (isalnum((unsigned char)*s) || *s == '_' || *s == '-') s++;
+    if (s == k) return NULL;
+    char key[128];
+    snprintf(key, sizeof key, "%.*s", (int)(s - k), k);
+    s = skip_ws(s);
+    if (*s++ != '=') return NULL;
+    s = skip_ws(s);
+    tvalue v;
+    s = parse_value(s, &v);
+    if (s) {
+        const char *rest = skip_ws(s);
+        if (*rest && *rest != '#' && *rest != '\n' && *rest != '\r') s = NULL;
+        else if (!*in_table) on(opaque, key, &v);
+    }
+    free(v.str);
+    pt_strs_free(&v.list);
+    return s;
+}
+
+/* Calls back for each top-level key. A line it cannot read is skipped, the others still count; returns the number
+ * of the first such line, 0 when there is none. */
 static int parse_toml(const char *text, void (*on)(void *, const char *, tvalue *), void *opaque)
 {
     const char *s = text;
-    int in_table = 0;
+    int in_table = 0, bad = 0;
     while (*s) {
         s = skip_ws(s);
         if (*s == '\n' || *s == '\r') {
@@ -213,35 +255,22 @@ static int parse_toml(const char *text, void (*on)(void *, const char *, tvalue 
             while (*s && *s != '\n') s++;
             continue;
         }
-        if (*s == '[') {
-            const char *end = strchr(s, ']');
-            const char *nl = strchr(s, '\n');
-            if (!end || (nl && nl < end)) return -1;
-            in_table = 1;
-            s = end + 1;
-            if (*s == ']') s++;
-        } else {
-            const char *k = s;
-            while (isalnum((unsigned char)*s) || *s == '_' || *s == '-') s++;
-            if (s == k) return -1;
-            char key[128];
-            snprintf(key, sizeof key, "%.*s", (int)(s - k), k);
-            s = skip_ws(s);
-            if (*s++ != '=') return -1;
-            s = skip_ws(s);
-            tvalue v;
-            s = parse_value(s, &v);
-            if (!s) return -1;
-            if (!in_table) on(opaque, key, &v);
-            free(v.str);
-            pt_strs_free(&v.list);
+        const char *start = s;
+        s = parse_line(s, &in_table, on, opaque);
+        if (!s) {
+            if (!bad) {
+                bad = 1;
+                for (const char *c = text; c < start; c++) bad += *c == '\n';
+            }
+            s = start;
+            while (*s && *s != '\n') s++;
+            continue;
         }
         s = skip_ws(s);
         if (*s == '#')
             while (*s && *s != '\n') s++;
-        if (*s && *s != '\n' && *s != '\r') return -1;
     }
-    return 0;
+    return bad;
 }
 
 static void on_value(void *opaque, const char *key, tvalue *v)
@@ -262,6 +291,8 @@ static void on_value(void *opaque, const char *key, tvalue *v)
     }
 }
 
+/* ---- loading, reading and changing settings ---- */
+
 void pt_settings_load(pt_settings *s, const char *path)
 {
     if (path) s->path = pt_strdup(path);
@@ -270,31 +301,31 @@ void pt_settings_load(pt_settings *s, const char *path)
         s->path = pt_join(dir, "settings.toml");
         free(dir);
     }
+
     s->values = calloc((size_t)pt_settings_count, sizeof *s->values);
     if (!s->values) abort();
     for (int i = 0; i < pt_settings_count; i++) set_default(&s->values[i], &pt_settings_defs[i]);
+    s->keep_file = 0;
+
     pt_bytes text = {0};
-    int loaded = 0;
-    if (!pt_read_file(s->path, &text)) {
-        char *t = malloc(text.len + 1);
-        if (!t) abort();
-        memcpy(t, text.data, text.len);
-        t[text.len] = 0;
-        free(text.data);
-        pt_settings probe = {NULL, calloc((size_t)pt_settings_count, sizeof *s->values)};
-        for (int i = 0; i < pt_settings_count; i++) set_default(&probe.values[i], &pt_settings_defs[i]);
-        if (parse_toml(t, on_value, &probe) == 0) {
-            for (int i = 0; i < pt_settings_count; i++) {
-                free(s->values[i].str);
-                pt_strs_free(&s->values[i].list);
-            }
-            free(s->values);
-            s->values = probe.values;
-            loaded = 1;
-        } else pt_settings_free(&probe);
-        free(t);
+    if (pt_read_file(s->path, &text)) {
+        pt_settings_save(s);
+        return;
     }
-    if (!loaded) pt_settings_save(s);
+
+    char *t = malloc(text.len + 1);
+    if (!t) abort();
+    memcpy(t, text.data, text.len);
+    t[text.len] = 0;
+    free(text.data);
+    int bad = parse_toml(t, on_value, s);
+    free(t);
+    if (bad) {
+        s->keep_file = 1;
+        pt_log(PT_LOG_WARN,
+               "%s: line %d is not valid and was skipped; changed settings are not saved until it is fixed", s->path,
+               bad);
+    }
 }
 
 void pt_settings_free(pt_settings *s)
@@ -371,54 +402,68 @@ void pt_settings_add_recent(pt_settings *s, const char *path)
     pt_strs_free(&list);
 }
 
-static void toml_string(FILE *f, const char *s)
+/* ---- writing settings.toml ---- */
+
+PT_VEC(toml_text, char);
+
+static void put(toml_text *b, const char *s)
 {
-    fputc('"', f);
-    for (; *s; s++) {
-        if (*s == '\\' || *s == '"') fputc('\\', f);
-        fputc(*s, f);
-    }
-    fputc('"', f);
+    for (; *s; s++) pt_push(*b, *s);
 }
 
-static void toml_value(FILE *f, const pt_setting_def *d, const pt_setting_value *v)
+static void toml_string(toml_text *b, const char *s)
 {
+    pt_push(*b, '"');
+    for (; *s; s++) {
+        if (*s == '\\' || *s == '"') pt_push(*b, '\\');
+        pt_push(*b, *s);
+    }
+    pt_push(*b, '"');
+}
+
+static void toml_value(toml_text *b, const pt_setting_def *d, const pt_setting_value *v)
+{
+    char num[16];
     switch (d->type) {
-    case PT_SET_STR: toml_string(f, v->str ? v->str : ""); break;
-    case PT_SET_BOOL: fputs(v->num ? "true" : "false", f); break;
-    case PT_SET_INT: fprintf(f, "%d", v->num); break;
+    case PT_SET_STR: toml_string(b, v->str ? v->str : ""); break;
+    case PT_SET_BOOL: put(b, v->num ? "true" : "false"); break;
+    case PT_SET_INT:
+        snprintf(num, sizeof num, "%d", v->num);
+        put(b, num);
+        break;
     case PT_SET_LIST:
-        fputc('[', f);
+        pt_push(*b, '[');
         for (int i = 0; i < v->list.n; i++) {
-            if (i) fputs(", ", f);
-            toml_string(f, v->list.v[i]);
+            if (i) put(b, ", ");
+            toml_string(b, v->list.v[i]);
         }
-        fputc(']', f);
+        pt_push(*b, ']');
         break;
     }
 }
 
 int pt_settings_save(const pt_settings *s)
 {
-    char *dir = pt_dirname(s->path);
-    pt_mkdirs(dir);
-    free(dir);
-    FILE *f = fopen(s->path, "w");
-    if (!f) return -1;
-    fputs("# PDF Tools settings. Edit while the app is closed; unknown keys and wrong types are ignored.\n\n", f);
+    if (s->keep_file) return -1;
+    toml_text b = {0};
+    put(&b, "# PDF Tools settings. Edit while the app is closed; unknown keys and wrong types are ignored.\n\n");
     for (int i = 0; i < pt_settings_count; i++) {
         const pt_setting_def *d = &pt_settings_defs[i];
         pt_setting_value def = {0};
         set_default(&def, d);
-        fprintf(f, "# %s (default: ", d->comment);
-        toml_value(f, d, &def);
-        fprintf(f, ")\n%s = ", d->key);
-        toml_value(f, d, &s->values[i]);
-        fputs(i + 1 < pt_settings_count ? "\n\n" : "\n", f);
+        put(&b, "# "), put(&b, d->comment), put(&b, " (default: ");
+        toml_value(&b, d, &def);
+        put(&b, ")\n"), put(&b, d->key), put(&b, " = ");
+        toml_value(&b, d, &s->values[i]);
+        put(&b, i + 1 < pt_settings_count ? "\n\n" : "\n");
         free(def.str);
     }
-    return fclose(f);
+    int rc = pt_write_file(s->path, b.v, (size_t)b.n);
+    pt_vec_free(b);
+    return rc;
 }
+
+/* ---- the folder of the app's earlier name, pdf-redact ---- */
 
 static void copy_tree(const char *from, const char *to)
 {

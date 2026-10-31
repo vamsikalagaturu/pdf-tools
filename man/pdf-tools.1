@@ -250,6 +250,20 @@ Output files must differ from the input.
 An encrypted input needs
 .BI \-\-password " pw"
 and the output keeps that password.
+Wherever a command takes
+.BR \-\-password ,
+.BR \-\-current\-password
+or
+.BR \-\-cert\-password ,
+the same option with
+.B \-file
+appended
+.RB ( \-\-password\-file
+.IR path )
+reads the password from the first line of that file instead, so it does not
+show in the process list.
+A first argument that is neither a command, an option nor an existing file is
+reported as an unknown command; it does not open the window.
 Run
 .BI "pdf-tools " command " \-\-help"
 for the full option list of a command.
@@ -297,6 +311,12 @@ Content outside a crop is deleted.
 .BI "merge " "a.pdf b.pdf:1-3 photo.jpg ... " \-o " output.pdf"
 Join PDFs, each optionally limited to some pages, and images, each of which
 becomes a page.
+.B \-\-password\-for
+.IR file = password
+gives an encrypted input's password, with
+.I file
+written as on the command line; repeat it for each encrypted input. The
+merged output is not encrypted.
 .TP
 .BI "split " "input.pdf " "\-\-every " n " \-d " folder
 .TQ
@@ -443,6 +463,10 @@ Done.
 Error; the JSON output has an
 .B error
 message.
+A wrong or missing option and an unknown command are errors too (the message
+starts with
+.BR usage:
+or names the command).
 .TP
 .B 2
 .B redact

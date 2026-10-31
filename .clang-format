@@ -15,6 +15,7 @@ AlignOperands: Align
 AlignTrailingComments: true
 AlignEscapedNewlines: Left
 MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
 # include order matters in places (feature macros, raygui's pragmas)
 SortIncludes: Never
 ReflowComments: true

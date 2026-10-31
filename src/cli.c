@@ -1,6 +1,8 @@
 /* Command-line (no window) interface for scripts and agents, as AGENTS.md documents it. Each command never
- * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. The commands after "synctex" in
- * COMMANDS are extras beyond that contract. */
+ * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. COMMANDS lists those of AGENTS.md's
+ * "Commands" first (up to "synctex"), then its "More commands" and a few undocumented ones (prepare-signature,
+ * edit-annotation, redact-text). main.c sends argv here when argv[1] names a command; the window's app.c shares only
+ * the usage text and the guide. */
 #include "pt_cli.h"
 #include "pt_core.h"
 #include <ctype.h>
@@ -10,29 +12,37 @@
 #include <string.h>
 
 enum { OK, FAILED, LEAKED, NO_MATCH };
-#define USAGE_ERROR 2
 
 extern const unsigned char pt_asset_agents_md[];
 
 static fz_context *ctx;
+/* the command's JSON object while it is being printed; commands keep theirs static, as a MuPDF error unwinds
+ * their stack before fail() closes it */
+static pt_json *open_json;
+
+static _Noreturn void fail(const char *fmt, ...);
 
 /* ---- argument parsing, after argparse ---- */
 
 enum { FLAG, VALUE, APPEND, OPTIONAL };
+
 typedef struct {
     const char *flag, *alias;
     int kind, required;
     const char *metavar, *help, *def;
 } opt;
 typedef struct cmd cmd;
+
 typedef struct {
     const cmd *c;
     pt_strs positional;
+
     struct {
         int set;
         pt_strs vals;
     } v[20];
 } args;
+
 struct cmd {
     const char *name, *help;
     const char *positional, *positional_help; /* NULL: none */
@@ -44,17 +54,20 @@ struct cmd {
 
 static const char *prog = "pdf-tools";
 
+/* argparse's message on stderr, then the same as the JSON error on stdout; exits with FAILED. c may be NULL. */
 static _Noreturn void usage_error(const cmd *c, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "usage: %s %s ...\n%s %s: error: ", prog, c ? c->name : "COMMAND", prog, c ? c->name : "");
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
+    char msg[4096];
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    exit(USAGE_ERROR);
+    const char *name = c ? c->name : "COMMAND";
+    fprintf(stderr, "usage: %s %s ...\n%s: error: %s\n", prog, name, prog, msg);
+    fail("usage: %s %s ...: %s (see %s %s%s--help)", prog, name, msg, prog, c ? name : "", c ? " " : "");
 }
 
+/* One JSON object in every case: an error after the command began printing closes what is open and adds "error". */
 static _Noreturn void fail(const char *fmt, ...)
 {
     va_list ap;
@@ -62,13 +75,17 @@ static _Noreturn void fail(const char *fmt, ...)
     char msg[4096];
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    pt_json j;
-    pt_json_init(&j, stdout);
-    pt_json_begin_object(&j);
-    pt_json_key(&j, "error");
-    pt_json_string(&j, msg);
-    pt_json_end_object(&j);
-    pt_json_finish(&j);
+    pt_json fresh, *j = open_json;
+    if (j) pt_json_close_to_top(j);
+    else {
+        j = &fresh;
+        pt_json_init(j, stdout);
+        pt_json_begin_object(j);
+    }
+    pt_json_key(j, "error");
+    pt_json_string(j, msg);
+    pt_json_end_object(j);
+    pt_json_finish(j);
     fflush(stdout);
     exit(FAILED);
 }
@@ -96,6 +113,8 @@ static void print_help(const cmd *c)
     }
 }
 
+/* The option the first len bytes of word name: an exact flag or alias, or as in argparse a unique prefix of a long
+ * flag. -1: none, -2: ambiguous prefix. */
 static int find_opt(const cmd *c, const char *word, size_t len)
 {
     int hit = -1, hits = 0;
@@ -109,11 +128,13 @@ static int find_opt(const cmd *c, const char *word, size_t len)
     return hits == 1 ? hit : hits > 1 ? -2 : -1;
 }
 
+/* argv holds the words after the command. Usage errors exit; -h/--help prints the help and exits with OK. */
 static void parse(const cmd *c, int argc, char **argv, args *a)
 {
     memset(a, 0, sizeof *a);
     a->c = c;
     int only_positional = 0;
+
     for (int i = 0; i < argc; i++) {
         char *w = argv[i];
         if (!only_positional && !strcmp(w, "--")) {
@@ -124,6 +145,7 @@ static void parse(const cmd *c, int argc, char **argv, args *a)
             print_help(c);
             exit(OK);
         }
+        /* a negative number such as -5 is a value, not an option; so is a lone "-" */
         if (!only_positional && w[0] == '-' && w[1] && !(isdigit((unsigned char)w[1]))) {
             char *eq = w[1] == '-' ? strchr(w, '=') : NULL;
             size_t len = eq ? (size_t)(eq - w) : strlen(w);
@@ -151,6 +173,7 @@ static void parse(const cmd *c, int argc, char **argv, args *a)
             pt_push(a->positional, pt_strdup(w));
         }
     }
+
     if (c->positional && !a->positional.n) usage_error(c, "the following arguments are required: %s", c->positional);
     for (int i = 0; c->opts[i].flag; i++)
         if (c->opts[i].required && !a->v[i].set)
@@ -175,6 +198,7 @@ static int idx(const args *a, const char *flag)
     abort();
 }
 
+/* The last value given for flag, else its default (NULL when it has none). */
 static const char *get(const args *a, const char *flag)
 {
     int k = idx(a, flag);
@@ -183,7 +207,9 @@ static const char *get(const args *a, const char *flag)
 }
 
 static const pt_strs *list(const args *a, const char *flag) { return &a->v[idx(a, flag)].vals; }
+
 static int given(const args *a, const char *flag) { return a->v[idx(a, flag)].set; }
+
 static const char *input(const args *a) { return a->positional.v[0]; }
 
 static int int_arg(const args *a, const char *flag, int fallback)
@@ -196,7 +222,36 @@ static int int_arg(const args *a, const char *flag, int fallback)
     return (int)n;
 }
 
+/* Each --X-file option stands for --X with the first line of that file, which keeps a password out of the process
+ * list. Giving both --X and --X-file is a usage error. */
+static void read_password_files(args *a)
+{
+    for (int i = 0; a->c->opts[i].flag; i++) {
+        const char *flag = a->c->opts[i].flag;
+        size_t len = strlen(flag);
+        if (len < 6 || strcmp(flag + len - 5, "-file") || !a->v[i].set) continue;
+        char *base = pt_format("%.*s", (int)(len - 5), flag);
+        int k = idx(a, base);
+        if (a->v[k].set) usage_error(a->c, "argument %s: not allowed with argument %s", flag, base);
+
+        const char *file = a->v[i].vals.v[a->v[i].vals.n - 1];
+        pt_bytes b = {0};
+        if (pt_read_file(file, &b)) fail("cannot read %s", file);
+        size_t n = 0;
+        while (n < b.len && b.data[n] != '\n' && b.data[n] != '\r') n++;
+        char *pw = pt_format("%.*s", (int)n, (const char *)b.data);
+        for (volatile unsigned char *p = b.data; p < b.data + b.len; p++) *p = 0;
+        free(b.data);
+
+        a->v[k].set = 1;
+        pt_push(a->v[k].vals, pw);
+        free(base);
+    }
+}
+
 /* ---- shared helpers ---- */
+
+/* fail() exits, so a helper that calls it returns only on success. */
 
 static pdf_document *opened(const char *path, const char *password)
 {
@@ -224,37 +279,48 @@ static void page_list(const char *spec, int count, pt_ints *out)
     if (pt_parse_ranges(spec, count, out) < 0) fail("invalid page range '%s' for %d pages", spec, count);
 }
 
+static void refuse_overwrite(const char *out, const char *source)
+{
+    if (pt_same_file(out, source)) fail("refusing to overwrite the input %s; write to another file", source);
+}
+
+/* Writes data to out unless out is source (a hard link counts). Returns a copy of out for the caller to free. */
 static char *write_out(const char *out, fz_buffer *data, const char *source)
 {
-    if (pt_exists(out) && pt_same_file(out, source)) fail("refusing to overwrite the input; write to another file");
-    char *real = pt_realpath(out), *real_source = pt_realpath(source);
-    if (!strcmp(real, real_source)) fail("refusing to overwrite the input; write to another file");
-    free(real);
-    free(real_source);
+    refuse_overwrite(out, source);
     if (pt_write_file(out, data->data, data->len)) fail("cannot write %s", out);
     return pt_strdup(out);
 }
 
-/* Keep an encrypted input's password on the output, as the app does. */
+static pt_encryption kept; /* what finish did, reported by emit_end */
+
+/* An encrypted input's encryption (method, permissions, passwords) stays on the output, as in the app. Takes data;
+ * doc is the input as opened with password. */
 static fz_buffer *finish(pdf_document *doc, fz_buffer *data, const char *password)
 {
-    if (!pdf_needs_password(ctx, doc) || !password) return data;
-    fz_buffer *locked = pt_protect(ctx, data, password);
+    fz_buffer *locked = pt_keep_encryption(ctx, data, doc, password, &kept);
     fz_drop_buffer(ctx, data);
     return locked;
 }
 
-static fz_buffer *apply(const char *path, const char *password, const pt_state *s, pt_leaks *leaks)
+/* `option` names where the input's password comes from, for the error */
+static fz_buffer *apply_with(const char *path, const char *password, const char *option, const pt_state *s,
+                             pt_leaks *leaks)
 {
     fz_buffer *data = NULL;
     fz_try(ctx) data = pt_apply_edits(ctx, path, password, s, leaks);
     fz_catch(ctx)
     {
         const char *m = fz_caught_message(ctx);
-        if (pt_is_password_error(m)) fail("%s is password protected: pass the right --password", path);
+        if (pt_is_password_error(m)) fail("%s is password protected: pass the right %s", path, option);
         fail("%s", m);
     }
     return data;
+}
+
+static fz_buffer *apply(const char *path, const char *password, const pt_state *s, pt_leaks *leaks)
+{
+    return apply_with(path, password, "--password", s, leaks);
 }
 
 static int parse_floats(const char *s, float *out, int n)
@@ -283,7 +349,7 @@ static void hex_rgb(const char *v, unsigned char rgb[3])
     }
 }
 
-/* PAGE:VALUE -> 0-based page */
+/* PAGE:VALUE -> 0-based page, not checked against the page count; *value points into spec. */
 static int page_and_value(const char *spec, const char *flag, const char **value)
 {
     const char *colon = strchr(spec, ':');
@@ -294,16 +360,28 @@ static int page_and_value(const char *spec, const char *flag, const char **value
     return atoi(spec) - 1;
 }
 
+/* j must be static (see open_json). */
 static void emit_begin(pt_json *j)
 {
     pt_json_init(j, stdout);
     pt_json_begin_object(j);
+    open_json = j;
 }
 
 static int emit_end(pt_json *j, int code)
 {
+    /* without the input's owner password the output gets a new random one, so nobody holds it */
+    if (kept.owner_password_changed) {
+        pt_json_key(j, "owner_password_replaced");
+        pt_json_bool(j, 1);
+    }
+    if (kept.user_password_changed) {
+        pt_json_key(j, "user_password_replaced");
+        pt_json_bool(j, 1);
+    }
     pt_json_end_object(j);
     pt_json_finish(j);
+    open_json = NULL;
     return code;
 }
 
@@ -342,7 +420,7 @@ static void json_field_value(pt_json *j, pdf_annot *w)
 static int cmd_info(args *a)
 {
     pdf_document *doc = opened(input(a), get(a, "--password"));
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     char *real = pt_realpath(input(a));
     pt_json_key(&j, "path");
@@ -353,6 +431,8 @@ static int cmd_info(args *a)
     pt_json_int(&j, n);
     pt_json_key(&j, "encrypted");
     pt_json_bool(&j, pdf_needs_password(ctx, doc));
+
+    /* Info keys as PyMuPDF's metadata names them */
     static const struct {
         const char *key, *meta;
     } META[] = {
@@ -368,6 +448,7 @@ static int cmd_info(args *a)
         {"trapped", "info:Trapped"},
         {"encryption", FZ_META_ENCRYPTION},
     };
+
     pt_json_key(&j, "metadata");
     pt_json_begin_object(&j);
     for (size_t i = 0; i < sizeof META / sizeof *META; i++) {
@@ -378,6 +459,7 @@ static int cmd_info(args *a)
         pt_json_string(&j, buf);
     }
     pt_json_end_object(&j);
+
     pt_json_key(&j, "page_sizes");
     pt_json_begin_array(&j);
     for (int p = 0; p < n; p++) {
@@ -391,6 +473,7 @@ static int cmd_info(args *a)
         fz_drop_page(ctx, (fz_page *)page);
     }
     pt_json_end_array(&j);
+
     pt_strs fonts = {0};
     for (int p = 0; p < n; p++)
         resource_fonts(pdf_dict_get_inheritable(ctx, pdf_lookup_page_obj(ctx, doc, p), PDF_NAME(Resources)), &fonts, 0);
@@ -400,6 +483,7 @@ static int cmd_info(args *a)
     for (int i = 0; i < fonts.n; i++) pt_json_string(&j, fonts.v[i]);
     pt_json_end_array(&j);
     pt_strs_free(&fonts);
+
     pt_json_key(&j, "fields");
     pt_json_begin_array(&j);
     for (int p = 0; p < n; p++) {
@@ -421,6 +505,7 @@ static int cmd_info(args *a)
         fz_drop_page(ctx, (fz_page *)page);
     }
     pt_json_end_array(&j);
+
     pt_json_key(&j, "annotations");
     pt_json_begin_array(&j);
     for (int p = 0; p < n; p++) {
@@ -440,6 +525,7 @@ static int cmd_info(args *a)
         fz_drop_page(ctx, (fz_page *)page);
     }
     pt_json_end_array(&j);
+
     char *sync = pt_synctex_path(input(a));
     pt_json_key(&j, "synctex");
     pt_json_bool(&j, sync != NULL);
@@ -453,6 +539,7 @@ typedef struct {
     fz_rect rect;
     char *text;
 } match;
+
 PT_VEC(matches, match);
 
 static void matches_free(matches *m)
@@ -461,7 +548,8 @@ static void matches_free(matches *m)
     pt_vec_free(*m);
 }
 
-/* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`. */
+/* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`, each with the text under it,
+ * appended to out. */
 static void find_matches(pdf_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
 {
     fz_page *page = fz_load_page(ctx, (fz_document *)doc, p);
@@ -487,6 +575,15 @@ static void find_matches(pdf_document *doc, int p, const pt_strs *texts, const p
         fz_try(ctx) pt_regex_rects(ctx, st, patterns->v[i], cs, &rects);
         fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     }
+
+    /* text that is not drawn (comments, authors, hidden field values) is matched too: redacting it deletes the
+     * annotation that holds it */
+    for (int t = 0; t < texts->n; t++) pt_annot_matches(ctx, page, texts->v[t], NULL, cs, &rects);
+    for (int i = 0; i < patterns->n; i++) {
+        fz_try(ctx) pt_annot_matches(ctx, page, NULL, patterns->v[i], cs, &rects);
+        fz_catch(ctx) fail("%s", fz_caught_message(ctx));
+    }
+
     for (int i = 0; i < rects.n; i++) {
         char *t = pt_textbox(ctx, st, rects.v[i]), *s = t;
         while (*s == ' ' || *s == '\n' || *s == '\t') s++;
@@ -509,6 +606,7 @@ static int cmd_redact(args *a)
     if (!texts->n && !patterns->n && !areas->n) fail("give at least one --text or --regex");
     unsigned char rgb[3];
     hex_rgb(get(a, "--fill"), rgb);
+
     int n = pdf_count_pages(ctx, doc);
     pt_ints pages = {0};
     page_list(get(a, "--pages"), n, &pages);
@@ -529,7 +627,8 @@ static int cmd_redact(args *a)
         fz_drop_page(ctx, page);
         pt_push(found, (match){p, r, t});
     }
-    pt_json j;
+
+    static pt_json j;
     if (!found.n) {
         emit_begin(&j);
         pt_json_key(&j, "output");
@@ -542,6 +641,7 @@ static int cmd_redact(args *a)
         pdf_drop_document(ctx, doc);
         return emit_end(&j, NO_MATCH);
     }
+
     pt_state s;
     pt_state_init(&s, 0);
     for (int i = 0; i < found.n; i++) {
@@ -553,6 +653,7 @@ static int cmd_redact(args *a)
     pt_leaks leaks = {0};
     fz_buffer *data = finish(doc, apply(path, pw, &s, &leaks), pw);
     char *out = write_out(get(a, "--output"), data, path);
+
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -584,6 +685,7 @@ static int cmd_redact(args *a)
         pt_json_end_object(&j);
     }
     pt_json_end_array(&j);
+
     int code = leaks.n ? LEAKED : OK;
     free(out);
     fz_drop_buffer(ctx, data);
@@ -607,10 +709,12 @@ static int cmd_fill(args *a)
 {
     const char *path = input(a), *pw = get(a, "--password");
     pdf_document *doc = opened(path, pw);
+
     typedef struct {
         char *name;
         pt_key key;
     } named;
+
     PT_VEC(nameds, named);
     nameds fields = {0};
     int n = pdf_count_pages(ctx, doc);
@@ -623,6 +727,8 @@ static int cmd_fill(args *a)
         }
         fz_drop_page(ctx, (fz_page *)page);
     }
+
+    /* every widget of a field gets the value */
     pt_state s;
     pt_state_init(&s, 0);
     const pt_strs *items = list(a, "--field");
@@ -655,12 +761,14 @@ static int cmd_fill(args *a)
         }
         free(name);
     }
+
     fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
+    /* a field given twice reports its last value, the one that was set */
     pt_json_key(&j, "filled");
     pt_json_begin_object(&j);
     for (int i = 0; i < items->n; i++) {
@@ -697,6 +805,7 @@ static int cmd_pages(args *a)
         if (pt_ordered_ranges(get(a, "--order"), n, &order) < 0) fail("invalid page range %s", get(a, "--order"));
     } else
         for (int p = 0; p < n; p++) pt_push(order, p);
+
     const pt_strs *rm = list(a, "--remove");
     if (rm->n) {
         size_t cap = 2;
@@ -709,6 +818,7 @@ static int cmd_pages(args *a)
         if (pt_parse_ranges(joined, n, &removed) < 0) fail("invalid page range %s", joined);
         free(joined);
     }
+
     pt_state s;
     pt_state_init(&s, 0);
     const pt_strs *rot = list(a, "--rotate");
@@ -726,6 +836,7 @@ static int cmd_pages(args *a)
             if (s.rotation.v[k].page == p) s.rotation.v[k].degrees = degrees, found = 1;
         if (!found) pt_push(s.rotation, (pt_rotation){p, degrees});
     }
+
     const pt_strs *crops = list(a, "--crop");
     for (int i = 0; i < crops->n; i++) {
         const char *box;
@@ -744,6 +855,7 @@ static int cmd_pages(args *a)
         }
         pt_vec_free(which);
     }
+
     for (int i = 0; i < order.n; i++) {
         int gone = 0;
         for (int k = 0; k < removed.n; k++) gone |= removed.v[k] == order.v[i];
@@ -752,9 +864,10 @@ static int cmd_pages(args *a)
     if (!s.order.n) fail("that would leave no pages");
     for (int i = 0; i < s.crop.n; i++)
         if (s.crop.v[i].page < 0 || s.crop.v[i].page >= n) fail("--crop page %d does not exist", s.crop.v[i].page + 1);
+
     fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -790,7 +903,7 @@ static int cmd_pages(args *a)
     return emit_end(&j, OK);
 }
 
-static int page_count_of(const char *path)
+static int page_count_of(const char *path, const char *password)
 {
     int image = 0;
     fz_try(ctx) image = pt_is_image_file(ctx, path);
@@ -802,12 +915,19 @@ static int page_count_of(const char *path)
         fz_drop_image(ctx, img);
         return 1;
     }
-    pdf_document *doc = opened(path, NULL);
+    pdf_document *doc = NULL;
+    fz_try(ctx) doc = pdf_open_document(ctx, path);
+    fz_catch(ctx) fail("cannot open %s: %s", path, fz_caught_message(ctx));
+    if (pdf_needs_password(ctx, doc) && !pdf_authenticate_password(ctx, doc, password ? password : "")) {
+        pdf_drop_document(ctx, doc);
+        fail("%s is password protected: pass the right --password-for %s=PASSWORD", path, path);
+    }
     int n = pdf_count_pages(ctx, doc);
     pdf_drop_document(ctx, doc);
     return n;
 }
 
+/* whether s can be a page range, so that "a.pdf:1-3" is a.pdf's pages 1-3 and "C:file.pdf" stays a path */
 static int only_range_chars(const char *s)
 {
     if (!*s) return 0;
@@ -816,9 +936,24 @@ static int only_range_chars(const char *s)
     return 1;
 }
 
+/* the password --password-for gives `path` ("PATH=PASSWORD": the path is matched whole, so either may hold '='),
+ * or NULL; *used gets a mark for each entry that named an input */
+static const char *password_for(const pt_strs *given, const char *path, char *used)
+{
+    size_t len = strlen(path);
+    for (int i = 0; given && i < given->n; i++)
+        if (!strncmp(given->v[i], path, len) && given->v[i][len] == '=') {
+            used[i] = 1;
+            return given->v[i] + len + 1;
+        }
+    return NULL;
+}
+
 static int cmd_merge(args *a)
 {
     pt_parts parts = {0};
+    const pt_strs *given = list(a, "--password-for");
+    char *used = calloc(given ? (size_t)given->n + 1 : 1, 1);
     for (int i = 0; i < a->positional.n; i++) {
         const char *spec = a->positional.v[i], *colon = strrchr(spec, ':');
         char *path, *ranges;
@@ -829,11 +964,16 @@ static int cmd_merge(args *a)
             path = pt_strdup(spec);
             ranges = pt_strdup("");
         }
-        pt_part part = {path, {0}};
-        page_list(ranges, page_count_of(path), &part.pages);
+        pt_part part = {path, {0}, password_for(given, path, used)};
+        page_list(ranges, page_count_of(path, part.password), &part.pages);
         free(ranges);
         pt_push(parts, part);
+        refuse_overwrite(get(a, "--output"), path);
     }
+    for (int i = 0; given && i < given->n; i++)
+        if (!used[i]) usage_error(a->c, "--password-for %s names no input (use the path as given)", given->v[i]);
+    free(used);
+
     fz_buffer *data = NULL;
     int pages = 0;
     fz_try(ctx)
@@ -845,7 +985,7 @@ static int cmd_merge(args *a)
     }
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     char *out = write_out(get(a, "--output"), data, parts.v[0].path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -891,7 +1031,7 @@ static int cmd_split(args *a)
     const char *folder = get(a, "--directory");
     pt_mkdirs(folder);
     char *stem = pt_stem(path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "parts");
     pt_json_begin_array(&j);
@@ -929,11 +1069,13 @@ static int cmd_protect(args *a)
     const char *path = input(a);
     pt_state s;
     pt_state_init(&s, 0);
-    fz_buffer *data = apply(path, get(a, "--current-password"), &s, NULL), *locked = NULL;
+    fz_buffer *data = apply_with(path, get(a, "--current-password"), "--current-password (or --current-password-file)",
+                                 &s, NULL),
+              *locked = NULL;
     fz_try(ctx) locked = pt_protect(ctx, data, get(a, "--password"));
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     char *out = write_out(get(a, "--output"), locked, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -953,7 +1095,7 @@ static int cmd_unprotect(args *a)
     pt_state_init(&s, 0);
     fz_buffer *data = apply(path, pw, &s, NULL);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -969,6 +1111,7 @@ static int cmd_flatten(args *a)
     const char *path = input(a), *pw = get(a, "--password");
     pdf_document *doc = opened(path, pw);
     int dpi = int_arg(a, "--dpi", 200);
+    if (dpi < 18 || dpi > 2400) fail("--dpi wants 18 to 2400");
     pt_state s;
     pt_state_init(&s, 0);
     fz_buffer *data = apply(path, pw, &s, NULL), *flat = NULL;
@@ -976,7 +1119,7 @@ static int cmd_flatten(args *a)
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     flat = finish(doc, flat, pw);
     char *out = write_out(get(a, "--output"), flat, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -997,7 +1140,7 @@ static int cmd_synctex(args *a)
     fz_try(ctx) pt_synctex_load(ctx, &sync, input(a));
     fz_catch(ctx) fail("cannot read SyncTeX data: %s", fz_caught_message(ctx));
     if (!sync.path) fail("no .synctex(.gz) next to %s; compile with -synctex=1", input(a));
-    pt_json j;
+    static pt_json j;
     if (get(a, "--at")) {
         if (!get(a, "--page")) fail("--at needs --page");
         float xy[2];
@@ -1047,7 +1190,7 @@ static int cmd_synctex(args *a)
     fail("give --page and --at (PDF to source) or --source and --line (source to PDF)");
 }
 
-/* ---- additions of this port ---- */
+/* ---- more commands ---- */
 
 static int one_page(const args *a, pdf_document *doc)
 {
@@ -1070,7 +1213,7 @@ static void colour_arg(const args *a, const char *def, unsigned char rgb[3])
     hex_rgb(c ? c : def, rgb);
 }
 
-/* Apply one placed item and write the output. */
+/* Applies one placed item and writes the output; takes it. */
 static int write_item(args *a, pt_item it)
 {
     const char *path = input(a), *pw = get(a, "--password");
@@ -1080,7 +1223,7 @@ static int write_item(args *a, pt_item it)
     pt_push(s.items, it);
     fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1098,14 +1241,16 @@ static int write_item(args *a, pt_item it)
 static int cmd_search(args *a)
 {
     pdf_document *doc = opened(input(a), get(a, "--password"));
-    pt_ints pages = {0};
+    /* static: a MuPDF error unwinds past the frees (fail), and the process ends with them still reachable */
+    static pt_ints pages;
+    static pt_strs texts;
+    static matches found;
+    pt_strs none = {0};
     page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
-    pt_strs texts = {0}, none = {0};
     pt_push(texts, pt_strdup(get(a, "--text")));
-    matches found = {0};
     for (int i = 0; i < pages.n; i++)
         find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "matches");
     pt_json_begin_array(&j);
@@ -1134,6 +1279,7 @@ static int cmd_render(args *a)
 {
     pdf_document *doc = opened(input(a), get(a, "--password"));
     int p = one_page(a, doc), dpi = int_arg(a, "--dpi", 144);
+    if (dpi < 18 || dpi > 2400) fail("--dpi wants 18 to 2400");
     const char *out = get(a, "--output");
     if (pt_same_file(out, input(a))) fail("refusing to overwrite the input; write to another file");
     fz_try(ctx)
@@ -1145,7 +1291,7 @@ static int cmd_render(args *a)
         fz_drop_page(ctx, page);
     }
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1260,7 +1406,7 @@ static int write_stamp(args *a, pt_stamp st)
     pt_push(s.stamps, st);
     fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1331,6 +1477,7 @@ static int cmd_ocr(args *a)
     if (!datadir)
         fail("no Tesseract data for '%s': put %s.traineddata in ~/.local/share/pdf-tools/tessdata or pass --tessdata",
              language, language);
+
     pdf_document *doc = NULL;
     fz_buffer *data = NULL;
     pt_ints pages = {0};
@@ -1340,11 +1487,11 @@ static int cmd_ocr(args *a)
         doc = pt_open_pdf(ctx, path, pw, NULL);
         page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
         for (int i = 0; i < pages.n; i++) chars += pt_ocr_page(ctx, doc, pages.v[i], language, datadir);
-        data = pt_doc_bytes(ctx, doc, pdf_needs_password(ctx, doc) ? pw : NULL);
+        data = finish(doc, pt_doc_bytes(ctx, doc, NULL), pw);
     }
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1367,7 +1514,7 @@ static int cmd_compare(args *a)
     for (int k = 0; k < 2; k++) doc[k] = opened(a->positional.v[k], k ? get(a, "--password2") : get(a, "--password"));
     int n[2] = {pdf_count_pages(ctx, doc[0]), pdf_count_pages(ctx, doc[1])}, pages = n[0] > n[1] ? n[0] : n[1],
         changed = 0;
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "pages");
     pt_json_begin_array(&j);
@@ -1421,7 +1568,7 @@ static int cmd_export_images(args *a)
     page_list(get(a, "--pages"), pdf_count_pages(ctx, doc), &pages);
     if (pt_mkdirs(dir)) fail("cannot create %s", dir);
     char *stem = pt_stem(path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "files");
     pt_json_begin_array(&j);
@@ -1436,6 +1583,7 @@ static int cmd_export_images(args *a)
         }
         fz_always(ctx) fz_drop_page(ctx, p);
         fz_catch(ctx) fail("page %d: %s", pages.v[i] + 1, fz_caught_message(ctx));
+        refuse_overwrite(out, path);
         if (pt_write_file(out, img->data, img->len)) fail("cannot write %s", out);
         pt_json_string(&j, out);
         fz_drop_buffer(ctx, img);
@@ -1462,6 +1610,9 @@ static int cmd_sign(args *a)
     pdf_document *doc = opened(path, pw);
     int page = one_page(a, doc);
     fz_rect r = rect_arg(a, "--rect");
+
+    /* the signature goes on the input's own bytes (an incremental save), with the box in PDF user space (bottom-left
+     * origin, unrotated) */
     fz_buffer *data = NULL, *signed_pdf = NULL;
     char *name = NULL;
     fz_try(ctx)
@@ -1479,8 +1630,9 @@ static int cmd_sign(args *a)
     }
     fz_always(ctx) fz_drop_buffer(ctx, data);
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
+
     char *out = write_out(get(a, "--output"), signed_pdf, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1502,7 +1654,7 @@ static int cmd_prepare_signature(args *a)
     fz_catch(ctx) fail("cannot open %s: %s", input(a), fz_caught_message(ctx));
     if (!png) fail("no signature ink found in %s", input(a));
     char *out = write_out(get(a, "--output"), png, input(a));
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1526,7 +1678,7 @@ static int cmd_scrub(args *a)
     fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     data = finish(doc, data, pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1542,7 +1694,7 @@ static int cmd_inspect(args *a)
 {
     pdf_document *doc = opened(input(a), get(a, "--password"));
     int n = pdf_count_pages(ctx, doc);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "annotations");
     pt_json_begin_array(&j);
@@ -1614,7 +1766,7 @@ static int cmd_edit_annotation(args *a)
     else pt_set_annot_text(&s, key, get(a, "--text"));
     fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
     char *out = write_out(get(a, "--output"), data, path);
-    pt_json j;
+    static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "output");
     pt_json_string(&j, out);
@@ -1627,14 +1779,18 @@ static int cmd_edit_annotation(args *a)
     return emit_end(&j, OK);
 }
 
+/* ---- the command table ---- */
+
 #define INPUT "input", "input PDF"
 #define OUTPUT                                                   \
     {                                                            \
         "--output", "-o", VALUE, 1, "OUTPUT", "output PDF", NULL \
     }
-#define PASSWORD                                                                                              \
-    {                                                                                                         \
-        "--password", NULL, VALUE, 0, "PASSWORD", "password of an encrypted input (kept on the output)", NULL \
+#define PASSWORD_FILE_HELP "file whose first line is that password"
+#define PASSWORD                                                                                             \
+    {"--password", NULL, VALUE, 0, "PASSWORD", "password of an encrypted input (kept on the output)", NULL}, \
+    {                                                                                                        \
+        "--password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL                                  \
     }
 #define PAGE                                                   \
     {                                                          \
@@ -1695,7 +1851,9 @@ static const cmd COMMANDS[] = {
      "PDF, PDF:PAGES or an image file",
      1,
      cmd_merge,
-     {OUTPUT},
+     {OUTPUT,
+      {"--password-for", NULL, APPEND, 0, "FILE=PASSWORD", "password of an encrypted input, FILE as given (repeatable)",
+       NULL}},
      {0}},
     {"split",
      "Split into PART files",
@@ -1713,16 +1871,20 @@ static const cmd COMMANDS[] = {
      0,
      cmd_protect,
      {OUTPUT,
-      {"--password", NULL, VALUE, 1, "PASSWORD", "new password", NULL},
-      {"--current-password", NULL, VALUE, 0, "CURRENT_PASSWORD", "password of an already encrypted input", NULL}},
-     {0}},
+      {"--password", NULL, VALUE, 0, "PASSWORD", "new password", NULL},
+      {"--password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL},
+      {"--current-password", NULL, VALUE, 0, "CURRENT_PASSWORD", "password of an already encrypted input", NULL},
+      {"--current-password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL}},
+     {"--password", "--password-file", NULL}},
     {"unprotect",
      "Write a copy without the password",
      INPUT,
      0,
      cmd_unprotect,
-     {OUTPUT, {"--password", NULL, VALUE, 1, "PASSWORD", "current password", NULL}},
-     {0}},
+     {OUTPUT,
+      {"--password", NULL, VALUE, 0, "PASSWORD", "current password", NULL},
+      {"--password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL}},
+     {"--password", "--password-file", NULL}},
     {"flatten",
      "Turn pages into images (no selectable text)",
      INPUT,
@@ -1740,7 +1902,7 @@ static const cmd COMMANDS[] = {
       {"--source", NULL, VALUE, 0, "SOURCE", "TeX file, with --line: prints the page and boxes", NULL},
       {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}},
      {0}},
-    /* additions of this port */
+    /* AGENTS.md's "More commands", and a few it does not list */
     {"search",
      "Find text: pages and boxes of each match",
      INPUT,
@@ -1825,6 +1987,7 @@ static const cmd COMMANDS[] = {
       {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL},
       {"--cert", NULL, VALUE, 0, "P12", "PKCS#12 certificate (.p12/.pfx) for a digital signature", NULL},
       {"--cert-password", NULL, VALUE, 0, "PASSWORD", "the certificate's password", NULL},
+      {"--cert-password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL},
       {"--reason", NULL, VALUE, 0, "REASON", "reason shown with the digital signature", NULL}},
      {0}},
     {"bates",
@@ -1933,6 +2096,8 @@ static const cmd COMMANDS[] = {
 };
 #define NCOMMANDS (int)(sizeof COMMANDS / sizeof *COMMANDS)
 
+/* ---- entry points ---- */
+
 int pt_cli_is_command(const char *name)
 {
     for (int i = 0; i < NCOMMANDS; i++)
@@ -1952,20 +2117,18 @@ void pt_cli_usage(FILE *out)
           "  pdf-tools --version\n"
           "  pdf-tools COMMAND ...                          without the window, JSON output:\n"
           "      info redact fill pages merge split protect unprotect flatten synctex\n"
-          "      search render annotate draw insert-text insert-image sign prepare-signature scrub inspect\n"
-          "      edit-annotation\n"
+          "      search inspect render export-images annotate draw insert-text insert-image sign\n"
+          "      prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
           "  pdf-tools help                                 the guide for scripts and agents (AGENTS.md)\n",
           out);
 }
 
-/* MuPDF prints its warnings and errors to stderr; the commands report errors in their JSON instead. */
-
 int pt_cli_main(int argc, char **argv)
 {
     if (argc < 2) {
         pt_cli_usage(stderr);
-        return USAGE_ERROR;
+        usage_error(NULL, "a command is required");
     }
     if (!strcmp(argv[1], "help")) {
         fputs(pt_cli_guide(), stdout);
@@ -1983,17 +2146,24 @@ int pt_cli_main(int argc, char **argv)
     for (int i = 0; i < NCOMMANDS; i++)
         if (!strcmp(COMMANDS[i].name, argv[1])) c = &COMMANDS[i];
     if (!c) {
-        fprintf(stderr, "%s: error: invalid choice: '%s'\n", prog, argv[1]);
         pt_cli_usage(stderr);
-        return USAGE_ERROR;
+        fail("unknown command '%s'; %s --help lists the commands", argv[1], prog);
     }
+
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     if (!ctx) fail("cannot create MuPDF context");
     fz_register_document_handlers(ctx);
+    /* MuPDF's own messages go to the log (stderr), never to stdout, which holds only the JSON */
     pt_log_mupdf(ctx);
     args a;
     parse(c, argc - 2, argv + 2, &a);
-    int code = c->run(&a);
+    read_password_files(&a);
+
+    int code = FAILED;
+    fz_var(code);
+    /* MuPDF errors a command does not catch itself */
+    fz_try(ctx) code = c->run(&a);
+    fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     fflush(stdout);
     pt_strs_free(&a.positional);
     for (int k = 0; k < (int)(sizeof a.v / sizeof *a.v); k++) pt_strs_free(&a.v[k].vals);

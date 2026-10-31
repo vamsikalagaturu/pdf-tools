@@ -13,6 +13,8 @@
 #include <mach-o/dyld.h>
 #endif
 
+/* ---- memory and strings ---- */
+
 void *pt_realloc(void *v, size_t size)
 {
     void *p = realloc(v, size);
@@ -61,6 +63,27 @@ void pt_strs_free(pt_strs *s)
     pt_vec_free(*s);
 }
 
+char *pt_utf8(const int *runes, int n)
+{
+    char *s = malloc((size_t)n * 4 + 1), *p = s;
+    if (!s) abort();
+    for (int i = 0; i < n; i++) p += fz_runetochar(p, runes[i]);
+    *p = 0;
+    return s;
+}
+
+int pt_utf8_decode(const char *s, pt_ints *out)
+{
+    while (*s) {
+        int c;
+        s += fz_chartorune(&c, s);
+        pt_push(*out, c);
+    }
+    return out->n;
+}
+
+/* ---- files and paths ---- */
+
 int pt_read_file(const char *path, pt_bytes *out)
 {
     FILE *f = fopen(path, "rb");
@@ -85,32 +108,98 @@ int pt_read_file(const char *path, pt_bytes *out)
     return 0;
 }
 
+static int is_separator(char c)
+{
+#ifdef _WIN32
+    if (c == '\\') return 1;
+#endif
+    return c == '/';
+}
+
+/* how much of an absolute path names its root: "/", or on Windows "C:\" and "\\server\share\" */
+static size_t root_length(const char *path)
+{
+#ifdef _WIN32
+    if (path[0] && path[1] == ':') return is_separator(path[2]) ? 3 : 2;
+    if (is_separator(path[0]) && is_separator(path[1])) {
+        const char *s = path + 2;
+        for (int parts = 0; *s && parts < 2; s++)
+            if (is_separator(*s)) parts++;
+        return (size_t)(s - path);
+    }
+#endif
+    return is_separator(path[0]) ? 1 : 0;
+}
+
 int pt_mkdirs(const char *path)
 {
     char *p = pt_strdup(path);
-    for (char *s = p + 1; *s; s++) {
-        if (*s != '/') continue;
+    size_t root = root_length(p);
+    for (char *s = p + (root ? root : 1); *s; s++) {
+        if (!is_separator(*s)) continue;
+        char sep = *s;
         *s = 0;
         if (mkdir(p, 0777) && errno != EEXIST) {
             free(p);
             return -1;
         }
-        *s = '/';
+        *s = sep;
     }
     int rc = mkdir(p, 0777) && errno != EEXIST ? -1 : 0;
     free(p);
     return rc;
 }
 
+static int write_all(FILE *f, const void *data, size_t len)
+{
+    if (!f) return -1;
+    int ok = fwrite(data, 1, len, f) == len;
+    return fclose(f) == 0 && ok ? 0 : -1;
+}
+
+/* Through a temporary file next to the target and a rename, so a failed write never leaves the old file truncated.
+ * A symlink is followed (the file it names is replaced); a target that is not a regular file, or a folder that takes
+ * no new files, is written in place. */
 int pt_write_file(const char *path, const void *data, size_t len)
 {
     char *dir = pt_dirname(path);
     pt_mkdirs(dir);
     free(dir);
-    FILE *f = fopen(path, "wb");
-    if (!f) return -1;
-    int ok = fwrite(data, 1, len, f) == len;
-    return fclose(f) == 0 && ok ? 0 : -1;
+
+    struct stat st;
+    int existed = stat(path, &st) == 0;
+    if (existed && !S_ISREG(st.st_mode)) return write_all(fopen(path, "wb"), data, len);
+#ifndef _WIN32
+    /* the rename would replace a file the user may not write */
+    if (existed && access(path, W_OK)) return -1;
+#endif
+
+    char *target = existed ? pt_realpath(path) : pt_strdup(path), *tmp = NULL;
+    FILE *f = NULL;
+    for (int i = 0; i < 100 && !f; i++) {
+        tmp = pt_format("%s.%ld-%d.tmp", target, (long)getpid(), i);
+        f = fopen(tmp, "wbx");
+        if (!f) {
+            int taken = errno == EEXIST;
+            free(tmp);
+            tmp = NULL;
+            if (!taken) break;
+        }
+    }
+    if (!f) {
+        free(target);
+        return write_all(fopen(path, "wb"), data, len);
+    }
+
+    int rc = write_all(f, data, len);
+#ifndef _WIN32
+    if (!rc && existed) chmod(tmp, st.st_mode & 07777);
+#endif
+    if (!rc) rc = rename(tmp, target) ? -1 : 0;
+    if (rc) remove(tmp);
+    free(tmp);
+    free(target);
+    return rc;
 }
 
 int pt_exists(const char *path)
@@ -122,24 +211,51 @@ int pt_exists(const char *path)
 char *pt_realpath(const char *path)
 {
     char buf[PATH_MAX];
+#ifdef _WIN32
+    if (_fullpath(buf, path, sizeof buf)) return pt_strdup(buf);
+#else
     if (realpath(path, buf)) return pt_strdup(buf);
-    if (path[0] == '/') return pt_strdup(path);
+#endif
+    if (root_length(path)) return pt_strdup(path);
     if (!getcwd(buf, sizeof buf)) return pt_strdup(path);
     return pt_join(buf, path);
 }
 
 int pt_same_file(const char *a, const char *b)
 {
+#ifdef _WIN32
+    /* links and the file system's case-insensitive names make different paths name one file */
+    int identical = pt_win_same_file(a, b);
+    if (identical >= 0) return identical;
+#else
+    /* hard links and bind mounts name one file by different paths */
+    struct stat sa, sb;
+    if (!stat(a, &sa) && !stat(b, &sb)) return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
     char *ra = pt_realpath(a), *rb = pt_realpath(b);
+#ifdef _WIN32
+    int same = strcasecmp(ra, rb) == 0;
+#else
     int same = strcmp(ra, rb) == 0;
+#endif
     free(ra);
     free(rb);
     return same;
 }
 
-const char *pt_basename(const char *path)
+static const char *last_separator(const char *path)
 {
     const char *s = strrchr(path, '/');
+#ifdef _WIN32
+    const char *b = strrchr(path, '\\');
+    if (b && (!s || b > s)) s = b;
+#endif
+    return s;
+}
+
+const char *pt_basename(const char *path)
+{
+    const char *s = last_separator(path);
     return s ? s + 1 : path;
 }
 
@@ -157,6 +273,8 @@ char *pt_exe_dir(void)
 #ifdef __APPLE__
     uint32_t size = sizeof path;
     if (_NSGetExecutablePath(path, &size)) return NULL;
+#elif defined(_WIN32)
+    if (pt_win_exe_path(path, sizeof path)) return NULL;
 #else
     ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
     if (n <= 0) return NULL;
@@ -167,9 +285,10 @@ char *pt_exe_dir(void)
 
 char *pt_dirname(const char *path)
 {
-    const char *s = strrchr(path, '/');
+    const char *s = last_separator(path);
     if (!s) return pt_strdup(".");
-    if (s == path) return pt_strdup("/");
+    size_t root = root_length(path);
+    if ((size_t)(s - path) < root) return pt_format("%.*s", (int)root, path);
     char *d = malloc((size_t)(s - path) + 1);
     if (!d) abort();
     memcpy(d, path, (size_t)(s - path));
@@ -180,29 +299,10 @@ char *pt_dirname(const char *path)
 char *pt_join(const char *dir, const char *name)
 {
     size_t n = strlen(dir);
-    return pt_format(n && dir[n - 1] == '/' ? "%s%s" : "%s/%s", dir, name);
+    return pt_format(n && is_separator(dir[n - 1]) ? "%s%s" : "%s/%s", dir, name);
 }
 
-char *pt_utf8(const int *runes, int n)
-{
-    char *s = malloc((size_t)n * 4 + 1), *p = s;
-    if (!s) abort();
-    for (int i = 0; i < n; i++) p += fz_runetochar(p, runes[i]);
-    *p = 0;
-    return s;
-}
-
-int pt_utf8_decode(const char *s, pt_ints *out)
-{
-    while (*s) {
-        int c;
-        s += fz_chartorune(&c, s);
-        pt_push(*out, c);
-    }
-    return out->n;
-}
-
-/* JSON */
+/* ---- JSON output ---- */
 
 static void indent(pt_json *j)
 {
@@ -229,12 +329,17 @@ void pt_json_init(pt_json *j, FILE *out)
     j->depth = 0;
     j->first = 1;
     j->after_key = 0;
+    j->arrays = 0;
 }
 
 static void open_(pt_json *j, char c)
 {
     value_start(j);
     fputc(c, j->out);
+    if (j->depth < 64) {
+        unsigned long long bit = 1ull << j->depth;
+        j->arrays = c == '[' ? j->arrays | bit : j->arrays & ~bit;
+    }
     j->depth++;
     j->first = 1;
 }
@@ -248,8 +353,11 @@ static void close_(pt_json *j, char c)
 }
 
 void pt_json_begin_object(pt_json *j) { open_(j, '{'); }
+
 void pt_json_end_object(pt_json *j) { close_(j, '}'); }
+
 void pt_json_begin_array(pt_json *j) { open_(j, '['); }
+
 void pt_json_end_array(pt_json *j) { close_(j, ']'); }
 
 static void quoted(FILE *out, const char *s)
@@ -315,6 +423,7 @@ void pt_json_bool(pt_json *j, int v)
     value_start(j);
     fputs(v ? "true" : "false", j->out);
 }
+
 void pt_json_null(pt_json *j)
 {
     value_start(j);
@@ -333,9 +442,19 @@ void pt_json_rect(pt_json *j, fz_rect r)
 
 void pt_json_finish(pt_json *j) { fputc('\n', j->out); }
 
-/* ---- the log: messages at or above the level PDF_TOOLS_LOG names (error, warn, info, debug; default warn) go to
- * a sink, stderr unless the window sets its own ---- */
+void pt_json_close_to_top(pt_json *j)
+{
+    if (j->after_key) pt_json_null(j);
+    while (j->depth > 1) {
+        int array = j->depth <= 64 && (j->arrays >> (j->depth - 1) & 1);
+        close_(j, array ? ']' : '}');
+    }
+}
 
+/* ---- the log ---- */
+
+/* Messages at or above the level PDF_TOOLS_LOG names (error, warn, info, debug; default warn) go to the sink,
+ * stderr unless the window sets its own. */
 static pt_log_sink sink;
 static int threshold = -1;
 
@@ -366,8 +485,9 @@ void pt_log(pt_log_level level, const char *fmt, ...)
     else fprintf(stderr, "pdf-tools: %s: %s\n", LOG_NAMES[level], msg);
 }
 
-/* MuPDF reports every thrown error, including the ones the caller handles, so those count as debug */
 static void mupdf_warning(void *user, const char *message) { (void)user, pt_log(PT_LOG_INFO, "mupdf: %s", message); }
+
+/* MuPDF reports every thrown error, including the ones the caller handles, so those count as debug */
 static void mupdf_error(void *user, const char *message)
 {
     (void)user, pt_log(PT_LOG_DEBUG, "mupdf error: %s", message);
@@ -379,7 +499,7 @@ void pt_log_mupdf(fz_context *ctx)
     fz_set_error_callback(ctx, mupdf_error, NULL);
 }
 
-/* ---- page ranges ('1-3,7', 1-based) and page order ---- */
+/* ---- page ranges ('1-3,7', 1-based) ---- */
 
 /* Each comma part as (lo, hi), 1-based; -1 when a part is not "N" or "N-M". */
 static int parts(const char *text, pt_ints *lohi)
@@ -481,6 +601,8 @@ char *pt_format_ranges(const int *pages, int count)
     return out;
 }
 
+/* ---- page order: the file's own pages (< own) and pages inserted after them ---- */
+
 int pt_is_reordered(const int *order, int n, int own)
 {
     int last = -1;
@@ -532,6 +654,8 @@ int pt_split_points(int count, int every, const int *at, int nat, pt_ints *start
     free(start);
     return starts->n;
 }
+
+/* ---- page content ---- */
 
 fz_rect pt_content_rect(fz_context *ctx, fz_page *page, float margin)
 {

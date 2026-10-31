@@ -3,8 +3,8 @@
  * file, and otherwise copied to cache/saf/<hash of its URI>/<name>. Copies remember their URI (documents.tsv in
  * the app's files folder) and are written back to it whenever the app changes them: Save replaces the copy,
  * "save as" targets a fresh copy, and a watcher exports any change once the file's size and time hold still.
- * Replaces file_dialog, file_dialogs_poll, file_dialog_busy and move_to_trash from file_dialog.c (CMakeLists.txt
- * renames those); the rest of file_dialog.c (run_detached, split_command) is used as is. */
+ * Replaces file_dialog, file_dialogs_poll, file_dialog_busy and move_to_trash of dialogs.c (which renames its own
+ * with a pt_desktop_ prefix on Android); split_command from there is used as is. */
 #include "android_glue.h"
 #include "ui.h"
 #include <android/log.h>
@@ -55,6 +55,7 @@ typedef struct {
     long long seen_mtime, seen_size;
     double seen_at;
 } doc;
+
 PT_VEC(doc_list, doc);
 static doc_list docs;
 static int docs_loaded;
@@ -227,11 +228,14 @@ typedef struct {
     double seen_at;
     int exported;
 } out_file;
+
 PT_VEC(out_files, out_file);
+
 typedef struct {
     char *dir, *tree;
     out_files files;
 } out_dir;
+
 PT_VEC(out_dirs, out_dir);
 static out_dirs outs;
 

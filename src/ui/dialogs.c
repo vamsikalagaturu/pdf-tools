@@ -1,5 +1,7 @@
-/* Every modal dialog of the window (export pages, protect with a password, the signature library and pad), the
- * document-wide tools, and the file choosers. */
+/* The document tab's dialogs (export pages, protect with a password, the signature pad and library), its
+ * document-wide tools (personal data, Bates numbers, watermarks, properties, pages as images, certificate
+ * signing), and the window's file choosers, trash and detached programs. Message boxes and the colour dialog are
+ * widgets.c's, printing is system.c's; Android and Windows bring their own choosers (platform/). */
 #include "dialogs.h"
 #include <dirent.h>
 #include <errno.h>
@@ -9,9 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "pt_win32.h"
+#else
+#include <sys/wait.h>
+#endif
 
 #define CTX app.ctx
 
@@ -275,7 +281,9 @@ typedef struct {
     Texture2D tex;
     int ok, w, h;
 } sig;
+
 PT_VEC(sigs, sig);
+
 typedef struct {
     sigs list;
     int current;
@@ -485,7 +493,9 @@ typedef struct {
     pt_rects rects;
     int on;
 } pii_hit;
+
 PT_VEC(pii_hits, pii_hit);
+
 typedef struct {
     tab *t;
     pii_hits hits;
@@ -544,6 +554,7 @@ static int pii_frame(dialog *d, Rectangle b)
     for (double until = GetTime() + 0.03; p->next < total && GetTime() < until;)
         pii_scan_page(p, t->st.order.v[p->next++]);
     if (p->next < total) ui.dirty = 1;
+
     float y = b.y;
     if (p->next < total) {
         char msg[64];
@@ -554,6 +565,7 @@ static int pii_frame(dialog *d, Rectangle b)
         draw_text_in("Tick what to mark for redaction:", (Rectangle){b.x, y, b.width, 24}, FS_NORMAL, F_REGULAR,
                      pal.window_text, -1);
     y += 30;
+
     /* one checkbox per kind, two or three to a row */
     float cw = b.width >= 540 ? b.width / 3 : b.width / 2;
     int per_row = (int)(b.width / cw);
@@ -568,6 +580,7 @@ static int pii_frame(dialog *d, Rectangle b)
                 if (p->hits.v[i].kind == (pt_pii_kind)k) p->hits.v[i].on = p->kind_on[k];
     }
     y += ((PT_PII_COUNT + per_row - 1) / per_row) * ROW_H + 8;
+
     Rectangle list = {b.x, y, b.width, b.y + b.height - 40 - y};
     ui_panel(list, pal.base, pal.border, 4);
     float content = p->hits.n * ROW_H + 8;
@@ -602,6 +615,7 @@ static int pii_frame(dialog *d, Rectangle b)
     if (!p->hits.n && p->next >= total)
         draw_text_in("Nothing found.", list, FS_NORMAL, F_REGULAR, pal.disabled_text, 0);
     ui_scissor_end();
+
     int marked = 0;
     for (int i = 0; i < p->hits.n; i++) marked += p->hits.v[i].on;
     char ok_label[48];
@@ -689,6 +703,7 @@ static int stamp_frame(dialog *d, Rectangle b)
         ui_spin(ui_id(d, 4), (Rectangle){b.x + 320, y, 90, 30}, &s->s.digits, 1, 12, 1, NULL, NULL);
         y += 38;
     }
+
     draw_text_in("Position:", (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     int at = s->s.at, n_at = bates ? PT_AT_CENTRE : PT_AT_COUNT;
     if (at >= n_at) at = PT_AT_BOTTOM_RIGHT;
@@ -717,6 +732,7 @@ static int stamp_frame(dialog *d, Rectangle b)
             s->s.opacity = pct / 100.0f;
     }
     y += 38;
+
     char label[48];
     snprintf(label, sizeof label, "Pages (of %d):", t->st.order.n);
     y = field_row(d, 10, b, y, label, &s->pages, &res);
@@ -731,6 +747,7 @@ static int stamp_frame(dialog *d, Rectangle b)
         draw_text(shown, b.x + 120, y - 6, FS_SMALL, F_REGULAR, pal.disabled_text);
         free(first), free(shown);
     }
+
     int empty = !bates && blank(text_get(&s->text));
     Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
     if (ui_button(ui_id(d, 11), ok, "Add", NULL, B_PRIMARY | (bad || empty ? B_DISABLED : 0), NULL) ||
@@ -775,6 +792,7 @@ static void stamp_dialog(tab *t, int bates)
 }
 
 void bates_dialog(tab *t) { stamp_dialog(t, 1); }
+
 void watermark_dialog(tab *t) { stamp_dialog(t, 0); }
 
 /* ---- document properties ---- */
@@ -785,6 +803,7 @@ typedef struct {
     char *orig[4];
     int first;
 } props_data;
+
 static const char *PROP_LABELS[4] = {"Title:", "Author:", "Subject:", "Keywords:"};
 
 static char **meta_slot(pt_meta *m, int i)
@@ -867,8 +886,10 @@ typedef struct {
     ui_text pages;
     int dpi, jpeg, first;
 } images_data;
+
+/* names its tab by id: the tab may be closed before the folder chooser answers */
 typedef struct {
-    tab *t;
+    unsigned tab_id;
     pt_ints pages;
     int dpi, jpeg;
 } images_job;
@@ -876,11 +897,11 @@ typedef struct {
 static void images_dir_chosen(void *ctx, pt_strs *paths)
 {
     images_job *job = ctx;
-    tab *t = job->t;
+    tab *t = app_doc_by_id(job->tab_id);
     /* rendered from the edited document, so redactions and the other edits show */
     pt_ints order = {0};
-    for (int i = 0; i < job->pages.n; i++) pt_push(order, t->st.order.v[job->pages.v[i]]);
-    fz_buffer *edited = paths->n ? tab_edited(t, &order, NULL) : NULL;
+    for (int i = 0; t && i < job->pages.n; i++) pt_push(order, t->st.order.v[job->pages.v[i]]);
+    fz_buffer *edited = t && paths->n ? tab_edited(t, &order, NULL) : NULL;
     pdf_document *doc = NULL;
     if (edited) {
         fz_try(CTX) doc = pt_open_pdf_bytes(CTX, edited->data, edited->len, NULL);
@@ -947,7 +968,7 @@ static int images_frame(dialog *d, Rectangle b)
     if (ui_button(ui_id(d, 4), ok, "Export...", NULL, B_PRIMARY | (ok_pages ? 0 : B_DISABLED), NULL) ||
         ((res & TE_SUBMIT) && ok_pages)) {
         images_job *job = calloc(1, sizeof *job);
-        job->t = t, job->pages = pages, job->dpi = e->dpi, job->jpeg = e->jpeg;
+        job->tab_id = t->id, job->pages = pages, job->dpi = e->dpi, job->jpeg = e->jpeg;
         char *dir = pt_dirname(t->path);
         file_dialog(FD_DIR, "Folder for the images", dir, NULL, NULL, images_dir_chosen, job);
         free(dir);
@@ -1010,10 +1031,11 @@ static void cert_password_given(void *ctx, const char *password)
     free(msg), free(name);
 }
 
+/* ctx is the tab's id: the tab may be closed before the chooser answers */
 static void cert_chosen(void *ctx, pt_strs *paths)
 {
-    tab *t = ctx;
-    if (!paths->n) return;
+    tab *t = app_doc_by_id((unsigned)(uintptr_t)ctx);
+    if (!t || !paths->n) return;
     free(t->cert_path);
     t->cert_path = pt_strdup(paths->v[0]);
     char *prompt = pt_format("Password for %s:", pt_basename(t->cert_path));
@@ -1031,7 +1053,8 @@ void cert_sign_start(tab *t)
     }
     const char *last = pt_settings_str(&app.settings, "signing_certificate");
     char *start = last && *last ? pt_strdup(last) : pt_dirname(t->path);
-    file_dialog(FD_OPEN, "Choose a certificate (.p12 or .pfx)", start, "Certificates", "*.p12 *.pfx", cert_chosen, t);
+    file_dialog(FD_OPEN, "Choose a certificate (.p12 or .pfx)", start, "Certificates", "*.p12 *.pfx", cert_chosen,
+                (void *)(uintptr_t)t->id);
     free(start);
 }
 
@@ -1123,6 +1146,40 @@ fz_buffer *cert_sign_output(tab *t, fz_buffer *pdf, const pt_ints *pages, const 
 #define move_to_trash pt_desktop_move_to_trash
 #endif
 
+#ifdef _WIN32
+/* Windows: the system's file dialog and the Recycle Bin (platform/windows/dialogs_win32.c), and programs
+ * (system_win32.c). The dialog is modal; its answer reaches the caller on the next frame, as the other choosers'
+ * answers do. */
+static struct {
+    ui_files_done done;
+    void *ctx;
+    pt_strs paths;
+} chosen;
+
+int file_dialog_busy(void) { return chosen.done != NULL; }
+
+void file_dialog(int mode, const char *title, const char *start, const char *filter_name, const char *patterns,
+                 ui_files_done done, void *ctx)
+{
+    if (chosen.done) return;
+    chosen.paths = (pt_strs){0};
+    pt_win_file_dialog(mode == FD_SAVE, mode == FD_DIR, mode == FD_OPEN_MANY, title, start, filter_name, patterns,
+                       &chosen.paths);
+    chosen.done = done, chosen.ctx = ctx;
+    ui.dirty = 1;
+}
+
+void file_dialogs_poll(void)
+{
+    if (!chosen.done) return;
+    ui_files_done done = chosen.done;
+    pt_strs paths = chosen.paths;
+    chosen.done = NULL, chosen.paths = (pt_strs){0};
+    done(chosen.ctx, &paths);
+    pt_strs_free(&paths);
+    ui.dirty = 1;
+}
+#else
 #ifndef __APPLE__
 static int on_path(const char *prog)
 {
@@ -1209,14 +1266,15 @@ void file_dialogs_poll(void)
         deliver(c, WIFEXITED(st) && WEXITSTATUS(st) == 0);
         free(c->out);
         free(c);
-    } else ui.dirty = 1;
+        ui.dirty = 1;
+    }
 }
 
 static int wait_frame(dialog *d, Rectangle b)
 {
     (void)d;
-    ui_spinner((Vector2){b.x + 20, b.y + 22}, 12);
-    draw_text("Waiting for the file chooser...", b.x + 44, b.y + 12, FS_NORMAL, F_REGULAR, pal.window_text);
+    /* no spinner: the chooser is another program's window, and animating this one would redraw all the while */
+    draw_text("Waiting for the file chooser...", b.x + 12, b.y + 12, FS_NORMAL, F_REGULAR, pal.window_text);
     return running == NULL;
 }
 
@@ -1375,6 +1433,7 @@ static int browser_frame(dialog *d, Rectangle r)
         free(go);
         return 0;
     }
+
     float y = list.y + list.height + 8;
     draw_text_in(b->mode == FD_DIR ? "Folder:" : "Name:", (Rectangle){r.x, y, 60, 30}, FS_NORMAL, F_REGULAR,
                  pal.window_text, -1);
@@ -1546,7 +1605,7 @@ void file_dialog(int mode, const char *title, const char *start, const char *fil
     if (!ok) builtin_dialog(mode, title, start, patterns, done, ctx);
 }
 
-/* ---- the freedesktop trash ---- */
+/* ---- the trash ---- */
 
 #ifndef __APPLE__
 static char *url_encode(const char *s)
@@ -1697,8 +1756,8 @@ int run_detached(char *const argv[])
     close(fds[0]);
     return r == (ssize_t)sizeof e ? -1 : 0;
 }
+#endif
 
-/* POSIX shell-like words: quotes and backslashes, as Python's shlex.split. */
 int split_command(const char *command, pt_strs *out)
 {
     const char *p = command;

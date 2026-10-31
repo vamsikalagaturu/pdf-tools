@@ -151,11 +151,13 @@ static void setup_environment(void)
     (*e)->PopLocalFrame(e, NULL);
     const char *files = act->internalDataPath;
     if (!cache_dir) cache_dir = pt_strdup(files);
+
     char *config = pt_join(files, ".config"), *data = pt_join(files, ".local/share"), *run = pt_join(cache_dir, "run");
     pt_mkdirs(config);
     pt_mkdirs(data);
     pt_mkdirs(run);
     chmod(run, 0700);
+
     /* HOME is where dialogs start and what Home shortens to "~": the shared Download folder once storage access
      * is granted; settings stay in files/ through XDG_CONFIG_HOME either way. */
     char *shared = pt_java("sharedFolder", 0);
@@ -166,6 +168,7 @@ static void setup_environment(void)
     setenv("XDG_RUNTIME_DIR", run, 1);
     setenv("TMPDIR", cache_dir, 1);
     pt_android_cache_dir = cache_dir;
+
     /* the app-specific external folder is the one place a PC (USB/MTP) can reach without a storage permission */
     if (external) {
         char *link = pt_join(files, "external");
@@ -173,6 +176,7 @@ static void setup_environment(void)
         if (lstat(link, &st)) symlink(external, link);
         free(link);
     }
+
     if (chdir(files)) LOG("chdir %s failed", files);
     copy_tessdata(act, data);
     free(config), free(data), free(run), free(external);
@@ -222,6 +226,7 @@ static int chars[256], nchars;
 static pthread_mutex_t ime_lock = PTHREAD_MUTEX_INITIALIZER;
 static int ime_q[1024], n_ime;
 static Vector2 wheel_acc, wheel_frame;
+
 static struct {
     int pending; /* finger down, press not yet sent: a second finger makes it a scroll instead */
     int draws;   /* landed on a drag area (drawing tool, signature pad): moving presses at once */
@@ -234,17 +239,21 @@ static struct {
     float x, y, cx, cy;
     float spread; /* distance between the first two fingers, for pinch zoom; 0 with one finger */
 } touch;
+
 /* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
 typedef struct {
     double t;
     float x, y;
 } sample;
+
 static sample samples[32];
 static int nsamples;
+
 /* momentum after a scroll is let go: the velocity decays exponentially, as Android's own lists fling */
 static struct {
     float vx, vy;
 } fling;
+
 static int mouse_left, mouse_buttons;
 static int back_pressed; /* Back (button or gesture) since the last frame */
 
@@ -333,6 +342,10 @@ static double event_clock(void)
     return (double)ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* Turns the touchscreen into the mouse and wheel the shared code knows: a tap clicks when the finger lifts, a
+ * moving finger scrolls (and flings when let go), two fingers scroll and pinch-zoom, a double tap on a page zooms,
+ * a long press then a move drags, a long press alone right-clicks. On a drag area (pen, signature pad) the finger
+ * presses at once and draws. */
 static void on_touch(const AInputEvent *e, int action)
 {
     float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
@@ -550,6 +563,8 @@ int pt_android_char_pressed(void)
 
 Vector2 pt_android_wheel(void) { return wheel_frame; }
 
+/* ---- idle waits and window changes ---- */
+
 /* After a rotation the surface takes the new size only once a frame has been drawn into a new buffer, so the
  * window keeps drawing for a moment instead of idling at the old size. */
 static double resizing_until;
@@ -572,13 +587,13 @@ static void on_cmd(struct android_app *a, int32_t cmd)
     }
 }
 
+/* ---- hooks in app.c and document.c ---- */
+
 static void close_answered(void *ctx, int yes)
 {
     (void)ctx;
     if (yes) app_quit_request(); /* asks about unsaved edits first */
 }
-
-/* ---- hooks in app.c ---- */
 
 void pt_android_init_window(int width, int height, const char *title)
 {
@@ -605,7 +620,9 @@ void pt_android_frame(void)
     static int keyboard;
     if (a->destroyRequested) app.quit = 1;
     pt_raylib_follow_window();
+    if (GetTime() < resizing_until) ui.dirty = 1;
     file_dialogs_poll();
+
     /* the fling steps by the frame interval, not the time since the release event, so its first step is a full one */
     static double last_frame;
     double now = GetTime(), dt = fmin(now - last_frame, 0.05);
@@ -626,6 +643,7 @@ void pt_android_frame(void)
     }
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
+
     if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) {
         if (touch.draws) flush_press();
         else touch.pending = 0, touch.held = 1;
@@ -635,7 +653,11 @@ void pt_android_frame(void)
         touch.lifted = 0;
         SetMousePosition(-10000, -10000);
     }
+
     take_ime();
+    /* typed text is not input raylib knows about: it needs a frame of its own */
+    if (nchars) ui.dirty = 1;
+
     /* Back closes what is open (as Escape does); with nothing open it offers to close the app */
     if (back_pressed) {
         back_pressed = 0;
@@ -648,10 +670,12 @@ void pt_android_frame(void)
         free(pt_java(want ? "showKeyboard" : "hideKeyboard", 0));
         keyboard = want;
     }
+
     if (intent_checked < 0 || GetTime() - intent_checked > 0.25) {
         intent_checked = GetTime();
         check_intent();
     }
+
     /* the gesture bar and the soft keyboard are drawn over the window: keep the UI out from under them */
     static double insets_checked = -1;
     if (insets_checked < 0 || GetTime() - insets_checked > 0.1) {
@@ -663,7 +687,6 @@ void pt_android_frame(void)
     }
 }
 
-/* No second window on Android. "Move to new window" (--adopt FILE) reopens the tab here so it is not lost. */
 int pt_android_run_detached(char *const argv[])
 {
     if (argv[1] && argv[2] && !strcmp(argv[1], "--adopt")) {
@@ -675,8 +698,9 @@ int pt_android_run_detached(char *const argv[])
     /* links in documents: the system opens them (browser, mail, ...) */
     if (!strcmp(argv[0], "xdg-open") && argv[1]) {
         char *r = pt_java("openUrl", 1, argv[1]);
+        int failed = !r;
         free(r);
-        return r ? 0 : -1;
+        return failed ? -1 : 0;
     }
     return -1;
 }

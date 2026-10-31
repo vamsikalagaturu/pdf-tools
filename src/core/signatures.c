@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/* ---- the library ---- */
+
 char *pt_signature_dir(void)
 {
     char *dir = pt_config_dir(), *sig = pt_join(dir, "signatures");
@@ -77,13 +79,15 @@ char *pt_store_signature(const unsigned char *png, size_t len)
     return path;
 }
 
-/* A scanned or photographed signature as a cropped PNG whose white paper is transparent; NULL without ink. */
+/* ---- scanned signatures ---- */
+
 fz_buffer *pt_ink_from_scan(fz_context *ctx, const char *path)
 {
     fz_image *img = fz_new_image_from_file(ctx, path);
     fz_pixmap *src = NULL, *gray = NULL, *out = NULL;
     fz_buffer *png = NULL;
     unsigned char *alpha = NULL;
+    fz_var(src), fz_var(gray), fz_var(out), fz_var(png), fz_var(alpha);
     fz_try(ctx)
     {
         src = fz_get_pixmap_from_image(ctx, img, NULL, NULL, NULL, NULL);
@@ -93,6 +97,9 @@ fz_buffer *pt_ink_from_scan(fz_context *ctx, const char *path)
             src = half;
         }
         gray = fz_convert_pixmap(ctx, src, fz_device_gray(ctx), NULL, NULL, fz_default_color_params, 0);
+
+        /* near-white is paper (transparent); darker grey fades in so the stroke edges stay smooth; x0..x1, y0..y1
+         * bound the ink */
         int w = gray->w, h = gray->h;
         alpha = fz_malloc(ctx, (size_t)w * (size_t)h);
         int x0 = w, x1 = 0, y0 = h, y1 = -1;
@@ -108,6 +115,7 @@ fz_buffer *pt_ink_from_scan(fz_context *ctx, const char *path)
                     y1 = y;
                 }
             }
+
         if (y1 >= 0) {
             out = fz_new_pixmap(ctx, fz_device_rgb(ctx), x1 - x0, y1 - y0 + 1, NULL, 1);
             for (int y = 0; y < out->h; y++)

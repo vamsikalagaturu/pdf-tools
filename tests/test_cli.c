@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -16,7 +17,19 @@ enum { OK = 0, FAILED = 1, LEAKED = 2, NO_MATCH = 3 };
 
 static fz_context *ctx;
 static const char *bin, *data_dir;
+#ifdef _WIN32
+/* in the folder ctest runs the test in */
+static char tmpdir[] = "pt-cli-test-XXXXXX";
+/* cmd.exe: arguments in double quotes, and one more pair around the whole line, which cmd /c takes off */
+#define LINE_START "\""
+#define ARG "\"%s\""
+#define LINE_END " 2>NUL\""
+#else
 static char tmpdir[] = "/tmp/pt-cli-test-XXXXXX";
+#define LINE_START ""
+#define ARG "'%s'"
+#define LINE_END " 2>/dev/null"
+#endif
 static int failures;
 static char out[1 << 16]; /* the last command's compact JSON */
 
@@ -28,19 +41,22 @@ static char out[1 << 16]; /* the last command's compact JSON */
         }                                                                                                             \
     } while (0)
 
+/* ---- running pdf-tools and reading its output ---- */
+
 static char *tmp(const char *name) { return pt_format("%s/%s", tmpdir, name); }
 
-/* run `pdf-tools ARGS...` (NULL-terminated); returns the exit code, out holds the compact JSON */
+/* run `pdf-tools ARGS...` (NULL-terminated, each one quoted as a single word); returns the exit code (-1: it did not
+ * exit normally), out holds the compact JSON */
 static int run(const char *first, ...)
 {
     char cmd[8192];
-    int n = snprintf(cmd, sizeof cmd, "'%s'", bin);
+    int n = snprintf(cmd, sizeof cmd, LINE_START ARG, bin);
     va_list ap;
     va_start(ap, first);
     for (const char *a = first; a; a = va_arg(ap, const char *))
-        n += snprintf(cmd + n, sizeof cmd - (size_t)n, " '%s'", a);
+        n += snprintf(cmd + n, sizeof cmd - (size_t)n, " " ARG, a);
     va_end(ap);
-    snprintf(cmd + n, sizeof cmd - (size_t)n, " 2>/dev/null");
+    snprintf(cmd + n, sizeof cmd - (size_t)n, LINE_END);
     FILE *p = popen(cmd, "r");
     size_t len = 0;
     int c, in_string = 0, escaped = 0;
@@ -262,9 +278,19 @@ static void test_protect_and_unprotect(const char *statement)
     CHECK(needs_password(r) == 1);
     CHECK(run("unprotect", locked, "-o", unlocked, "--password", "pw", NULL) == OK);
     CHECK(needs_password(unlocked) == 0);
+    /* protect reads the input's password from --current-password, merge one per input from --password-for */
+    CHECK(run("protect", locked, "-o", r, "--password", "new", NULL) == FAILED &&
+          has("pass the right --current-password"));
+    CHECK(run("protect", locked, "-o", r, "--password", "new", "--current-password", "pw", NULL) == OK);
+    CHECK(run("merge", statement, locked, "-o", r, NULL) == FAILED && has("pass the right --password-for"));
+    char given[1024];
+    snprintf(given, sizeof given, "%s=pw", locked);
+    CHECK(run("merge", statement, locked, "-o", r, "--password-for", given, NULL) == OK && needs_password(r) == 0);
+    CHECK(run("merge", statement, "-o", r, "--password-for", given, NULL) == FAILED && has("names no input"));
     free(locked), free(unlocked), free(r);
 }
 
+/* main.pdf need not exist: the lookups read only the main.synctex.gz next to it */
 static void test_synctex(void)
 {
     char *src = pt_format("%s/main.synctex.gz", data_dir), *dst = tmp("main.synctex.gz"), *pdf = tmp("main.pdf");
@@ -287,6 +313,137 @@ static void test_refuses_to_overwrite(const char *statement)
     CHECK(run("flatten", statement, "-o", statement, NULL) == FAILED && has("overwrite"));
 }
 
+static int same_bytes(const char *path, const pt_bytes *want)
+{
+    pt_bytes now = {0};
+    int same = !pt_read_file(path, &now) && now.len == want->len && !memcmp(now.data, want->data, now.len);
+    free(now.data);
+    return same;
+}
+
+/* every input of merge counts, and a hard link is the same file under another name */
+static void test_refuses_to_overwrite_any_input(const char *statement)
+{
+    char *copy = tmp("copy.pdf");
+    pt_bytes before = {0};
+    CHECK(!pt_read_file(statement, &before) && !pt_write_file(copy, before.data, before.len));
+    CHECK(run("merge", statement, copy, "-o", copy, NULL) == FAILED && has("overwrite"));
+    CHECK(same_bytes(copy, &before));
+#ifndef _WIN32
+    char *linked = tmp("linked.pdf");
+    CHECK(!link(copy, linked));
+    CHECK(run("redact", copy, "-o", linked, "--text", "Rossmann", NULL) == FAILED && has("overwrite"));
+    CHECK(same_bytes(copy, &before));
+    free(linked);
+#endif
+    free(before.data), free(copy);
+}
+
+/* out holds exactly one JSON object */
+static int one_object(void)
+{
+    int depth = 0, in_string = 0, escaped = 0, closed = 0;
+    for (const char *s = out; *s; s++) {
+        if (closed) return 0;
+        if (in_string) {
+            if (escaped) escaped = 0;
+            else if (*s == '\\') escaped = 1;
+            else if (*s == '"') in_string = 0;
+        } else if (*s == '"') in_string = 1;
+        else if (*s == '{' || *s == '[') depth++;
+        else if ((*s == '}' || *s == ']') && --depth == 0) closed = 1;
+    }
+    return out[0] == '{' && closed;
+}
+
+static void test_usage_errors(const char *statement)
+{
+    CHECK(run("redact", statement, "--text", "x", NULL) == FAILED && one_object() && has("{\"error\":\"usage:"));
+    CHECK(run("info", statement, "--no-such-option", NULL) == FAILED && one_object() && has("\"error\":\"usage:"));
+    CHECK(run("flatten", statement, "-o", "never.pdf", "--dpi", "0", NULL) == FAILED && one_object() &&
+          has("\"error\":"));
+}
+
+/* a mistyped command answers with an error instead of opening the window (main unsets DISPLAY and WAYLAND_DISPLAY,
+ * so a regression fails instead of showing one) */
+static void test_unknown_command(const char *statement)
+{
+    CHECK(run("serach", statement, NULL) == FAILED && one_object() && has("unknown command"));
+    CHECK(run("search statement.pdf --text x", NULL) == FAILED && one_object() && has("unknown command"));
+}
+
+/* a page tree whose Kids holds itself: MuPDF throws while pages are listed */
+static void test_one_object_on_failure(const char *statement)
+{
+    static const char *pdf = "%PDF-1.7\n"
+                             "1 0 obj <</Type/Catalog/Pages 2 0 R>> endobj\n"
+                             "2 0 obj <</Type/Pages/Kids[3 0 R 2 0 R]/Count 3>> endobj\n"
+                             "3 0 obj <</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>> endobj\n"
+                             "trailer <</Root 1 0 R/Size 4>>\n%%EOF\n";
+    char *bad = tmp("cycle.pdf");
+    pt_write_file(bad, pdf, strlen(pdf));
+    CHECK(run("info", bad, NULL) == FAILED && one_object() && has("\"error\":"));
+    CHECK(run("inspect", bad, NULL) == FAILED && one_object() && has("\"error\":"));
+    CHECK(run("search", bad, "--text", "x", NULL) == FAILED && one_object() && has("\"error\":"));
+    free(bad);
+#ifndef _WIN32
+    if (geteuid() == 0) return;
+    char *dir = tmp("ro-parts"), *locked = tmp("ro-parts/statement-part2.pdf");
+    pt_mkdirs(dir);
+    pt_write_file(locked, "", 0);
+    chmod(locked, 0444);
+    CHECK(run("split", statement, "--every", "1", "-d", dir, NULL) == FAILED && one_object() && has("\"parts\":[") &&
+          has("\"error\":\"cannot write"));
+    free(dir), free(locked);
+#endif
+}
+
+static void test_password_files(const char *statement)
+{
+    char *pw = tmp("pw.txt"), *locked = tmp("locked2.pdf"), *r = tmp("r2.pdf");
+    pt_write_file(pw, "s3cret\n", 7);
+    CHECK(run("protect", statement, "-o", locked, "--password-file", pw, NULL) == OK);
+    CHECK(needs_password(locked) == 1);
+    char *t = page_text(locked, 0, "s3cret");
+    CHECK(strstr(t, "John Smith") != NULL);
+    free(t);
+    CHECK(run("info", locked, "--password-file", pw, NULL) == OK && has("\"pages\":2"));
+    CHECK(run("redact", locked, "-o", r, "--password-file", pw, "--text", "Rossmann", NULL) == OK);
+    CHECK(needs_password(r) == 1);
+    CHECK(run("info", locked, "--password-file", pw, "--password", "s3cret", NULL) == FAILED && has("not allowed"));
+    CHECK(run("unprotect", locked, "-o", r, NULL) == FAILED && has("\"error\":\"usage:"));
+    free(pw), free(locked), free(r);
+}
+
+/* a .synctex naming a huge page number is bounded, not allocated page by page */
+static void test_synctex_bounds(void)
+{
+    static const char *sync = "SyncTeX Version:1\nInput:1:big.tex\nContent:\n{400000000\n"
+                              "(1,5:4736286,4736286:22609920,655360,0\n}400000000\n";
+    char *pdf = tmp("big.pdf"), *path = tmp("big.synctex");
+    pt_write_file(path, sync, strlen(sync));
+    CHECK(run("synctex", pdf, "--source", "big.tex", "--line", "5", NULL) == NO_MATCH && !has("\"page\":"));
+    free(pdf), free(path);
+}
+
+/* encrypted with an empty user password and an owner password that forbids printing */
+static void test_owner_only_encryption(const char *statement)
+{
+    char *locked = tmp("owner-only.pdf"), *o = tmp("owner-only-redacted.pdf");
+    pdf_document *doc = pdf_open_document(ctx, statement);
+    pdf_write_options opts = pdf_default_write_options;
+    opts.do_encrypt = PDF_ENCRYPT_AES_256;
+    opts.permissions = ~PDF_PERM_PRINT;
+    fz_strlcpy(opts.opwd_utf8, "owner", sizeof opts.opwd_utf8);
+    pdf_save_document(ctx, doc, locked, &opts);
+    pdf_drop_document(ctx, doc);
+    CHECK(run("redact", locked, "-o", o, "--text", "Rossmann", NULL) == OK && has("\"owner_password_replaced\":true"));
+    doc = pdf_open_document(ctx, o);
+    CHECK(doc->crypt && !pdf_needs_password(ctx, doc) && !pdf_has_permission(ctx, doc, FZ_PERMISSION_PRINT));
+    pdf_drop_document(ctx, doc);
+    free(locked), free(o);
+}
+
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
     (void)st, (void)flag, (void)ftw;
@@ -300,6 +457,10 @@ int main(int argc, char **argv)
         return 2;
     }
     bin = argv[1], data_dir = argv[2];
+#ifndef _WIN32
+    unsetenv("DISPLAY");
+    unsetenv("WAYLAND_DISPLAY");
+#endif
     if (!mkdtemp(tmpdir)) return 1;
     ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     fz_register_document_handlers(ctx);
@@ -315,6 +476,13 @@ int main(int argc, char **argv)
     test_protect_and_unprotect(statement);
     test_synctex();
     test_refuses_to_overwrite(statement);
+    test_refuses_to_overwrite_any_input(statement);
+    test_usage_errors(statement);
+    test_unknown_command(statement);
+    test_one_object_on_failure(statement);
+    test_password_files(statement);
+    test_synctex_bounds();
+    test_owner_only_encryption(statement);
     free(statement), free(form);
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;
