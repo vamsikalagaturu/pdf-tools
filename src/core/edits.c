@@ -1,8 +1,11 @@
-/* The save pipeline: turns the edit state into the bytes of the output PDF.
- * Opens the file as the display does (inserted pages appended), applies redactions, text, images, annotations,
- * form values, crops and rotations, scrubs hidden data when anything was redacted or cropped, and selects the
- * output pages. Also flattening, merging, password protection, and the Edits list of unsaved edits. */
+/* The edit state (pt_state) and the save pipeline that turns it into the bytes of the output PDF.
+ * Opens the file, or its bytes read earlier, as the display does (inserted pages appended), applies redactions,
+ * text, images, annotations, form values, crops and rotations, removes what a redaction leaves elsewhere in the
+ * file, scrubs hidden data when anything was redacted or cropped, and selects the output pages; encryption is
+ * put back by pt_keep_encryption. Also the page content helpers of content.h, flattening, optimizing, merging,
+ * password protection, and the Edits list of unsaved edits. */
 #include "content.h"
+#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
@@ -11,6 +14,13 @@
 /* Pixel rounding when MuPDF blanks image pixels can leave a hairline; overpaint slightly wider. */
 #define BLEED 0.75f
 #define JPEG_QUALITY 90
+/* the command line's --dpi range */
+#define DPI_MIN 18
+#define DPI_MAX 2400
+/* Field and page trees deeper than this are taken as cyclic. */
+#define MAX_TREE_DEPTH 32
+
+/* ---- kinds, marks, shapes and pens ---- */
 
 const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highlight", "ink", "shape"};
 const char *pt_shape_names[] = {"rectangle", "ellipse", "line", "arrow"};
@@ -248,10 +258,28 @@ static void authenticate(fz_context *ctx, pdf_document *doc, const char *passwor
     }
 }
 
-pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *password, const pt_inserts *inserted)
+/* a document to open: the file at `path`, or `file` (its bytes as read earlier; `path` then only names it) */
+typedef struct {
+    const char *path;
+    fz_buffer *file;
+} pt_source;
+
+static pdf_document *open_source(fz_context *ctx, const pt_source *src)
 {
-    pdf_document *doc = pdf_open_document(ctx, path);
-    authenticate(ctx, doc, password, path);
+    if (!src->file) return pdf_open_document(ctx, src->path);
+    fz_stream *stm = fz_open_buffer(ctx, src->file);
+    pdf_document *doc = NULL;
+    fz_try(ctx) doc = pdf_open_document_with_stream(ctx, stm);
+    fz_always(ctx) fz_drop_stream(ctx, stm);
+    fz_catch(ctx) fz_rethrow(ctx);
+    return doc;
+}
+
+static pdf_document *open_with_inserts(fz_context *ctx, const pt_source *src, const char *password,
+                                       const pt_inserts *inserted)
+{
+    pdf_document *doc = open_source(ctx, src);
+    authenticate(ctx, doc, password, src->path);
     fz_try(ctx)
     {
         for (int i = 0; inserted && i < inserted->n; i++) {
@@ -259,6 +287,7 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
             if (sscanf(inserted->v[i].path, PT_BLANK_PAGE "%fx%f", &w, &h) == 2) {
                 pdf_obj *res = pdf_new_dict(ctx, doc, 1), *page = NULL;
                 fz_buffer *contents = fz_new_buffer(ctx, 1);
+                fz_var(page);
                 fz_try(ctx)
                 {
                     page = pdf_add_page(ctx, doc, fz_make_rect(0, 0, w, h), 0, res, contents);
@@ -294,11 +323,23 @@ pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *passwor
     return doc;
 }
 
+pdf_document *pt_open_pdf(fz_context *ctx, const char *path, const char *password, const pt_inserts *inserted)
+{
+    return open_with_inserts(ctx, &(pt_source){path, NULL}, password, inserted);
+}
+
+pdf_document *pt_open_pdf_buffer(fz_context *ctx, fz_buffer *file, const char *name, const char *password,
+                                 const pt_inserts *inserted)
+{
+    return open_with_inserts(ctx, &(pt_source){name, file}, password, inserted);
+}
+
 pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size_t len, const char *password)
 {
     fz_buffer *buf = fz_new_buffer_from_copied_data(ctx, data, len);
     fz_stream *stm = NULL;
     pdf_document *doc = NULL;
+    fz_var(stm);
     fz_try(ctx)
     {
         stm = fz_open_buffer(ctx, buf);
@@ -314,7 +355,8 @@ pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size
     return doc;
 }
 
-fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password)
+static fz_buffer *write_doc(fz_context *ctx, pdf_document *doc, int method, int permissions, const char *upwd,
+                            const char *opwd)
 {
     pdf_write_options o = pdf_default_write_options;
     o.do_garbage = 4;
@@ -322,16 +364,16 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
     o.do_compress_images = 1;
     o.do_compress_fonts = 1;
     o.do_clean = 1;
-    o.do_encrypt = PDF_ENCRYPT_NONE;
-    if (password) {
+    o.do_encrypt = method;
+    if (method != PDF_ENCRYPT_NONE) {
         o.do_clean = 0;
-        o.do_encrypt = PDF_ENCRYPT_AES_256;
-        o.permissions = -1;
-        fz_strlcpy(o.upwd_utf8, password, sizeof o.upwd_utf8);
-        fz_strlcpy(o.opwd_utf8, password, sizeof o.opwd_utf8);
+        o.permissions = permissions;
+        fz_strlcpy(o.upwd_utf8, upwd, sizeof o.upwd_utf8);
+        fz_strlcpy(o.opwd_utf8, opwd, sizeof o.opwd_utf8);
     }
     fz_buffer *buf = fz_new_buffer(ctx, 1 << 16);
     fz_output *out = NULL;
+    fz_var(out);
     fz_try(ctx)
     {
         out = fz_new_output_with_buffer(ctx, buf);
@@ -345,6 +387,59 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
         fz_rethrow(ctx);
     }
     return buf;
+}
+
+fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password)
+{
+    if (!password) return write_doc(ctx, doc, PDF_ENCRYPT_NONE, 0, "", "");
+    return write_doc(ctx, doc, PDF_ENCRYPT_AES_256, -1, password, password);
+}
+
+static int encrypt_method(fz_context *ctx, pdf_crypt *crypt)
+{
+    const char *method = pdf_crypt_method(ctx, crypt);
+    if (!strcmp(method, "RC4")) return pdf_crypt_length(ctx, crypt) <= 40 ? PDF_ENCRYPT_RC4_40 : PDF_ENCRYPT_RC4_128;
+    if (!strcmp(method, "AES") && pdf_crypt_revision(ctx, crypt) < 5) return PDF_ENCRYPT_AES_128;
+    return PDF_ENCRYPT_AES_256;
+}
+
+fz_buffer *pt_keep_encryption(fz_context *ctx, fz_buffer *data, pdf_document *src, const char *password,
+                              pt_encryption *info)
+{
+    pt_encryption none = {0};
+    if (!info) info = &none;
+    memset(info, 0, sizeof *info);
+    if (!src->crypt) return fz_keep_buffer(ctx, data);
+
+    const char *pw = password ? password : "";
+    char upwd[2048], opwd[2048];
+    /* Each attempt replaces the document's keys: the last one made must be one that succeeds. */
+    int access = pdf_authenticate_password(ctx, src, pw);
+    fz_strlcpy(upwd, pw, sizeof upwd);
+    if (!(access & 2)) {
+        if (pdf_authenticate_password(ctx, src, "") & 2) upwd[0] = 0;
+        else if (access) {
+            pdf_authenticate_password(ctx, src, pw);
+            /* only the owner password is known: it opens the copy too */
+            info->user_password_changed = 1;
+        } else fz_throw(ctx, FZ_ERROR_ARGUMENT, "Wrong password for the document");
+    }
+    if (access & 4) fz_strlcpy(opwd, pw, sizeof opwd);
+    else {
+        unsigned char rnd[16];
+        fz_memrnd(ctx, rnd, sizeof rnd);
+        for (int i = 0; i < 16; i++) snprintf(opwd + 2 * i, 3, "%02x", rnd[i]);
+        info->owner_password_changed = 1;
+    }
+    info->encrypted = 1;
+
+    pdf_document *doc = pt_open_pdf_bytes(ctx, data->data, data->len, NULL);
+    fz_buffer *out = NULL;
+    fz_try(ctx) out =
+        write_doc(ctx, doc, encrypt_method(ctx, src->crypt), pdf_crypt_permissions(ctx, src->crypt), upwd, opwd);
+    fz_always(ctx) pdf_drop_document(ctx, doc);
+    fz_catch(ctx) fz_rethrow(ctx);
+    return out;
 }
 
 /* ---- page content ---- */
@@ -369,7 +464,6 @@ static pdf_obj *page_resources(fz_context *ctx, pdf_document *doc, pdf_page *pag
     return res;
 }
 
-/* Register `ref` under `type` in the page resources with a fresh name like "PTF3"; returns the name. */
 void pt_add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_obj *type, const char *prefix,
                      pdf_obj *ref, char name[32])
 {
@@ -387,12 +481,12 @@ void pt_add_resource(fz_context *ctx, pdf_document *doc, pdf_page *page, pdf_obj
     pdf_dict_puts(ctx, sub, name, ref);
 }
 
-/* Append `ops` after the existing contents, which are wrapped in q/Q so their graphics state cannot leak. */
 void pt_append_content(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_buffer *ops)
 {
     pdf_obj *contents = pdf_dict_get(ctx, page->obj, PDF_NAME(Contents));
     pdf_obj *arr = pdf_new_array(ctx, doc, 4);
     fz_buffer *q = NULL, *tail = NULL;
+    fz_var(q), fz_var(tail);
     fz_try(ctx)
     {
         q = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)"q\n", 2);
@@ -443,6 +537,7 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
     fz_image *img = NULL;
     pdf_obj *ref = NULL;
     fz_buffer *b = NULL;
+    fz_var(img), fz_var(ref), fz_var(b);
     fz_try(ctx)
     {
         img = fz_new_image_from_buffer(ctx, buf);
@@ -471,7 +566,6 @@ void pt_insert_image(fz_context *ctx, pdf_document *doc, pdf_page *page, fz_rect
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-/* Unicode to WinAnsiEncoding (standard fonts); '?' when the encoding has no such character. */
 int pt_winansi(int c)
 {
     static const int high[32] = {
@@ -571,6 +665,7 @@ void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it)
             static const enum pdf_annot_type types[] = {
                 PDF_ANNOT_HIGHLIGHT, PDF_ANNOT_UNDERLINE, PDF_ANNOT_STRIKE_OUT, PDF_ANNOT_SQUIGGLY, PDF_ANNOT_HIGHLIGHT,
             };
+
             a = pdf_create_annot(ctx, page, types[it->style]);
             const pt_rects *rs = &it->rects;
             fz_rect one = it->rect;
@@ -655,17 +750,129 @@ void pt_remove_annot(fz_context *ctx, pdf_document *doc, pt_key key)
 
 /* ---- crops and scrubbing ---- */
 
+PT_VEC(obj_list, pdf_obj *);
+
+static void drop_objs(fz_context *ctx, obj_list *o)
+{
+    for (int i = 0; i < o->n; i++) pdf_drop_obj(ctx, o->v[i]);
+    pt_vec_free(*o);
+}
+
+/* pdf_redact_page applies every Redact annotation on the page; those already in the file are renamed while it runs,
+ * so they stay pending instead of removing content without a mark. */
 static void redact(fz_context *ctx, pdf_document *doc, pdf_page *page, const fz_rect *rects, int n, int images,
-                   int line_art)
+                   int line_art, int text)
 {
     if (!n) return;
-    for (int i = 0; i < n; i++) {
-        pdf_annot *a = pdf_create_annot(ctx, page, PDF_ANNOT_REDACT);
-        pdf_set_annot_rect(ctx, a, rects[i]);
-        pdf_drop_annot(ctx, a);
+    pdf_obj *pending_name = pdf_new_name(ctx, "PTPendingRedact");
+    obj_list pending = {0};
+    for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a))
+        if (pdf_annot_type(ctx, a) == PDF_ANNOT_REDACT) pt_push(pending, pdf_keep_obj(ctx, pdf_annot_obj(ctx, a)));
+    fz_try(ctx)
+    {
+        for (int i = 0; i < pending.n; i++) pdf_dict_put(ctx, pending.v[i], PDF_NAME(Subtype), pending_name);
+        for (int i = 0; i < n; i++) {
+            pdf_annot *a = pdf_create_annot(ctx, page, PDF_ANNOT_REDACT);
+            pdf_set_annot_rect(ctx, a, rects[i]);
+            pdf_drop_annot(ctx, a);
+        }
+        pdf_redact_options opts = {0, images, line_art, text};
+        pdf_redact_page(ctx, doc, page, &opts);
     }
-    pdf_redact_options opts = {0, images, line_art, PDF_REDACT_TEXT_REMOVE};
-    pdf_redact_page(ctx, doc, page, &opts);
+    fz_always(ctx)
+    {
+        for (int i = 0; i < pending.n; i++)
+            if (pdf_name_eq(ctx, pdf_dict_get(ctx, pending.v[i], PDF_NAME(Subtype)), pending_name))
+                pdf_dict_put(ctx, pending.v[i], PDF_NAME(Subtype), PDF_NAME(Redact));
+        drop_objs(ctx, &pending);
+        pdf_drop_obj(ctx, pending_name);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+static int touches(fz_rect a, fz_rect b) { return a.x0 <= b.x1 && a.x1 >= b.x0 && a.y0 <= b.y1 && a.y1 >= b.y0; }
+
+static int annot_hit(fz_context *ctx, pdf_annot *a, const fz_rect *rects, int n, int outside)
+{
+    fz_rect b = pdf_bound_annot(ctx, a);
+    if (outside) return !touches(b, rects[0]);
+    for (int i = 0; i < n; i++)
+        if (touches(b, rects[i])) return 1;
+    return 0;
+}
+
+static void delete_annot_obj(fz_context *ctx, pdf_page *page, pdf_obj *obj)
+{
+    if (!obj) return;
+    for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a))
+        if (!pdf_objcmp(ctx, pdf_annot_obj(ctx, a), obj)) {
+            pdf_delete_annot(ctx, page, a);
+            return;
+        }
+}
+
+/* pdf_delete_annot takes a widget out of the field tree; the fields left without widgets go too, up to the top. */
+static void drop_empty_fields(fz_context *ctx, pdf_document *doc, pdf_obj *widget)
+{
+    pdf_obj *form = pdf_dict_getp(ctx, pdf_trailer(ctx, doc), "Root/AcroForm");
+    pdf_obj *order = pdf_dict_get(ctx, form, PDF_NAME(CO));
+    pdf_obj *gone = widget;
+    for (int depth = 0; gone && depth < MAX_TREE_DEPTH; depth++) {
+        pdf_obj *up = pdf_dict_get(ctx, gone, PDF_NAME(Parent));
+        pdf_obj *list = up ? pdf_dict_get(ctx, up, PDF_NAME(Kids)) : pdf_dict_get(ctx, form, PDF_NAME(Fields));
+        int i;
+        while ((i = pdf_array_find(ctx, list, gone)) >= 0) pdf_array_delete(ctx, list, i);
+        while ((i = pdf_array_find(ctx, order, gone)) >= 0) pdf_array_delete(ctx, order, i);
+        if (!up || pdf_array_len(ctx, pdf_dict_get(ctx, up, PDF_NAME(Kids)))) return;
+        gone = up;
+    }
+}
+
+/* Delete the annotations and form widgets whose bounds touch one of `rects` (with `outside`: that lie wholly outside
+ * rects[0]), with their popups; a field goes with its last widget. */
+static void drop_annots(fz_context *ctx, pdf_document *doc, pdf_page *page, const fz_rect *rects, int n, int outside)
+{
+    for (int again = 1; again;) {
+        again = 0;
+        for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
+            if (!annot_hit(ctx, a, rects, n, outside)) continue;
+            pdf_obj *obj = pdf_annot_obj(ctx, a);
+            pdf_obj *popup = pdf_keep_obj(ctx, pdf_dict_get(ctx, obj, PDF_NAME(Popup)));
+            pdf_obj *parent = NULL;
+            if (pdf_annot_type(ctx, a) == PDF_ANNOT_POPUP)
+                parent = pdf_keep_obj(ctx, pdf_dict_get(ctx, obj, PDF_NAME(Parent)));
+            fz_try(ctx)
+            {
+                pdf_delete_annot(ctx, page, a);
+                delete_annot_obj(ctx, page, popup);
+                delete_annot_obj(ctx, page, parent);
+            }
+            fz_always(ctx)
+            {
+                pdf_drop_obj(ctx, popup);
+                pdf_drop_obj(ctx, parent);
+            }
+            fz_catch(ctx) fz_rethrow(ctx);
+            again = 1;
+            break;
+        }
+    }
+    for (int again = 1; again;) {
+        again = 0;
+        for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+            if (!annot_hit(ctx, w, rects, n, outside)) continue;
+            pdf_obj *obj = pdf_keep_obj(ctx, pdf_annot_obj(ctx, w));
+            fz_try(ctx)
+            {
+                pdf_delete_annot(ctx, page, w);
+                drop_empty_fields(ctx, doc, obj);
+            }
+            fz_always(ctx) pdf_drop_obj(ctx, obj);
+            fz_catch(ctx) fz_rethrow(ctx);
+            again = 1;
+            break;
+        }
+    }
 }
 
 void pt_crop_page(fz_context *ctx, pdf_document *doc, int pno, fz_rect rect)
@@ -675,6 +882,7 @@ void pt_crop_page(fz_context *ctx, pdf_document *doc, int pno, fz_rect rect)
     {
         fz_rect full = fz_bound_page(ctx, (fz_page *)page);
         rect = fz_intersect_rect(rect, full);
+        if (fz_is_empty_rect(rect)) fz_throw(ctx, FZ_ERROR_ARGUMENT, "the crop box lies outside page %d", pno + 1);
         fz_rect strips[4] = {
             {full.x0, full.y0, full.x1, rect.y0},
             {full.x0, rect.y1, full.x1, full.y1},
@@ -685,50 +893,132 @@ void pt_crop_page(fz_context *ctx, pdf_document *doc, int pno, fz_rect rect)
         int n = 0;
         for (int i = 0; i < 4; i++)
             if (!fz_is_empty_rect(strips[i])) keep[n++] = strips[i];
-        redact(ctx, doc, page, keep, n, PDF_REDACT_IMAGE_PIXELS, PDF_REDACT_LINE_ART_REMOVE_IF_COVERED);
+        redact(ctx, doc, page, keep, n, PDF_REDACT_IMAGE_PIXELS, PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+               PDF_REDACT_TEXT_REMOVE);
+        drop_annots(ctx, doc, page, &rect, 1, 1);
         pdf_set_page_box(ctx, page, FZ_CROP_BOX, rect);
     }
     fz_always(ctx) fz_drop_page(ctx, (fz_page *)page);
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-/* Spans of text nobody sees (OCR layers): GlyphLessFont, fully transparent, or neither filled nor stroked. */
+enum { TEXT_SEEN, TEXT_INVISIBLE, TEXT_HIDDEN };
+
+/* Invisible: neither filled nor stroked, or fully transparent (OCR layers). Hidden: drawn in GlyphLessFont, or
+ * outside the page's visible box. */
+static int text_class(fz_context *ctx, const fz_stext_char *c, fz_rect full)
+{
+    if ((c->argb >> 24) == 0 || !(c->flags & (FZ_STEXT_FILLED | FZ_STEXT_STROKED))) return TEXT_INVISIBLE;
+    const char *fn = fz_font_name(ctx, c->font);
+    const char *plus = strchr(fn, '+');
+    if (!strcmp(plus ? plus + 1 : fn, "GlyphLessFont")) return TEXT_HIDDEN;
+    fz_rect r = fz_rect_from_quad(c->quad);
+    float x = (r.x0 + r.x1) / 2, y = (r.y0 + r.y1) / 2;
+    return x < full.x0 || x > full.x1 || y < full.y0 || y > full.y1 ? TEXT_HIDDEN : TEXT_SEEN;
+}
+
+static int among(const pt_chars *seen, const fz_stext_char *c)
+{
+    fz_rect r = fz_rect_from_quad(c->quad);
+    for (int i = 0; i < seen->n; i++)
+        if (seen->v[i].c == c->c && fabsf(seen->v[i].r.x0 - r.x0) < 0.01f && fabsf(seen->v[i].r.y0 - r.y0) < 0.01f)
+            return 1;
+    return 0;
+}
+
+/* Runs of characters of one class on a line, as rects in found[class]; with `seen`, every character not among
+ * those is hidden. */
+static void classify_text(fz_context *ctx, fz_stext_page *st, fz_rect full, const pt_chars *seen, pt_rects found[3])
+{
+    for (fz_stext_block *b = st->first_block; b; b = b->next) {
+        if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
+        for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+            int cls = TEXT_SEEN;
+            fz_rect run = fz_empty_rect;
+            for (fz_stext_char *c = l->first_char;; c = c->next) {
+                int k = !c ? TEXT_SEEN : seen ? (among(seen, c) ? TEXT_SEEN : TEXT_HIDDEN) : text_class(ctx, c, full);
+                if (k != cls || !c) {
+                    if (cls != TEXT_SEEN && !fz_is_empty_rect(run) && !fz_is_infinite_rect(run))
+                        pt_push(found[cls], run);
+                    run = fz_empty_rect;
+                    cls = k;
+                }
+                if (!c) break;
+                run = fz_union_rect(run, fz_rect_from_quad(c->quad));
+            }
+        }
+    }
+}
+
+/* Text nobody sees. Invisible text is removed alone, so visible text overlapping an OCR layer stays; hidden text
+ * (also text in optional content that is switched off) goes with whatever text overlaps it. */
 static void redact_hidden_text(fz_context *ctx, pdf_document *doc, pdf_page *page)
 {
     fz_stext_options opts = {0};
     opts.flags = FZ_STEXT_PRESERVE_SPANS | FZ_STEXT_COLLECT_STYLES;
-    fz_stext_page *st = fz_new_stext_page_from_page(ctx, (fz_page *)page, &opts);
-    pt_rects spans = {0};
-    for (fz_stext_block *b = st->first_block; b; b = b->next) {
-        if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
-        for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
-            fz_rect span = fz_empty_rect;
-            fz_stext_char *prev = NULL;
-            int hidden = 0;
-            for (fz_stext_char *c = l->first_char;; c = c->next) {
-                int boundary = !c || (prev && (c->font != prev->font || c->size != prev->size ||
-                                               c->argb != prev->argb || c->flags != prev->flags));
-                if (boundary && hidden && !fz_is_empty_rect(span) && !fz_is_infinite_rect(span)) pt_push(spans, span);
-                if (!c) break;
-                if (boundary || !prev) {
-                    const char *fn = fz_font_name(ctx, c->font);
-                    const char *plus = strchr(fn, '+');
-                    hidden = !strcmp(plus ? plus + 1 : fn, "GlyphLessFont") || (c->argb >> 24) == 0 ||
-                             !(c->flags & (FZ_STEXT_FILLED | FZ_STEXT_STROKED));
-                    span = fz_empty_rect;
-                }
-                span = fz_union_rect(span, fz_rect_from_quad(c->quad));
-                prev = c;
-            }
+    fz_rect full = fz_bound_page(ctx, (fz_page *)page);
+    pt_rects found[3] = {{0}};
+    pt_chars seen = {0};
+    fz_stext_page *st = NULL;
+    int layers = pdf_count_layers(ctx, doc), off = 0;
+    char *was = calloc((size_t)layers + 1, 1);
+    if (!was) abort();
+    fz_var(st), fz_var(seen), fz_var(off);
+    fz_try(ctx)
+    {
+        st = fz_new_stext_page_from_page(ctx, (fz_page *)page, &opts);
+        classify_text(ctx, st, full, NULL, found);
+        for (int i = 0; i < layers; i++) off |= !(was[i] = (char)pdf_layer_is_enabled(ctx, doc, i));
+        if (off) {
+            pt_page_chars(st, &seen);
+            fz_drop_stext_page(ctx, st);
+            st = NULL;
+            for (int i = 0; i < layers; i++) pdf_enable_layer(ctx, doc, i, 1);
+            st = fz_new_stext_page_from_page(ctx, (fz_page *)page, &opts);
+            classify_text(ctx, st, full, &seen, found);
         }
     }
-    fz_drop_stext_page(ctx, st);
-    fz_try(ctx) redact(ctx, doc, page, spans.v, spans.n, PDF_REDACT_IMAGE_NONE, PDF_REDACT_LINE_ART_REMOVE_IF_COVERED);
-    fz_always(ctx) pt_vec_free(spans);
+    fz_always(ctx)
+    {
+        for (int i = 0; off && i < layers; i++) pdf_enable_layer(ctx, doc, i, was[i]);
+        fz_drop_stext_page(ctx, st);
+        pt_vec_free(seen);
+        free(was);
+    }
+    fz_catch(ctx)
+    {
+        for (int k = 0; k < 3; k++) pt_vec_free(found[k]);
+        fz_rethrow(ctx);
+    }
+    fz_try(ctx)
+    {
+        redact(ctx, doc, page, found[TEXT_INVISIBLE].v, found[TEXT_INVISIBLE].n, PDF_REDACT_IMAGE_NONE,
+               PDF_REDACT_LINE_ART_NONE, PDF_REDACT_TEXT_REMOVE_INVISIBLE);
+        redact(ctx, doc, page, found[TEXT_HIDDEN].v, found[TEXT_HIDDEN].n, PDF_REDACT_IMAGE_NONE,
+               PDF_REDACT_LINE_ART_NONE, PDF_REDACT_TEXT_REMOVE);
+    }
+    fz_always(ctx) for (int k = 0; k < 3; k++) pt_vec_free(found[k]);
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-/* Remove what a redacted file must not carry: metadata, attachments, scripts, hidden text, thumbnails. */
+static void blank_stream(fz_context *ctx, pdf_document *doc, int num, const char *text)
+{
+    fz_buffer *blank = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)text, strlen(text));
+    pdf_obj *ref = NULL;
+    fz_var(ref);
+    fz_try(ctx)
+    {
+        ref = pdf_new_indirect(ctx, doc, num, 0);
+        pdf_update_stream(ctx, doc, ref, blank, 0);
+    }
+    fz_always(ctx)
+    {
+        pdf_drop_obj(ctx, ref);
+        fz_drop_buffer(ctx, blank);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
 void pt_scrub(fz_context *ctx, pdf_document *doc)
 {
     pdf_obj *trailer = pdf_trailer(ctx, doc);
@@ -739,24 +1029,29 @@ void pt_scrub(fz_context *ctx, pdf_document *doc)
         fz_try(ctx)
         {
             redact_hidden_text(ctx, doc, page);
-            for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a)) {
-                if (pdf_annot_type(ctx, a) != PDF_ANNOT_FILE_ATTACHMENT) continue;
-                pdf_obj *f = pdf_dict_getp(ctx, pdf_annot_obj(ctx, a), "FS/EF/F");
-                if (pdf_is_stream(ctx, f)) {
-                    fz_buffer *blank = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)" ", 1);
-                    pdf_update_stream(ctx, doc, f, blank, 0);
-                    fz_drop_buffer(ctx, blank);
-                }
+            for (int again = 1; again;) {
+                again = 0;
+                for (pdf_annot *a = pdf_first_annot(ctx, page); a; a = pdf_next_annot(ctx, a))
+                    if (pdf_annot_type(ctx, a) == PDF_ANNOT_FILE_ATTACHMENT) {
+                        pdf_delete_annot(ctx, page, a);
+                        again = 1;
+                        break;
+                    }
             }
             pdf_dict_del(ctx, page->obj, PDF_NAME(Thumb));
         }
         fz_always(ctx) fz_drop_page(ctx, (fz_page *)page);
         fz_catch(ctx) fz_rethrow(ctx);
     }
+
     pdf_obj *root = pdf_dict_get(ctx, trailer, PDF_NAME(Root));
     pdf_obj *names = pdf_dict_get(ctx, root, PDF_NAME(Names));
     if (pdf_is_dict(ctx, names)) pdf_dict_del(ctx, names, PDF_NAME(EmbeddedFiles));
     pdf_dict_del(ctx, root, PDF_NAME(Metadata));
+    pdf_dict_del(ctx, root, PDF_NAME(Collection));
+    pdf_obj *form = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
+    if (pdf_is_dict(ctx, form)) pdf_dict_del(ctx, form, PDF_NAME(XFA));
+
     int len = pdf_xref_len(ctx, doc);
     for (int x = 1; x < len; x++) {
         pdf_obj *obj = NULL;
@@ -767,27 +1062,211 @@ void pt_scrub(fz_context *ctx, pdf_document *doc)
             continue;
         }
         if (pdf_is_dict(ctx, obj)) {
-            if (pdf_name_eq(ctx, pdf_dict_get(ctx, obj, PDF_NAME(S)), PDF_NAME(JavaScript))) {
+            pdf_dict_del(ctx, obj, PDF_NAME(PieceInfo));
+            pdf_dict_del(ctx, obj, PDF_NAME(AF));
+            if (pdf_dict_get(ctx, obj, PDF_NAME(EF))) {
+                pdf_dict_del(ctx, obj, PDF_NAME(EF));
+                pdf_dict_del(ctx, obj, PDF_NAME(F));
+                pdf_dict_del(ctx, obj, PDF_NAME(UF));
+                pdf_dict_del(ctx, obj, PDF_NAME(Desc));
+            }
+            if (pdf_name_eq(ctx, pdf_dict_get(ctx, obj, PDF_NAME(Type)), PDF_NAME(EmbeddedFile)) &&
+                pdf_obj_num_is_stream(ctx, doc, x)) {
+                pdf_dict_del(ctx, obj, PDF_NAME(Params));
+                pdf_dict_del(ctx, obj, PDF_NAME(Subtype));
+                blank_stream(ctx, doc, x, " ");
+            } else if (pdf_name_eq(ctx, pdf_dict_get(ctx, obj, PDF_NAME(S)), PDF_NAME(JavaScript))) {
                 pdf_obj *js = pdf_new_dict(ctx, doc, 2);
                 pdf_dict_put(ctx, js, PDF_NAME(S), PDF_NAME(JavaScript));
                 pdf_dict_put_text_string(ctx, js, PDF_NAME(JS), "");
                 pdf_update_object(ctx, doc, x, js);
                 pdf_drop_obj(ctx, js);
             } else if (pdf_name_eq(ctx, pdf_dict_get(ctx, obj, PDF_NAME(Type)), PDF_NAME(Metadata))) {
-                fz_buffer *gone = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)"deleted", 7);
                 pdf_obj *empty = pdf_new_dict(ctx, doc, 1);
                 pdf_update_object(ctx, doc, x, empty);
-                pdf_obj *ref = pdf_new_indirect(ctx, doc, x, 0);
-                pdf_update_stream(ctx, doc, ref, gone, 0);
-                pdf_drop_obj(ctx, ref);
                 pdf_drop_obj(ctx, empty);
-                fz_drop_buffer(ctx, gone);
+                blank_stream(ctx, doc, x, "deleted");
             } else if (pdf_dict_get(ctx, obj, PDF_NAME(Metadata))) {
                 pdf_dict_del(ctx, obj, PDF_NAME(Metadata));
             }
         }
         pdf_drop_obj(ctx, obj);
     }
+}
+
+/* ---- what a redaction leaves elsewhere in the file ---- */
+
+/* ASCII letters in any case, as --text matches. */
+static const char *find_ci(const char *hay, const char *needle)
+{
+    size_t n = strlen(needle);
+    for (const char *h = hay; n && *h; h++) {
+        size_t i = 0;
+        while (i < n && h[i] && tolower((unsigned char)h[i]) == tolower((unsigned char)needle[i])) i++;
+        if (i == n) return h;
+    }
+    return NULL;
+}
+
+/* `s` without the `gone` strings, or NULL when none occurs in it. */
+static char *without(const char *s, const pt_strs *gone)
+{
+    char *out = NULL;
+    for (int g = 0; g < gone->n; g++) {
+        const char *at;
+        while ((at = find_ci(out ? out : s, gone->v[g]))) {
+            const char *base = out ? out : s;
+            char *next = pt_format("%.*s%s", (int)(at - base), base, at + strlen(gone->v[g]));
+            free(out);
+            out = next;
+        }
+    }
+    return out;
+}
+
+typedef struct {
+    char *name;
+    pdf_obj *dest; /* explicit destination, or NULL */
+} gone_dest;
+
+PT_VEC(gone_dests, gone_dest);
+
+static void forget_dest(fz_context *ctx, gone_dests *out, const char *name, pdf_obj *value)
+{
+    pdf_obj *d = pdf_is_dict(ctx, value) ? pdf_dict_get(ctx, value, PDF_NAME(D)) : value;
+    pt_push(*out, ((gone_dest){pt_strdup(name), pdf_is_array(ctx, d) ? pdf_keep_obj(ctx, d) : NULL}));
+}
+
+/* Named destinations whose names hold a redacted string leave the name tree. */
+static void prune_dests(fz_context *ctx, pdf_obj *node, const pt_strs *gone, gone_dests *out, int depth)
+{
+    if (!node || depth > MAX_TREE_DEPTH) return;
+    pdf_obj *kids = pdf_dict_get(ctx, node, PDF_NAME(Kids));
+    for (int i = 0; i < pdf_array_len(ctx, kids); i++)
+        prune_dests(ctx, pdf_array_get(ctx, kids, i), gone, out, depth + 1);
+    pdf_obj *names = pdf_dict_get(ctx, node, PDF_NAME(Names));
+    for (int i = 0; i + 1 < pdf_array_len(ctx, names);) {
+        char *cut = without(pdf_to_text_string(ctx, pdf_array_get(ctx, names, i)), gone);
+        if (!cut) {
+            i += 2;
+            continue;
+        }
+        free(cut);
+        forget_dest(ctx, out, pdf_to_text_string(ctx, pdf_array_get(ctx, names, i)), pdf_array_get(ctx, names, i + 1));
+        pdf_array_delete(ctx, names, i + 1);
+        pdf_array_delete(ctx, names, i);
+    }
+}
+
+static const gone_dest *find_dest(fz_context *ctx, const gone_dests *dests, pdf_obj *ref)
+{
+    const char *name = pdf_is_name(ctx, ref)     ? pdf_to_name(ctx, ref)
+                       : pdf_is_string(ctx, ref) ? pdf_to_text_string(ctx, ref)
+                                                 : NULL;
+    for (int i = 0; name && i < dests->n; i++)
+        if (!strcmp(dests->v[i].name, name)) return &dests->v[i];
+    return NULL;
+}
+
+/* Strips the redacted strings from bookmark titles, page label prefixes, /Alt and /ActualText, and points links
+ * to a removed named destination at the destination itself; direct objects only, the indirect ones get their own
+ * turn. */
+static void strip_texts(fz_context *ctx, pdf_obj *obj, const pt_strs *gone, const gone_dests *dests, int depth)
+{
+    if (depth > MAX_TREE_DEPTH) return;
+    if (pdf_is_array(ctx, obj)) {
+        for (int i = 0; i < pdf_array_len(ctx, obj); i++) {
+            pdf_obj *v = pdf_array_get(ctx, obj, i);
+            if (!pdf_is_indirect(ctx, v)) strip_texts(ctx, v, gone, dests, depth + 1);
+        }
+        return;
+    }
+    if (!pdf_is_dict(ctx, obj)) return;
+    pdf_obj *keys[] = {PDF_NAME(Title), PDF_NAME(Alt), PDF_NAME(ActualText), PDF_NAME(P)};
+    for (size_t k = 0; k < sizeof keys / sizeof *keys; k++) {
+        pdf_obj *v = pdf_dict_get(ctx, obj, keys[k]);
+        if (!pdf_is_string(ctx, v)) continue;
+        char *cut = without(pdf_to_text_string(ctx, v), gone);
+        if (cut) pdf_dict_put_text_string(ctx, obj, keys[k], cut);
+        free(cut);
+    }
+    pdf_obj *links[] = {PDF_NAME(Dest), PDF_NAME(D)};
+    for (size_t k = 0; k < sizeof links / sizeof *links; k++) {
+        const gone_dest *g = find_dest(ctx, dests, pdf_dict_get(ctx, obj, links[k]));
+        if (!g) continue;
+        if (!g->dest) pdf_dict_del(ctx, obj, links[k]);
+        else if (pdf_is_indirect(ctx, g->dest)) pdf_dict_put(ctx, obj, links[k], g->dest);
+        else pdf_dict_put_drop(ctx, obj, links[k], pdf_deep_copy_obj(ctx, g->dest));
+    }
+    for (int i = 0; i < pdf_dict_len(ctx, obj); i++) {
+        pdf_obj *v = pdf_dict_get_val(ctx, obj, i);
+        if (!pdf_is_indirect(ctx, v)) strip_texts(ctx, v, gone, dests, depth + 1);
+    }
+}
+
+/* After a redaction the redacted strings go from the rest of the file, and the structure tree goes as a whole: it
+ * can hold the removed text in many forms. */
+static void scrub_redacted(fz_context *ctx, pdf_document *doc, const pt_strs *gone)
+{
+    pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root));
+    pdf_dict_del(ctx, root, PDF_NAME(StructTreeRoot));
+    pdf_dict_dels(ctx, root, "MarkInfo");
+    if (!gone->n) return;
+    gone_dests dests = {0};
+    fz_var(dests);
+    fz_try(ctx)
+    {
+        prune_dests(ctx, pdf_dict_getp(ctx, root, "Names/Dests"), gone, &dests, 0);
+        pdf_obj *old = pdf_dict_get(ctx, root, PDF_NAME(Dests));
+        for (int i = pdf_dict_len(ctx, old) - 1; i >= 0; i--) {
+            char *name = pt_strdup(pdf_to_name(ctx, pdf_dict_get_key(ctx, old, i)));
+            char *cut = without(name, gone);
+            if (cut) {
+                forget_dest(ctx, &dests, name, pdf_dict_get_val(ctx, old, i));
+                pdf_dict_dels(ctx, old, name);
+            }
+            free(cut);
+            free(name);
+        }
+        int len = pdf_xref_len(ctx, doc);
+        for (int x = 1; x < len; x++) {
+            pdf_obj *obj = NULL;
+            fz_try(ctx) obj = pdf_load_object(ctx, doc, x);
+            fz_catch(ctx)
+            {
+                fz_ignore_error(ctx);
+                continue;
+            }
+            fz_try(ctx) strip_texts(ctx, obj, gone, &dests, 0);
+            fz_always(ctx) pdf_drop_obj(ctx, obj);
+            fz_catch(ctx) fz_rethrow(ctx);
+        }
+    }
+    fz_always(ctx)
+    {
+        for (int i = 0; i < dests.n; i++) {
+            free(dests.v[i].name);
+            pdf_drop_obj(ctx, dests.v[i].dest);
+        }
+        pt_vec_free(dests);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+/* The lines of text under `rect`, each as one string to remove from the rest of the file. */
+static void gone_lines(fz_context *ctx, fz_stext_page *st, fz_rect rect, pt_strs *gone)
+{
+    char *text = pt_textbox(ctx, st, rect);
+    for (const char *line = text; *line;) {
+        const char *end = strchr(line, '\n');
+        if (!end) end = line + strlen(line);
+        const char *a = line, *z = end;
+        while (a < z && (*a == ' ' || *a == '\t')) a++;
+        while (z > a && (z[-1] == ' ' || z[-1] == '\t')) z--;
+        if (z > a) pt_push(*gone, pt_format("%.*s", (int)(z - a), a));
+        line = *end ? end + 1 : end;
+    }
+    free(text);
 }
 
 /* ---- the pipeline ---- */
@@ -827,18 +1306,29 @@ static void set_forms(fz_context *ctx, pdf_document *doc, const pt_state *s)
     }
 }
 
+/* Redactions remove the content, annotations and form fields under them (gone gets the text that was there), then
+ * the page is checked once for text still under them. */
 static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *fonts_doc, int pno, const pt_state *s,
-                             pt_leaks *leaks)
+                             pt_leaks *leaks, pt_strs *gone)
 {
     pdf_page *page = pdf_load_page(ctx, doc, pno);
     pt_rects redacts = {0};
+    fz_stext_page *st = NULL;
+    pt_chars chars = {0};
+    fz_var(page), fz_var(redacts), fz_var(st), fz_var(chars);
     fz_try(ctx)
     {
         for (int i = 0; i < s->items.n; i++)
             if (s->items.v[i].page == pno && s->items.v[i].kind == PT_REDACT) pt_push(redacts, s->items.v[i].rect);
         if (redacts.n) {
-            redact(ctx, doc, page, redacts.v, redacts.n, PDF_REDACT_IMAGE_PIXELS,
-                   PDF_REDACT_LINE_ART_REMOVE_IF_COVERED);
+            st = pt_stext(ctx, (fz_page *)page);
+            for (int i = 0; i < redacts.n; i++) gone_lines(ctx, st, redacts.v[i], gone);
+            fz_drop_stext_page(ctx, st);
+            st = NULL;
+            redact(ctx, doc, page, redacts.v, redacts.n, PDF_REDACT_IMAGE_PIXELS, PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                   PDF_REDACT_TEXT_REMOVE);
+            drop_annots(ctx, doc, page, redacts.v, redacts.n, 0);
+
             for (int i = 0; i < s->items.n; i++) {
                 const pt_item *it = &s->items.v[i];
                 if (it->page != pno || it->kind != PT_REDACT) continue;
@@ -846,17 +1336,19 @@ static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *f
                 r.x0 -= BLEED, r.y0 -= BLEED, r.x1 += BLEED, r.y1 += BLEED;
                 pt_fill_rect(ctx, doc, page, r, it->rgb);
             }
-            for (int i = 0; i < s->items.n; i++) {
-                const pt_item *it = &s->items.v[i];
-                if (it->page != pno || it->kind != PT_REDACT) continue;
-                fz_drop_page(ctx, (fz_page *)page);
-                page = NULL;
-                page = pdf_load_page(ctx, doc, pno);
-                char *t = pt_text_under(ctx, (fz_page *)page, it->rect);
+
+            fz_drop_page(ctx, (fz_page *)page);
+            page = NULL;
+            page = pdf_load_page(ctx, doc, pno);
+            st = pt_stext(ctx, (fz_page *)page);
+            pt_page_chars(st, &chars);
+            for (int i = 0; i < redacts.n; i++) {
+                char *t = pt_chars_under(&chars, redacts.v[i]);
                 if (*t && leaks) pt_push(*leaks, (pt_leak){pno + 1, t});
                 else free(t);
             }
         }
+
         for (int i = 0; i < s->items.n; i++) {
             const pt_item *it = &s->items.v[i];
             if (it->page != pno) continue;
@@ -869,26 +1361,93 @@ static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *f
     }
     fz_always(ctx)
     {
+        pt_vec_free(chars);
+        fz_drop_stext_page(ctx, st);
         pt_vec_free(redacts);
         fz_drop_page(ctx, (fz_page *)page);
     }
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *password, const pt_state *s, pt_leaks *leaks)
+/* A page listed twice in `order` gets its own copy for the second place: one page object under two parents is
+ * not a valid page tree (ISO 32000-1, 7.7.3.3) and an edit to one would show on both. The copy's annotations are
+ * copied too, except form widgets and popups (a widget belongs to one field and one page). */
+static void split_repeats(fz_context *ctx, pdf_document *doc, int *order, int n)
 {
-    pdf_document *doc = pt_open_pdf(ctx, path, password, &s->inserted);
-    pdf_document *fonts_doc = NULL;
-    fz_buffer *out = NULL;
-    pt_ints pages = {0};
+    int pages = pdf_count_pages(ctx, doc);
+    char *used = calloc((size_t)pages + 1, 1);
+    if (!used) abort();
+    pdf_obj *copy = NULL, *ref = NULL, *annots = NULL;
+    fz_var(copy), fz_var(ref), fz_var(annots);
     fz_try(ctx)
     {
-        fonts_doc = pt_open_pdf(ctx, path, password, &s->inserted);
+        for (int i = 0; i < n; i++) {
+            int p = order[i];
+            if (p < 0 || p >= pages) continue;
+            if (!used[p]) {
+                used[p] = 1;
+                continue;
+            }
+            pdf_obj *orig = pdf_lookup_page_obj(ctx, doc, p);
+            copy = pdf_deep_copy_obj(ctx, pdf_resolve_indirect(ctx, orig));
+            pdf_dict_del(ctx, copy, PDF_NAME(Parent));
+            pdf_dict_del(ctx, copy, PDF_NAME(Annots));
+            pdf_dict_del(ctx, copy, PDF_NAME(StructParents));
+            pdf_obj *inherited[] = {PDF_NAME(Resources), PDF_NAME(MediaBox), PDF_NAME(CropBox), PDF_NAME(Rotate)};
+            for (size_t k = 0; k < sizeof inherited / sizeof *inherited; k++) {
+                pdf_obj *v = pdf_dict_get_inheritable(ctx, orig, inherited[k]);
+                if (v && !pdf_dict_get(ctx, copy, inherited[k])) pdf_dict_put(ctx, copy, inherited[k], v);
+            }
+            ref = pdf_add_object(ctx, doc, copy);
+            pdf_obj *list = pdf_dict_get(ctx, orig, PDF_NAME(Annots));
+            annots = pdf_new_array(ctx, doc, pdf_array_len(ctx, list));
+            for (int k = 0; k < pdf_array_len(ctx, list); k++) {
+                pdf_obj *a = pdf_array_get(ctx, list, k);
+                pdf_obj *type = pdf_dict_get(ctx, a, PDF_NAME(Subtype));
+                if (pdf_name_eq(ctx, type, PDF_NAME(Widget)) || pdf_name_eq(ctx, type, PDF_NAME(Popup))) continue;
+                pdf_obj *dup = pdf_deep_copy_obj(ctx, pdf_resolve_indirect(ctx, a));
+                pdf_dict_put(ctx, dup, PDF_NAME(P), ref);
+                pdf_dict_del(ctx, dup, PDF_NAME(Popup));
+                pdf_dict_del(ctx, dup, PDF_NAME(StructParent));
+                pdf_array_push_drop(ctx, annots, pdf_add_object_drop(ctx, doc, dup));
+            }
+            if (pdf_array_len(ctx, annots)) pdf_dict_put(ctx, ref, PDF_NAME(Annots), annots);
+            pdf_insert_page(ctx, doc, -1, ref);
+            order[i] = pdf_count_pages(ctx, doc) - 1;
+            pdf_drop_obj(ctx, annots);
+            pdf_drop_obj(ctx, ref);
+            pdf_drop_obj(ctx, copy);
+            annots = ref = copy = NULL;
+        }
+    }
+    fz_always(ctx)
+    {
+        pdf_drop_obj(ctx, annots);
+        pdf_drop_obj(ctx, ref);
+        pdf_drop_obj(ctx, copy);
+        free(used);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+static fz_buffer *apply_edits(fz_context *ctx, const pt_source *src, const char *password, const pt_state *s,
+                              pt_leaks *leaks)
+{
+    pdf_document *doc = open_with_inserts(ctx, src, password, &s->inserted);
+    pdf_document *fonts_doc = NULL;
+    fz_buffer *out = NULL;
+    pt_ints pages = {0}, order = {0};
+    pt_strs gone = {0};
+    fz_var(fonts_doc), fz_var(out), fz_var(pages), fz_var(order), fz_var(gone);
+    fz_try(ctx)
+    {
+        fonts_doc = open_with_inserts(ctx, src, password, &s->inserted);
         for (int i = 0; i < s->deleted.n; i++) pt_remove_annot(ctx, doc, s->deleted.v[i]);
         set_annot_texts(ctx, doc, s);
         set_forms(ctx, doc, s);
         pt_set_meta(ctx, doc, &s->meta);
         if (s->outline_set) pt_write_outline(ctx, doc, &s->outline);
+
         int any_redact = 0;
         for (int i = 0; i < s->items.n; i++) {
             int p = s->items.v[i].page, seen = 0;
@@ -896,7 +1455,8 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
             for (int k = 0; k < pages.n; k++) seen |= pages.v[k] == p;
             if (!seen) pt_push(pages, p);
         }
-        for (int k = 0; k < pages.n; k++) apply_page_items(ctx, doc, fonts_doc, pages.v[k], s, leaks);
+        for (int k = 0; k < pages.n; k++) apply_page_items(ctx, doc, fonts_doc, pages.v[k], s, leaks, &gone);
+
         for (int i = 0; i < s->crop.n; i++) pt_crop_page(ctx, doc, s->crop.v[i].page, s->crop.v[i].rect);
         for (int i = 0; i < s->rotation.n; i++) {
             pdf_obj *page = pdf_lookup_page_obj(ctx, doc, s->rotation.v[i].page);
@@ -904,18 +1464,37 @@ fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *passwor
             pdf_dict_put_int(ctx, page, PDF_NAME(Rotate), (((old + s->rotation.v[i].degrees) % 360) + 360) % 360);
         }
         if (s->crop.n || any_redact) pt_scrub(ctx, doc);
-        if (s->order.n) pdf_rearrange_pages(ctx, doc, s->order.n, s->order.v, PDF_CLEAN_STRUCTURE_DROP);
+        if (any_redact) scrub_redacted(ctx, doc, &gone);
+
+        if (s->order.n) {
+            for (int i = 0; i < s->order.n; i++) pt_push(order, s->order.v[i]);
+            split_repeats(ctx, doc, order.v, order.n);
+            pdf_rearrange_pages(ctx, doc, order.n, order.v, PDF_CLEAN_STRUCTURE_DROP);
+        }
         pt_apply_stamps(ctx, doc, &s->stamps, NULL, 0);
         out = pt_doc_bytes(ctx, doc, NULL);
     }
     fz_always(ctx)
     {
+        pt_strs_free(&gone);
+        pt_vec_free(order);
         pt_vec_free(pages);
         pdf_drop_document(ctx, fonts_doc);
         pdf_drop_document(ctx, doc);
     }
     fz_catch(ctx) fz_rethrow(ctx);
     return out;
+}
+
+fz_buffer *pt_apply_edits(fz_context *ctx, const char *path, const char *password, const pt_state *s, pt_leaks *leaks)
+{
+    return apply_edits(ctx, &(pt_source){path, NULL}, password, s, leaks);
+}
+
+fz_buffer *pt_apply_edits_buffer(fz_context *ctx, fz_buffer *file, const char *name, const char *password,
+                                 const pt_state *s, pt_leaks *leaks)
+{
+    return apply_edits(ctx, &(pt_source){name, file}, password, s, leaks);
 }
 
 fz_buffer *pt_protect(fz_context *ctx, fz_buffer *data, const char *password)
@@ -999,11 +1578,12 @@ fz_buffer *pt_page_image(fz_context *ctx, fz_page *page, int dpi, int jpeg)
     return out;
 }
 
-/* A new page of `size` showing image `img` over all of it. */
+/* A new w x h page showing `img` over all of it. */
 static void image_page(fz_context *ctx, pdf_document *out, fz_image *img, float w, float h)
 {
     pdf_obj *ref = NULL, *res = NULL, *page = NULL;
     fz_buffer *b = NULL;
+    fz_var(ref), fz_var(res), fz_var(page), fz_var(b);
     fz_try(ctx)
     {
         ref = pdf_add_image(ctx, out, img);
@@ -1026,9 +1606,12 @@ static void image_page(fz_context *ctx, pdf_document *out, fz_image *img, float 
 
 fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
 {
+    if (dpi < DPI_MIN || dpi > DPI_MAX)
+        fz_throw(ctx, FZ_ERROR_ARGUMENT, "resolution %d dpi is outside %d to %d", dpi, DPI_MIN, DPI_MAX);
     pdf_document *src = pt_open_pdf_bytes(ctx, data->data, data->len, NULL);
     pdf_document *out = NULL;
     fz_buffer *result = NULL;
+    fz_var(out);
     fz_try(ctx)
     {
         out = pdf_create_document(ctx);
@@ -1038,6 +1621,7 @@ fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
             fz_pixmap *pix = NULL;
             fz_buffer *jpg = NULL;
             fz_image *img = NULL;
+            fz_var(pix), fz_var(jpg), fz_var(img);
             fz_try(ctx)
             {
                 fz_rect r = fz_bound_page(ctx, page);
@@ -1066,11 +1650,11 @@ fz_buffer *pt_flatten(fz_context *ctx, fz_buffer *data, int dpi)
     return result;
 }
 
-/* An image file as a one-page PDF, the page sized by the image's resolution. */
 pdf_document *pt_image_document(fz_context *ctx, const char *path)
 {
     fz_image *img = fz_new_image_from_file(ctx, path);
     pdf_document *out = NULL;
+    fz_var(out);
     fz_try(ctx)
     {
         int xres, yres;
@@ -1110,7 +1694,12 @@ fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts)
         for (int i = 0; i < parts->n; i++) {
             const char *path = parts->v[i].path;
             pdf_document *src = is_pdf_path(ctx, path) ? pdf_open_document(ctx, path) : pt_image_document(ctx, path);
-            fz_try(ctx) pt_graft_pages(ctx, out, src, parts->v[i].pages.v, parts->v[i].pages.n);
+            fz_try(ctx)
+            {
+                if (pdf_needs_password(ctx, src))
+                    fz_throw(ctx, FZ_ERROR_ARGUMENT, "%s is password protected; merge cannot open it", path);
+                pt_graft_pages(ctx, out, src, parts->v[i].pages.v, parts->v[i].pages.n);
+            }
             fz_always(ctx) pdf_drop_document(ctx, src);
             fz_catch(ctx) fz_rethrow(ctx);
         }
@@ -1121,10 +1710,54 @@ fz_buffer *pt_merge(fz_context *ctx, const pt_parts *parts)
     return result;
 }
 
-/* Copy pages with their annotations and form fields. pdf_graft_page leaves /Annots behind and does not register
- * widgets under /AcroForm, so both are carried over through the same object map. */
+static pdf_obj *field_root(fz_context *ctx, pdf_obj *field)
+{
+    pdf_obj *parent;
+    for (int depth = 0; depth < MAX_TREE_DEPTH && (parent = pdf_dict_get(ctx, field, PDF_NAME(Parent))); depth++)
+        field = parent;
+    return field;
+}
+
+/* Grafted objects (numbered from `first`) can reach source pages that were not chosen: a link's destination, a
+ * widget's /P or a field's other widgets lead to them, and their /Parent to the whole source page tree. Page and
+ * page tree objects outside dst's page tree are deleted, so what they hold is not written. */
+static void drop_unchosen_pages(fz_context *ctx, pdf_document *dst, int first)
+{
+    int len = pdf_xref_len(ctx, dst);
+    char *keep = calloc((size_t)len + 1, 1);
+    if (!keep) abort();
+    fz_try(ctx)
+    {
+        int n = pdf_count_pages(ctx, dst);
+        for (int p = 0; p < n; p++) {
+            pdf_obj *o = pdf_lookup_page_obj(ctx, dst, p);
+            for (int depth = 0; o && depth < MAX_TREE_DEPTH; depth++, o = pdf_dict_get(ctx, o, PDF_NAME(Parent))) {
+                int num = pdf_to_num(ctx, o);
+                if (num > 0 && num < len) keep[num] = 1;
+            }
+        }
+        for (int x = first; x < len; x++) {
+            if (keep[x]) continue;
+            pdf_obj *obj = NULL;
+            fz_try(ctx) obj = pdf_load_object(ctx, dst, x);
+            fz_catch(ctx)
+            {
+                fz_ignore_error(ctx);
+                continue;
+            }
+            pdf_obj *type = pdf_dict_get(ctx, obj, PDF_NAME(Type));
+            int page = pdf_name_eq(ctx, type, PDF_NAME(Page)) || pdf_name_eq(ctx, type, PDF_NAME(Pages));
+            pdf_drop_obj(ctx, obj);
+            if (page) pdf_delete_object(ctx, dst, x);
+        }
+    }
+    fz_always(ctx) free(keep);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
 void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const int *pages, int count)
 {
+    int first = pdf_xref_len(ctx, dst);
     pdf_graft_map *map = pdf_new_graft_map(ctx, dst);
     fz_try(ctx)
     {
@@ -1149,9 +1782,7 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
             fz_try(ctx)
             {
                 for (pdf_annot *w = pdf_first_widget(ctx, pg); w; w = pdf_next_widget(ctx, w)) {
-                    pdf_obj *field = pdf_annot_obj(ctx, w), *parent;
-                    while ((parent = pdf_dict_get(ctx, field, PDF_NAME(Parent)))) field = parent;
-                    pdf_obj *copy = pdf_graft_mapped_object(ctx, map, field);
+                    pdf_obj *copy = pdf_graft_mapped_object(ctx, map, field_root(ctx, pdf_annot_obj(ctx, w)));
                     if (!fields) {
                         pdf_obj *form = pdf_dict_get(ctx, dstroot, PDF_NAME(AcroForm));
                         if (!form) form = pdf_dict_put_dict(ctx, dstroot, PDF_NAME(AcroForm), 3);
@@ -1173,6 +1804,7 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
             fz_always(ctx) fz_drop_page(ctx, (fz_page *)pg);
             fz_catch(ctx) fz_rethrow(ctx);
         }
+        drop_unchosen_pages(ctx, dst, first);
     }
     fz_always(ctx) pdf_drop_graft_map(ctx, map);
     fz_catch(ctx) fz_rethrow(ctx);
@@ -1215,7 +1847,6 @@ static int cmp_key(const void *a, const void *b)
     return x->page != y->page ? x->page - y->page : x->xref - y->xref;
 }
 
-/* Entries grouped by page: the document first, then each page in turn. */
 void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int own, pt_name_fn form_name,
                      pt_name_fn annot_type, void *opaque, pt_entries *out)
 {
@@ -1240,6 +1871,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     if (s->cert.cert)
         add(&flat, s->cert.page, PT_E_CERT, "", pt_basename(s->cert.cert),
             (pt_ref){PT_E_CERT, s->cert.page, 0, {0, 0}});
+
     int pages = fz_count_pages(ctx, doc);
     for (int p = 0; p < pages; p++) {
         if (p < own && !in_order(s, p))
@@ -1255,6 +1887,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     }
     for (int i = 0; i < s->crop.n; i++)
         add(&flat, s->crop.v[i].page, PT_E_CROP, "", "", (pt_ref){PT_E_CROP, s->crop.v[i].page, 0, {0, 0}});
+
     /* items listed page by page in the order the pages were first edited, each with its index on the page */
     pt_ints seen = {0};
     for (int i = 0; i < s->items.n; i++) {
@@ -1265,6 +1898,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         int index = 0;
         fz_page *page = NULL;
         fz_stext_page *st = NULL;
+        fz_var(page), fz_var(st);
         for (int j = 0; j < s->items.n; j++) {
             const pt_item *it = &s->items.v[j];
             if (it->page != p) continue;
@@ -1273,7 +1907,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
                 if (!st) {
                     fz_try(ctx)
                     {
-                        page = fz_load_page(ctx, doc, p);
+                        if (!page) page = fz_load_page(ctx, doc, p);
                         st = pt_stext(ctx, page);
                     }
                     fz_catch(ctx) fz_ignore_error(ctx);
@@ -1298,6 +1932,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         fz_drop_page(ctx, page);
     }
     pt_vec_free(seen);
+
     for (int i = 0; i < s->forms.n; i++) {
         const pt_form_value *f = &s->forms.v[i];
         const char *shown = f->is_bool ? (f->on ? "checked" : "unchecked") : f->text;
@@ -1322,6 +1957,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         add(&flat, comments.v[i].key.page, PT_E_COMMENT, "", comments.v[i].text,
             (pt_ref){PT_E_COMMENT, comments.v[i].key.page, 0, comments.v[i].key});
     pt_vec_free(comments);
+
     /* grouped by page, pages in the order they are first listed */
     pt_ints order = {0};
     for (int i = 0; i < flat.n; i++) {
@@ -1345,9 +1981,8 @@ void pt_entries_free(pt_entries *e)
     pt_vec_free(*e);
 }
 
-int pt_count_edits(const pt_state *s, int own, int pages)
+int pt_count_edits(const pt_state *s, int own)
 {
-    (void)pages;
     int comments = 0, removed = 0, inserted = 0;
     for (int i = 0; i < s->annot_text.n; i++) comments += !pt_state_has_key(&s->deleted, s->annot_text.v[i].key);
     for (int p = 0; p < own; p++) removed += !in_order(s, p);
@@ -1434,6 +2069,7 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
             break;
         }
     }
+
     int k = 0;
     for (int i = 0; i < s->items.n; i++) {
         if (drop[i]) pt_item_free(&s->items.v[i]);

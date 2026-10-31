@@ -1,6 +1,6 @@
 # The third-party sources every build script uses, in one place: versions and SHA-256 checksums, and the size
-# settings all of them are compiled with. Sourced by platform/{linux,macos,android}/build.sh; the CI workflow runs
-# those scripts.
+# settings all of them are compiled with. Sourced by platform/{linux,macos,android,windows}/build.sh; the CI
+# workflow runs those scripts. (SIZE_CFLAGS are GCC/clang flags: the MSVC build leaves them out.)
 
 # the app's own version, from project() in CMakeLists.txt
 PT_VERSION=$(sed -n 's/^project(pdf_tools VERSION \([0-9.]*\).*/\1/p' "$(dirname "${BASH_SOURCE[0]}")/../CMakeLists.txt")

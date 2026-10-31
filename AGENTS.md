@@ -7,12 +7,22 @@ commands: they never prompt, print one JSON object on stdout, and exit with a me
 
 Conventions: pages are 1-based; ranges look like `1-3,7`; coordinates are PDF points
 (1/72 inch) measured from the page's top-left corner; output never overwrites the input
-(`-o` must be another file). An encrypted input needs `--password`, and the output keeps
-that password.
+(`-o` must be another file, also not a hard link to an input). An encrypted input needs
+`--password`, and the output keeps that password and the input's encryption and permissions
+(`"owner_password_replaced": true` when the owner password was not given: the output gets a
+new random one; `"user_password_replaced": true` when only the owner password was given: it
+opens the output). To keep a password out of the process
+list, `--password-file PATH`, `--current-password-file PATH` and `--cert-password-file PATH`
+stand for `--password`, `--current-password` and `--cert-password` and read it from the
+file's first line.
 
-Exit codes: `0` done, `1` error (`{"error": ...}`), `2` redaction written but text was
-still found under a redaction (see `text_left_under_redactions`), `3` nothing matched
-(nothing written).
+Exit codes: `0` done, `1` error (`{"error": ...}`, also for a wrong or missing option:
+`{"error": "usage: ..."}`), `2` redaction written but text was still found under a
+redaction (see `text_left_under_redactions`), `3` nothing matched (nothing written). An
+error after a command began its output (e.g. `split` failing at part 2) still prints one
+object: what was done so far plus `"error"`. A first argument that is not a command, not an
+option and not an existing file gets `{"error": "unknown command ..."}` and exit 1, never
+the window.
 
 ## Commands
 
@@ -63,7 +73,8 @@ pdf-tools scrub in.pdf -o out.pdf                            # metadata, attachm
 ```
 
 - `ocr` needs Tesseract's `LANG.traineddata` (in `--tessdata`, `$TESSDATA_PREFIX`,
-  `$XDG_DATA_HOME/pdf-tools/tessdata` or the system's data folders); `characters_added` in
+  `$XDG_DATA_HOME/pdf-tools/tessdata` (Windows: `%LOCALAPPDATA%\pdf-tools\tessdata`), `tessdata` next
+  to the program or the system's data folders); `characters_added` in
   the output is 0 when the pages already had text.
 - `sign --cert` writes a PKCS#7 digital signature (incremental save); `--image` alone only
   places a picture, which is not a cryptographic signature.
@@ -78,6 +89,8 @@ pdf-tools --forward file.pdf LINE source.tex   # scrolls the window showing that
 pdf-tools --install-desktop                    # launcher entry + icon in ~/.local/share (--uninstall-desktop removes)
 ```
 
+On Windows `--install-desktop` adds PDF Tools to "Open with" for PDFs (the current user's file types).
+
 Edits made in the window (redactions, text, signatures, forms, page changes) only reach the
 file when the user saves; do not expect them on disk.
 
@@ -91,7 +104,8 @@ The window follows a LaTeX build:
 - SyncTeX needs `-synctex=1` (latexmk: `-synctex=1`, or `$pdflatex = 'pdflatex -synctex=1 %O %S'`),
   which writes `name.synctex.gz` next to `name.pdf`. Without it, lookups report no data.
 - PDF to source: Ctrl+click in the window runs the user's `editor_command`
-  (`~/.config/pdf-tools/settings.toml`, `%f` = file, `%l` = line, e.g. `code -g %f:%l`).
+  (`~/.config/pdf-tools/settings.toml`, Windows: `%APPDATA%\pdf-tools\settings.toml`; `%f` = file,
+  `%l` = line, e.g. `code -g %f:%l`).
 - Source to PDF: run `pdf-tools --forward main.pdf LINE main.tex`; the running window jumps
   to that line and highlights it briefly. Without a running window it starts one.
 - Without the window, `pdf-tools synctex` answers the same questions as JSON, e.g. to find

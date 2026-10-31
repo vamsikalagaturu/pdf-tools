@@ -1,4 +1,5 @@
-/* The dark and light themes: the colours every widget draws with. */
+/* The dark and light themes: the colours every widget draws with (pal), which app.c sets from the theme and accent
+ * colour settings; and the colour helpers of ui.h. */
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,14 @@ static const ui_palette DARK = {
 static const Color ON_LIGHT_ACCENT = HEX(0x111111), ON_DARK_ACCENT = WHITE;
 
 ui_palette pal;
+
+Color with_alpha(Color c, int a)
+{
+    c.a = (unsigned char)a;
+    return c;
+}
+
+Color rgb3(const unsigned char rgb[3]) { return (Color){rgb[0], rgb[1], rgb[2], 255}; }
 
 void theme_apply(const char *mode)
 {

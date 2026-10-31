@@ -27,9 +27,9 @@ fz_buffer *cert_sign_output(tab *t, fz_buffer *pdf, const pt_ints *pages, const 
 void present_start(tab *t);
 int present_active(void);
 void present_frame(void);
-void compare_start(tab *t);
+void compare_start(tab *t); /* asks for a second PDF; compares the tab's file as last read (t->file) */
 void compare_free(compare *c);
-char *compare_title(const compare *c);
+char *compare_title(const compare *c); /* caller frees */
 void compare_frame(compare *c, Rectangle area);
 void compare_toolbar(compare *c, Rectangle area);
 void compare_shortcuts(compare *c);

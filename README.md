@@ -1,6 +1,6 @@
 # PDF Tools
 
-A PDF viewer and editor for Linux, macOS and Android, with a command line for scripts and agents.
+A PDF viewer and editor for Linux, macOS, Windows and Android, with a command line for scripts and agents.
 
 ![Viewer](assets/screenshots/viewer.png)
 
@@ -18,14 +18,50 @@ A PDF viewer and editor for Linux, macOS and Android, with a command line for sc
 
 ## Install
 
-Each push builds a Linux AppImage, a macOS `.dmg` and an Android APK on GitHub Actions (artifacts
-`PDF-Tools-Linux`, `PDF-Tools-macOS` and `PDF-Tools-Android`).
+Each push builds a Linux AppImage, a macOS `.dmg`, a Windows `.zip` and an Android APK on GitHub Actions
+(artifacts `PDF-Tools-Linux`, `PDF-Tools-macOS`, `PDF-Tools-Windows` and `PDF-Tools-Android`).
 
 On Linux, make the AppImage executable and run `./PDF_Tools-x86_64.AppImage --install-desktop` once to add it to
 the applications menu and to "Open with" for PDFs (`--uninstall-desktop` removes it; after moving the AppImage, run
 it again).
 
-On a Mac the app is not notarized: open it the first time with right-click > Open.
+### macOS
+
+The `.dmg` on the [releases page](../../releases) is for Apple Silicon Macs
+with macOS 11 or later (on an Intel Mac, build it with `platform/macos/build.sh`).
+
+1. Download `PDF-Tools.dmg`, open it and drag **PDF Tools** onto **Applications**. Eject the disk image.
+2. Open the app the first time. It is not notarized by Apple, so macOS blocks the first start:
+   - macOS 15 (Sequoia) and later: open PDF Tools from Applications, click **Done** on the warning, then go to
+     **System Settings > Privacy & Security**, scroll to "PDF Tools was blocked", click **Open Anyway** and confirm
+     with your password.
+   - macOS 14 and earlier: Control-click (or right-click) PDF Tools in Applications, choose **Open**, then **Open**
+     again.
+
+   Or, in Terminal, clear the download flag once instead: `xattr -dr com.apple.quarantine "/Applications/PDF Tools.app"`.
+3. To open PDFs with it by default: select a PDF in Finder, **File > Get Info**, under **Open with** pick PDF Tools,
+   then **Change All...**.
+4. For the command line (`pdf-tools info file.pdf`, ...), link the binary into your PATH:
+
+   ```sh
+   sudo mkdir -p /usr/local/bin
+   sudo ln -sf "/Applications/PDF Tools.app/Contents/MacOS/pdf-tools" /usr/local/bin/pdf-tools
+   ```
+
+An update is the same: drag the new version onto Applications and replace the old one.
+
+### Windows
+
+`PDF-Tools-Windows.zip` is for 64-bit Windows 10 (version 1903) or 11.
+
+1. Unpack it anywhere, e.g. to `%LOCALAPPDATA%\Programs`; the `PDF-Tools` folder holds `pdf-tools.exe`, the OCR
+   data and the Visual C++ runtime. The program is not signed, so SmartScreen may warn on the first start: **More
+   info**, then **Run anyway**.
+2. `pdf-tools.exe --install-desktop` adds PDF Tools to "Open with" for PDFs (`--uninstall-desktop` removes it);
+   to make it the default, pick it under **Open with > Choose another app** with **Always** ticked.
+3. For the command line, add the folder to your PATH.
+
+Settings are in `%APPDATA%\pdf-tools`, reading positions and window messages in `%LOCALAPPDATA%\pdf-tools`.
 
 ## Build
 
@@ -33,7 +69,11 @@ On a Mac the app is not notarized: open it the first time with right-click > Ope
 platform/linux/build.sh      # ~/.cache/pdf-tools/linux/out/PDF_Tools-<arch>.AppImage
 platform/macos/build.sh      # ~/Library/Caches/pdf-tools/macos/out/PDF-Tools.dmg
 platform/android/build.sh    # ~/.cache/pdf-tools-native/android/out/pdf-tools.apk (details: platform/android/README.md)
+platform/windows/build.sh    # in Git Bash: ~/.cache/pdf-tools/windows/out/PDF-Tools-Windows.zip
 ```
+
+The Windows script needs Visual Studio 2022 with the C++ tools and Strawberry Perl, as on GitHub's
+`windows-latest` runner; it builds MuPDF through its Visual Studio solution and everything else with MSVC.
 
 On Linux the script builds one `pdf-tools` binary (`~/.cache/pdf-tools/linux/build/pdf-tools`), with its
 dependencies linked in except fontconfig, OpenGL and the window system's libraries, and packs it with the English
@@ -75,9 +115,10 @@ Commands print one JSON object and exit with a meaningful code; `AGENTS.md` docu
 `render`, `annotate`, `draw`, `insert-text`, `insert-image`, `sign`, `bates`, `watermark`, `ocr`, `compare`,
 `export-images`, `scrub`, `inspect`.
 
-- Settings: `~/.config/pdf-tools/settings.toml` (e.g. `editor_command = "code -g %f:%l"` for SyncTeX).
+- Settings: `~/.config/pdf-tools/settings.toml`, on Windows `%APPDATA%\pdf-tools\settings.toml` (e.g.
+  `editor_command = "code -g %f:%l"` for SyncTeX).
 - OCR needs Tesseract's `LANG.traineddata` in `$TESSDATA_PREFIX`, `$XDG_DATA_HOME/pdf-tools/tessdata` or the
-  system's data folders; the AppImage, the macOS app and the APK include English.
+  system's data folders; the AppImage, the macOS app, the Windows zip and the APK include English.
 - LaTeX: compile with `-synctex=1`. Ctrl+click in the PDF opens the source line in your editor;
   `pdf-tools --forward file.pdf LINE file.tex` shows a source line in the PDF.
 - Interface size: View > Appearance > Interface size, or Ctrl+Alt++ / Ctrl+Alt+- (Ctrl+Alt+0: automatic); saved as

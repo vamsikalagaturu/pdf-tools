@@ -1,5 +1,7 @@
-/* The immediate-mode widget layer: fonts, input layers, buttons, text fields, spin boxes, combo boxes, popup menus,
- * modal dialogs, message boxes, the colour dialog and the themes. */
+/* The immediate-mode widget layer behind ui.h: fonts and text, the input queue, the frame with its layers and touch
+ * areas, buttons, text fields, spin and combo boxes, popup menus, modal dialogs (message, input and colour boxes),
+ * icons and mouse cursors. app.c's loop brackets each frame with ui_begin_frame/ui_end_frame; android_main.c feeds
+ * touch gestures and insets. Main thread only. */
 #include "ui.h"
 #include "ui_icons.h"
 #include "rlgl.h"
@@ -23,7 +25,7 @@ extern const int pt_ui_font_bold_size;
 
 ui_state ui;
 
-/* ---- fonts ---- */
+/* ---- fonts and text ---- */
 
 float ui_px(void) { return (ui.scale > 0 ? ui.scale : 1) * (ui.density > 0 ? ui.density : 1); }
 
@@ -34,6 +36,7 @@ typedef struct {
     font_kind kind;
     Font font;
 } sized_font;
+
 #define FONT_CACHE 48
 static sized_font font_cache[FONT_CACHE];
 static int nfonts;
@@ -56,6 +59,7 @@ void ui_fonts_load(void)
     add_range(&codepoints, 0x2212, 0x2212);
 }
 
+/* The cache owns the font: it stays valid only until FONT_CACHE other sizes were asked for, so use it at once. */
 static Font font_at(font_kind f, float size)
 {
     int px = (int)lroundf(size * UI_PX);
@@ -184,34 +188,6 @@ int text_index_at(const char *s, int len, float x, float size, font_kind f)
     return len;
 }
 
-/* ---- frame and layers ---- */
-
-#define MAX_LAYERS 64
-typedef struct {
-    unsigned id;
-    Rectangle r;
-    int modal;
-} layer;
-static layer prev_layers[MAX_LAYERS], cur_layers[MAX_LAYERS];
-static int nprev, ncur;
-static unsigned layer_stack[16];
-static int depth;
-static double last_click_time;
-static Vector2 last_click_pos;
-
-unsigned ui_id(const void *p, int k)
-{
-    uintptr_t v = (uintptr_t)p;
-    return (unsigned)(v ^ (v >> 29) ^ ((unsigned)k * 2654435761u)) | 1u;
-}
-
-unsigned ui_id_str(const char *s, int k)
-{
-    unsigned h = 2166136261u;
-    while (*s) h = (h ^ (unsigned char)*s++) * 16777619u;
-    return (h ^ ((unsigned)k * 2654435761u)) | 1u;
-}
-
 /* ---- input events ----
  * The window sleeps between events, so a quick click or key tap can arrive whole (press and release) before the
  * next frame and raylib's current-state checks would miss it. GLFW's callbacks are chained to queue every event;
@@ -232,15 +208,20 @@ void glfwGetWindowContentScale(void *window, float *x, float *y);
 
 static glfw_mouse_fn raylib_mouse;
 static glfw_key_fn raylib_key;
+
 static struct {
     int button, action;
 } mouse_events[64];
+
 static int nmouse;
+
 static struct {
     int key, mods;
 } key_events[64], frame_keys[64];
+
 static int nkeys, nframe_keys;
-static int frame_mods; /* modifiers held when this frame's keys were pressed (they may be up by now) */
+static int frame_mods;   /* modifiers held when this frame's keys were pressed (they may be up by now) */
+static int keys_blocked; /* while a dialog under the top one draws */
 static int left_down;
 static Vector2 drawn_mouse; /* the pointer when the last frame began */
 
@@ -263,6 +244,7 @@ void ui_input_init(void)
     raylib_key = glfwSetKeyCallback(w, on_key);
 }
 
+/* Hands this frame the oldest mouse button event (the rest wait for the next frames) and every queued key press. */
 static void take_events(void)
 {
     ui.pressed = ui.released = ui.rpressed = ui.rreleased = ui.mpressed = 0;
@@ -287,38 +269,23 @@ static void take_events(void)
     frame_mods = 0;
     for (int i = 0; i < nkeys; i++) frame_mods |= key_events[i].mods;
     nkeys = 0;
+    /* the next button event in the queue gets the next frame without waiting for more input */
     if (nmouse) ui.dirty = 1;
 }
 
 int ui_events_pending(void) { return nmouse > 0 || nkeys > 0; }
 
-/* any input since the last frame: clicks and keys, pointer movement, the wheel */
 int ui_input_since_frame(void)
 {
     Vector2 m = GetMousePosition(), w = GetMouseWheelMoveV();
     return ui_events_pending() || m.x != drawn_mouse.x || m.y != drawn_mouse.y || w.x || w.y;
 }
 
-/* the key was pressed (or repeats) this frame, whatever has focus */
-int key_pressed(int key)
-{
-    for (int i = 0; i < nframe_keys; i++)
-        if (frame_keys[i].key == key) return 1;
-    return 0;
-}
-
-static int key_with_mods(int key, int ctrl, int shift, int alt)
-{
-    for (int i = 0; i < nframe_keys; i++)
-        if (frame_keys[i].key == key && !!(frame_keys[i].mods & GLFW_MOD_CONTROL) == ctrl &&
-            !!(frame_keys[i].mods & GLFW_MOD_SHIFT) == shift && !!(frame_keys[i].mods & GLFW_MOD_ALT) == alt)
-            return 1;
-    return 0;
-}
+/* ---- scale, insets and touch gestures ---- */
 
 /* The UI scale: PDF_TOOLS_SCALE, else the chosen interface size, else the window system's content scale when it
  * reports one (Wayland always does), else the physical DPI of the window's monitor over 96 (XWayland reports a
- * content scale of 1 even on fractionally scaled outputs), in quarter steps, never below 1. */
+ * content scale of 1 even on fractionally scaled outputs) in quarter steps from 1 to 3. */
 float ui_detect_scale(void)
 {
     const char *env = getenv("PDF_TOOLS_SCALE");
@@ -376,6 +343,79 @@ void ui_add_double_tap(float screen_x, float screen_y)
     ui.dirty = 1;
 }
 
+/* ---- frame and layers ---- */
+
+#define MAX_LAYERS 64
+
+typedef struct {
+    unsigned id;
+    Rectangle r;
+    int modal;
+} layer;
+
+/* hit tests use the layers the previous frame drew, since this frame's are not known until it is drawn */
+static layer prev_layers[MAX_LAYERS], cur_layers[MAX_LAYERS];
+static int nprev, ncur;
+static unsigned layer_stack[16];
+static int depth;
+static double last_click_time;
+static Vector2 last_click_pos;
+
+unsigned ui_id(const void *p, int k)
+{
+    uintptr_t v = (uintptr_t)p;
+    return (unsigned)(v ^ (v >> 29) ^ ((unsigned)k * 2654435761u)) | 1u;
+}
+
+unsigned ui_id_str(const char *s, int k)
+{
+    unsigned h = 2166136261u;
+    while (*s) h = (h ^ (unsigned char)*s++) * 16777619u;
+    return (h ^ ((unsigned)k * 2654435761u)) | 1u;
+}
+
+void ui_redraw_at(double when)
+{
+    if (!ui.redraw_at || when < ui.redraw_at) ui.redraw_at = when;
+}
+
+/* Touch: a one-finger drag pans unless it starts where the last frame drew a drag area (a drawing tool's page,
+ * the signature pad) and nothing lies on top of it there. Drag and zoom areas share one list of layers whose
+ * .modal holds the kind: 0 drag, 1 zoom. */
+#define MAX_TOUCH_AREAS 32
+static layer prev_drags[MAX_TOUCH_AREAS], cur_drags[MAX_TOUCH_AREAS];
+static int nprev_drags, ncur_drags;
+
+void ui_touch_drag_area(Rectangle r)
+{
+    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 0};
+}
+
+void ui_touch_zoom_area(Rectangle r)
+{
+    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 1};
+}
+
+static int touch_area_at(float screen_x, float screen_y, int kind)
+{
+    if (ui.scale <= 0) return 0;
+    Vector2 p = {(screen_x - inset_l) / ui.scale, (screen_y - inset_t) / ui.scale};
+    unsigned top = 0;
+    for (int i = nprev - 1; i >= 0; i--)
+        if (prev_layers[i].modal || CheckCollisionPointRec(p, prev_layers[i].r)) {
+            top = prev_layers[i].id;
+            break;
+        }
+    for (int i = 0; i < nprev_drags; i++)
+        if (prev_drags[i].modal == kind && prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r))
+            return 1;
+    return 0;
+}
+
+int ui_touch_drags_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 0); }
+
+int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 1); }
+
 void ui_begin_frame(void)
 {
     static double checked;
@@ -388,6 +428,7 @@ void ui_begin_frame(void)
     ui.h = (GetScreenHeight() - inset_t - inset_b) / ui.scale;
     SetMouseOffset((int)-inset_l, (int)-inset_t);
     SetMouseScale(1 / ui.scale, 1 / ui.scale);
+
     ui.mouse = GetMousePosition();
     take_events();
     Vector2 wheel = GetMouseWheelMoveV();
@@ -400,6 +441,7 @@ void ui_begin_frame(void)
     ui.double_tap_at =
         (Vector2){(double_tap_screen.x - inset_l) / ui.scale, (double_tap_screen.y - inset_t) / ui.scale};
     double_tap = 0;
+
     if (nframe_keys) {
         ui.ctrl = (frame_mods & GLFW_MOD_CONTROL) != 0;
         ui.shift = (frame_mods & GLFW_MOD_SHIFT) != 0;
@@ -409,6 +451,7 @@ void ui_begin_frame(void)
         ui.shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
         ui.alt = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
     }
+
     ui.now = GetTime();
     ui.dclick = 0;
     if (ui.pressed) {
@@ -417,6 +460,7 @@ void ui_begin_frame(void)
         last_click_time = ui.dclick ? 0 : ui.now;
         last_click_pos = ui.mouse;
     }
+
     ui.mouse_layer = 0;
     ui.modal = 0;
     for (int i = nprev - 1; i >= 0; i--) {
@@ -437,12 +481,13 @@ void ui_begin_frame(void)
                 ui.mouse_layer = prev_layers[i].id;
                 break;
             }
+
     ncur = 0;
     depth = 0;
     ui.layer = 0;
     ui.tip = NULL;
     ui.focus_taken = 0;
-    ui.keys_eaten = ui.focus != NULL;
+
     rlPushMatrix();
     rlTranslatef(inset_l, inset_t, 0);
     rlScalef(ui.scale, ui.scale, 1);
@@ -456,45 +501,6 @@ void ui_layer_begin(unsigned id, Rectangle r, int modal)
 }
 
 void ui_layer_end(void) { ui.layer = depth ? layer_stack[--depth] : 0; }
-
-/* Touch: a one-finger drag pans unless it starts where the last frame drew a drag area (a drawing tool's page,
- * the signature pad) and nothing lies on top of it there. */
-#define MAX_TOUCH_AREAS 32
-static layer prev_drags[MAX_TOUCH_AREAS], cur_drags[MAX_TOUCH_AREAS];
-static int nprev_drags, ncur_drags;
-
-void ui_touch_drag_area(Rectangle r)
-{
-    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 0};
-}
-
-/* the page view: a double tap there zooms (kind 1 in the same list) */
-void ui_touch_zoom_area(Rectangle r)
-{
-    if (ncur_drags < MAX_TOUCH_AREAS) cur_drags[ncur_drags++] = (layer){ui.layer, r, 1};
-}
-
-static int touch_area_at(float screen_x, float screen_y, int kind);
-
-int ui_touch_drags_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 0); }
-
-int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 1); }
-
-static int touch_area_at(float screen_x, float screen_y, int kind)
-{
-    if (ui.scale <= 0) return 0;
-    Vector2 p = {(screen_x - inset_l) / ui.scale, (screen_y - inset_t) / ui.scale};
-    unsigned top = 0;
-    for (int i = nprev - 1; i >= 0; i--)
-        if (prev_layers[i].modal || CheckCollisionPointRec(p, prev_layers[i].r)) {
-            top = prev_layers[i].id;
-            break;
-        }
-    for (int i = 0; i < nprev_drags; i++)
-        if (prev_drags[i].modal == kind && prev_drags[i].id == top && CheckCollisionPointRec(p, prev_drags[i].r))
-            return 1;
-    return 0;
-}
 
 int ui_hover(Rectangle r) { return ui.layer == ui.mouse_layer && CheckCollisionPointRec(ui.mouse, r); }
 
@@ -521,7 +527,7 @@ static void draw_tooltip(void)
         return;
     }
     if (ui.now - ui.tip_since < 0.6) {
-        ui.dirty = 1;
+        ui_redraw_at(ui.tip_since + 0.6);
         return;
     }
     pt_strs lines = {0};
@@ -563,6 +569,8 @@ void ui_end_frame(void)
     ncur_drags = 0;
 }
 
+/* ---- clipping ---- */
+
 static Rectangle scissors[16];
 static int nscissors;
 
@@ -591,6 +599,26 @@ void ui_scissor_end(void)
     else EndScissorMode();
 }
 
+/* ---- keys and shortcuts ---- */
+
+int key_pressed(int key)
+{
+    if (keys_blocked) return 0;
+    for (int i = 0; i < nframe_keys; i++)
+        if (frame_keys[i].key == key) return 1;
+    return 0;
+}
+
+static int key_with_mods(int key, int ctrl, int shift, int alt)
+{
+    if (keys_blocked) return 0;
+    for (int i = 0; i < nframe_keys; i++)
+        if (frame_keys[i].key == key && !!(frame_keys[i].mods & GLFW_MOD_CONTROL) == ctrl &&
+            !!(frame_keys[i].mods & GLFW_MOD_SHIFT) == shift && !!(frame_keys[i].mods & GLFW_MOD_ALT) == alt)
+            return 1;
+    return 0;
+}
+
 /* Keys a focused text field handles itself. */
 static int editing_key(int ctrl, int key)
 {
@@ -617,8 +645,6 @@ int ui_shortcut_alt(int ctrl, int shift, int alt, int key)
 }
 
 int ui_shortcut(int ctrl, int shift, int key) { return ui_shortcut_alt(ctrl, shift, 0, key); }
-
-int ui_key_eaten(void) { return ui.focus != NULL; }
 
 /* ---- basic widgets ---- */
 
@@ -742,13 +768,15 @@ float ui_toolbar_separator(float x, float y, float h)
     ui_separator_v(x + 3, y + 5, y + h - 5);
     return x + UI_SEP_W;
 }
+
 void ui_separator_h(float x0, float x1, float y) { DrawLineEx((Vector2){x0, y}, (Vector2){x1, y}, 1, pal.border); }
 
 void ui_spinner(Vector2 c, float radius)
 {
     float a = (float)fmod(ui.now * 360, 360);
     DrawRing(c, radius - 3, radius, a, a + 270, 24, pal.highlight);
-    ui.dirty = 1;
+    /* 20 frames a second turn it smoothly enough; waiting on another program needs no more */
+    ui_redraw_at(ui.now + 0.05);
 }
 
 float ui_scrollbar(unsigned id, Rectangle track, float content, float view, float *offset)
@@ -778,7 +806,33 @@ float ui_scrollbar(unsigned id, Rectangle track, float content, float view, floa
     return max;
 }
 
-/* a solid track the full length and a solid thumb, lighter while hovered or dragged */
+float ui_scrollbar_h(unsigned id, Rectangle track, float content, float view, float *offset)
+{
+    float max = content - view;
+    if (max <= 0) {
+        *offset = 0;
+        return 0;
+    }
+    if (*offset > max) *offset = max;
+    if (*offset < 0) *offset = 0;
+    float w = fmaxf(24, track.width * view / content), x = track.x + (track.width - w) * (*offset / max);
+    Rectangle thumb = {x, track.y + 1, w, track.height - 2};
+    static float grab;
+    if (ui_hover(thumb) && ui.pressed) {
+        ui.active = id;
+        grab = ui.mouse.x - x;
+    } else if (ui_hover(track) && ui.pressed) {
+        ui.active = id;
+        grab = w / 2;
+    }
+    if (ui.active == id && ui.down) {
+        float t = (ui.mouse.x - grab - track.x) / fmaxf(1, track.width - w);
+        *offset = fminf(fmaxf(t, 0), 1) * max;
+    }
+    ui_scroll_draw(track, thumb, ui.active == id || ui_hover(track));
+    return max;
+}
+
 void ui_scroll_draw(Rectangle track, Rectangle thumb, int hot)
 {
     if (hot) set_cursor(CUR_ARROW);
@@ -840,7 +894,7 @@ static void text_delete(ui_text *t, int a, int b)
         a = b;
         b = x;
     }
-    memmove(t->buf + a, t->buf + b, (size_t)(t->len - b + 1));
+    memmove(t->buf + a, t->buf + b, (size_t)(t->len - b) + 1);
     t->len -= b - a;
     t->caret = t->anchor = a;
     t->changed = 1;
@@ -850,7 +904,7 @@ static void text_insert(ui_text *t, const char *s, int n)
 {
     if (t->caret != t->anchor) text_delete(t, t->caret, t->anchor);
     text_reserve(t, t->len + n);
-    memmove(t->buf + t->caret + n, t->buf + t->caret, (size_t)(t->len - t->caret + 1));
+    memmove(t->buf + t->caret + n, t->buf + t->caret, (size_t)(t->len - t->caret) + 1);
     memcpy(t->buf + t->caret, s, (size_t)n);
     t->len += n;
     t->caret = t->anchor = t->caret + n;
@@ -895,6 +949,7 @@ static int word_right(const char *s, int len, int i)
 typedef struct {
     int start, end;
 } tline;
+
 PT_VEC(tlines, tline);
 
 static void layout_lines(const ui_text *t, float width, tlines *out)
@@ -927,12 +982,29 @@ static void layout_lines(const ui_text *t, float width, tlines *out)
     }
 }
 
+/* The line holding offset pos: at a wrap the offset starts the next line, at a newline it ends its own. */
 static int line_of(const tlines *lines, int pos)
 {
     for (int i = 0; i < lines->n; i++)
         if (pos < lines->v[i].end || (pos == lines->v[i].end && (i + 1 == lines->n || lines->v[i + 1].start > pos)))
             return i;
     return lines->n - 1;
+}
+
+/* GTK's gtk-cursor-blink-timeout: after this long without typing the caret stops blinking and stays on */
+#define CARET_BLINK_TIMEOUT_S 10.0
+
+static int caret_blinking(double blink) { return IsWindowFocused() && ui.now - blink < CARET_BLINK_TIMEOUT_S; }
+
+/* the caret shows for 0.6 s of every second while it blinks */
+int ui_caret_shown(double blink) { return !caret_blinking(blink) || fmod(ui.now - blink, 1.0) < 0.6; }
+
+/* draw again when the caret turns on or off, or stops blinking */
+static void caret_redraw(double blink)
+{
+    if (!caret_blinking(blink)) return;
+    double phase = fmod(ui.now - blink, 1.0);
+    ui_redraw_at(fmin(ui.now + (phase < 0.6 ? 0.6 - phase : 1.0 - phase), blink + CARET_BLINK_TIMEOUT_S));
 }
 
 int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
@@ -996,7 +1068,6 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
 
     /* keys */
     if (focused) {
-        ui.keys_eaten = 1;
         int ch;
         while ((ch = GetCharPressed()) > 0) {
             if (t->readonly || ui.ctrl) continue;
@@ -1016,6 +1087,7 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
             text_insert(t, buf, n);
             result |= TE_CHANGED;
         }
+
 #define KEY(k) key_pressed(k)
         int lo = t->caret < t->anchor ? t->caret : t->anchor, hi = t->caret < t->anchor ? t->anchor : t->caret;
         if (KEY(KEY_BACKSPACE) && !t->readonly) {
@@ -1102,6 +1174,7 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         if (KEY(KEY_ESCAPE)) result |= TE_CANCEL;
         if (KEY(KEY_TAB) && !t->multiline) result |= ui.shift ? TE_BACKTAB : TE_TAB;
 #undef KEY
+
         if (result & TE_CHANGED) {
             free(shown);
             shown = NULL;
@@ -1120,12 +1193,13 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
     }
 
     if (t->invisible) {
-        if (focused) ui.dirty = 1;
+        if (focused) caret_redraw(t->blink);
         pt_vec_free(lines);
         free(shown);
         if (t->changed) result |= TE_CHANGED, t->changed = 0;
         return result;
     }
+
     /* draw */
     int caret = SHOWN(t->caret), anchor = SHOWN(t->anchor);
     int cl = t->multiline ? line_of(&lines, caret) : 0;
@@ -1164,12 +1238,12 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
         float y = t->multiline ? inner.y : inner.y + (inner.height - lh) / 2;
         draw_text(t->placeholder, inner.x, text_top(y + lh / 2, t->size), t->size, F_REGULAR, pal.placeholder);
     }
-    if (focused && fmod(ui.now - t->blink, 1.0) < 0.6) {
+    if (focused && ui_caret_shown(t->blink)) {
         float y = t->multiline ? inner.y + cl * lh - t->scroll_y : inner.y + (inner.height - lh) / 2;
         float x = inner.x - t->scroll_x + cx;
         DrawLineEx((Vector2){x, y + 2}, (Vector2){x, y + lh - 2}, 1.2f, pal.text);
     }
-    if (focused) ui.dirty = 1;
+    if (focused) caret_redraw(t->blink);
     ui_scissor_end();
     pt_vec_free(lines);
     free(shown);
@@ -1296,12 +1370,13 @@ typedef struct menu_entry {
     intptr_t arg;
     ui_menu *sub;
 } menu_entry;
+
 PT_VEC(menu_entries, menu_entry);
+
 struct ui_menu {
     menu_entries items;
     Rectangle r;
     int open_sub;
-    float hover_since;
 };
 
 #define MENU_ROW 26
@@ -1427,6 +1502,8 @@ void menus_frame(void)
         ui_action fn = pending_fn;
         pending_fn = NULL;
         fn(pending_ctx, pending_arg);
+        /* the action runs after this frame's widgets were drawn: draw them again with its result */
+        ui.dirty = 1;
     }
     if (!nopen) return;
     unsigned catcher = ui_id_str("menu-catcher", 0);
@@ -1437,7 +1514,6 @@ void menus_frame(void)
         menus_close();
         return;
     }
-    ui.dirty = 1;
     for (int level = 0; level < nopen; level++) {
         ui_menu *m = open_menus[level];
         unsigned lid = ui_id(m, 7);
@@ -1459,7 +1535,6 @@ void menus_frame(void)
             if (hover) {
                 if (m->open_sub != i) {
                     m->open_sub = i;
-                    m->hover_since = (float)ui.now;
                     nopen = level + 1;
                 }
             }
@@ -1507,13 +1582,21 @@ void menus_frame(void)
 
 /* ---- modal dialogs ---- */
 
-static dialog *dialogs[8];
+#define DIALOGS_MAX 8
+static dialog *dialogs[DIALOGS_MAX];
 static int ndialogs;
 
 void dialog_push(dialog *d)
 {
     menus_close();
-    if (ndialogs < 8) dialogs[ndialogs++] = d;
+    if (ndialogs == DIALOGS_MAX) {
+        /* answered as if closed, so the asker does not wait for it forever */
+        pt_log(PT_LOG_WARN, "too many open dialogs: \"%s\" dropped", d->title ? d->title : "");
+        if (d->free) d->free(d);
+        free(d);
+        return;
+    }
+    dialogs[ndialogs++] = d;
     if (ui.focus) ui.focus = NULL;
 }
 
@@ -1521,6 +1604,8 @@ int dialogs_open(void) { return ndialogs; }
 
 void dialogs_frame(void)
 {
+    /* one opened during this frame waits for the next one's input */
+    int top = ndialogs - 1;
     for (int i = 0; i < ndialogs; i++) {
         dialog *d = dialogs[i];
         unsigned lid = ui_id(d, 3);
@@ -1533,14 +1618,16 @@ void dialogs_frame(void)
                      pal.window_text, -1);
         Rectangle body = {box.x + 16, box.y + 40, box.width - 32, box.height - 56};
         int done = 0;
-        if (i == ndialogs - 1) {
+        if (i == top) {
             done = d->frame(d, body);
             if (!done && d->escape_closes && key_pressed(KEY_ESCAPE) && !ui.focus) done = 1;
         } else {
-            /* lower dialogs are drawn but get no input */
+            /* the others are drawn but get no input: an answer there could act on what the top one is about */
             unsigned saved = ui.mouse_layer;
             ui.mouse_layer = (unsigned)-1;
+            keys_blocked = 1;
             d->frame(d, body);
+            keys_blocked = 0;
             ui.mouse_layer = saved;
         }
         ui_layer_end();
@@ -1854,17 +1941,9 @@ void colour_dialog(const char *title, const unsigned char rgb[3], ui_colour_done
     dialog_push(d);
 }
 
-Color with_alpha(Color c, int a)
-{
-    c.a = (unsigned char)a;
-    return c;
-}
-
-Color rgb3(const unsigned char rgb[3]) { return (Color){rgb[0], rgb[1], rgb[2], 255}; }
-
-/* ---- icons and cursors ----
- * Lucide icons (ISC, assets/icons) rendered by MuPDF as white masks and tinted when drawn, and the app's mouse
- * cursors, drawn from the same icons so they do not depend on the desktop's cursor theme. */
+/* ---- icons ----
+ * Lucide icons (ISC, assets/icons) rendered by MuPDF as white masks and tinted when drawn. The mouse cursors (below)
+ * are drawn from the same icons so they do not depend on the desktop's cursor theme. */
 
 /* "#rrggbb" of c, for an SVG's colour attributes */
 static const char *svg_hex(Color c, char out[8])
@@ -1872,16 +1951,6 @@ static const char *svg_hex(Color c, char out[8])
     snprintf(out, 8, "#%02x%02x%02x", c.r, c.g, c.b);
     return out;
 }
-
-/* GLFW's custom-cursor calls. raylib's GetWindowHandle() is the native (X11/Wayland) handle, not the GLFWwindow,
- * which is the current GL context. */
-typedef struct {
-    int width, height;
-    unsigned char *pixels;
-} GLFWimage;
-void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot);
-void glfwSetCursor(void *window, void *cursor);
-void glfwDestroyCursor(void *cursor);
 
 static fz_context *ictx;
 
@@ -1983,8 +2052,9 @@ typedef struct {
     Texture2D tex;
     int loaded;
 } icon_tex;
-static icon_tex cache[192];
-static int ncache;
+
+static icon_tex icon_cache[192];
+static int nicons;
 static Texture2D logo;
 
 static const pt_icon_data *lucide_file(const char *file)
@@ -2011,7 +2081,7 @@ static char *replace_all(const char *s, const char *from, const char *to)
     return out;
 }
 
-/* An SVG rendered with `ctm` into a size x size RGBA image (caller frees pixels). */
+/* An SVG rendered with `ctm` into a size x size RGBA image, not premultiplied; malloc'd, NULL when MuPDF fails. */
 static unsigned char *render_svg(const char *svg, int size, fz_matrix ctm)
 {
     unsigned char *rgba = NULL;
@@ -2021,7 +2091,7 @@ static unsigned char *render_svg(const char *svg, int size, fz_matrix ctm)
     fz_page *page = NULL;
     fz_pixmap *pix = NULL;
     fz_device *dev = NULL;
-    fz_var(rgba);
+    fz_var(rgba), fz_var(buf), fz_var(stm), fz_var(doc), fz_var(page), fz_var(pix), fz_var(dev);
     fz_try(ictx)
     {
         buf = fz_new_buffer_from_copied_data(ictx, (const unsigned char *)svg, strlen(svg));
@@ -2090,12 +2160,14 @@ void draw_logo(Rectangle r)
     DrawTexturePro(logo, (Rectangle){0, 0, (float)logo.width, (float)logo.height}, r, (Vector2){0, 0}, 0, WHITE);
 }
 
+/* The entry keeps `name` itself, not a copy. Rendered on first use; .loaded is 0 for a name without an icon. NULL when
+ * the cache is full. */
 static icon_tex *icon_for(const char *name)
 {
-    for (int i = 0; i < ncache; i++)
-        if (!strcmp(cache[i].name, name)) return &cache[i];
-    if (ncache >= (int)(sizeof cache / sizeof *cache)) return NULL;
-    icon_tex *it = &cache[ncache++];
+    for (int i = 0; i < nicons; i++)
+        if (!strcmp(icon_cache[i].name, name)) return &icon_cache[i];
+    if (nicons >= (int)(sizeof icon_cache / sizeof *icon_cache)) return NULL;
+    icon_tex *it = &icon_cache[nicons++];
     it->name = name;
     const char *file = name;
     for (int i = 0; i < NLUCIDE; i++)
@@ -2123,12 +2195,24 @@ void draw_icon(const char *name, Rectangle r, Color tint)
 
 /* ---- cursors ---- */
 
+/* GLFW's custom-cursor calls. raylib's GetWindowHandle() is the native (X11/Wayland) handle, not the GLFWwindow,
+ * which is the current GL context. */
+typedef struct {
+    int width, height;
+    unsigned char *pixels;
+} GLFWimage;
+
+void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot);
+void glfwSetCursor(void *window, void *cursor);
+void glfwDestroyCursor(void *cursor);
+
 typedef struct {
     const char *file;
     float hx, hy;
     int filled;
     float turn;
 } cursor_spec;
+
 static const cursor_spec SPECS[CUR_COUNT] = {
     /* Lucide's arrowhead is symmetric about the diagonal; turned 24.4 degrees about its tip its left edge stands
      * upright and the other edge lies at ~44 degrees, the classic pointer shape */

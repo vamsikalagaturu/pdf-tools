@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ---- Bates numbers and watermarks ---- */
+
 #define MARGIN 24.0f
 
 const char *pt_stamp_at_names[PT_AT_COUNT] = {"top-left", "top",          "top-right", "bottom-left",
@@ -31,6 +33,7 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
     float size = s->size > 0 ? s->size : s->kind == PT_STAMP_BATES ? 10 : 48;
     float unit = pt_text_length(ctx, helv, text, 1);
     if (unit <= 0) return;
+
     float angle = 0;
     if (s->at == PT_AT_DIAGONAL) {
         angle = -atan2f(h, w) * 180 / (float)M_PI;
@@ -44,6 +47,7 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
     else if (s->at == PT_AT_TOP_RIGHT || s->at == PT_AT_BOTTOM_RIGHT) cx = box.x1 - MARGIN - len / 2;
     fz_matrix tm = fz_concat(fz_scale(size, -size), fz_translate(-len / 2, 0.35f * size));
     tm = fz_concat(fz_concat(fz_concat(tm, fz_rotate(angle)), fz_translate(cx, cy)), pt_page_to_pdf(ctx, page));
+
     pdf_obj *font = NULL, *gs = NULL, *gs_ref = NULL;
     fz_buffer *b = NULL;
     fz_var(font), fz_var(gs), fz_var(gs_ref), fz_var(b);
@@ -60,6 +64,7 @@ static void stamp_page(fz_context *ctx, pdf_document *doc, pdf_page *page, const
             gs_ref = pdf_add_object(ctx, doc, gs);
             pt_add_resource(ctx, doc, page, PDF_NAME(ExtGState), "PTG", gs_ref, gname);
         }
+
         b = fz_new_buffer(ctx, 256);
         fz_append_string(ctx, b, "q\n");
         if (*gname) fz_append_printf(ctx, b, "/%s gs\n", gname);
@@ -111,6 +116,7 @@ void pt_apply_stamps(fz_context *ctx, pdf_document *doc, const pt_stamps *stamps
                 if (o < 0 || o >= out_count || !chosen[o]) continue;
                 char *text = s->kind == PT_STAMP_BATES ? pt_bates_label(s, rank[o]) : pt_strdup(s->text ? s->text : "");
                 pdf_page *page = NULL;
+                fz_var(page);
                 fz_try(ctx)
                 {
                     page = pdf_load_page(ctx, doc, p);
@@ -182,8 +188,6 @@ void pt_read_outline(fz_context *ctx, fz_document *doc, pt_bookmarks *out)
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-/* Replace the document's /Outlines with the entries (levels clamped so each is at most one below the one before;
- * all open). */
 void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
 {
     pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root));
@@ -204,6 +208,7 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
             if (i == 0) level[i] = 0;
             else if (level[i] > level[i - 1] + 1) level[i] = level[i - 1] + 1;
         }
+
         top = pdf_add_new_dict(ctx, doc, 4);
         pdf_dict_put(ctx, top, PDF_NAME(Type), PDF_NAME(Outlines));
         for (int i = 0; i < n; i++) {
@@ -233,6 +238,7 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
                 }
             for (int k = parent[i]; k >= 0; k = parent[k]) count[k]++;
         }
+
         for (int i = 0; i < n; i++) {
             pdf_obj *up = parent[i] >= 0 ? node[parent[i]] : top;
             pdf_dict_put(ctx, node[i], PDF_NAME(Parent), up);
@@ -253,6 +259,7 @@ void pt_write_outline(fz_context *ctx, pdf_document *doc, const pt_bookmarks *b)
             if (prev < 0) pdf_dict_put(ctx, up, PDF_NAME(First), node[i]);
             if (next < 0) pdf_dict_put(ctx, up, PDF_NAME(Last), node[i]);
         }
+
         pdf_dict_put_int(ctx, top, PDF_NAME(Count), n);
         pdf_dict_put(ctx, root, PDF_NAME(Outlines), top);
     }
@@ -292,28 +299,35 @@ int pt_is_on(const char *value)
     return value && *value && strcmp(value, "Off") && strcmp(value, "false") && strcmp(value, "False");
 }
 
-/* The /DA string's "<size> Tf" rewritten; the field's /DA may live on its parent. */
+/* Field trees deeper than this are taken as cyclic. */
+#define MAX_FIELD_DEPTH 32
+
+/* The /DA that applies to the widget (its own or the nearest ancestor's) with "<size> Tf" rewritten, put on the
+ * widget itself so fields sharing an inherited /DA keep their size. */
 static void set_da_fontsize(fz_context *ctx, pdf_obj *obj, float size)
 {
-    for (pdf_obj *o = obj; o; o = pdf_dict_get(ctx, o, PDF_NAME(Parent))) {
+    pdf_obj *o = obj;
+    for (int depth = 0; o && depth < MAX_FIELD_DEPTH; depth++, o = pdf_dict_get(ctx, o, PDF_NAME(Parent))) {
         const char *da = pdf_dict_get_text_string(ctx, o, PDF_NAME(DA));
         if (!da || !*da) continue;
         const char *tf = strstr(da, "Tf");
-        if (!tf) continue;
+        if (!tf) return;
         const char *num = tf;
         while (num > da && isspace((unsigned char)num[-1])) num--;
         const char *end = num;
         while (num > da && (isdigit((unsigned char)num[-1]) || num[-1] == '.')) num--;
-        if (num == end) continue;
+        if (num == end) return;
         char *out = pt_format("%.*s%g Tf%s", (int)(num - da), da, size, tf + 2);
-        pdf_dict_put_text_string(ctx, o, PDF_NAME(DA), out);
+        pdf_dict_put_text_string(ctx, obj, PDF_NAME(DA), out);
         free(out);
+        return;
     }
 }
 
 float pt_field_fontsize(fz_context *ctx, pdf_annot *widget)
 {
-    for (pdf_obj *o = pdf_annot_obj(ctx, widget); o; o = pdf_dict_get(ctx, o, PDF_NAME(Parent))) {
+    pdf_obj *o = pdf_annot_obj(ctx, widget);
+    for (int depth = 0; o && depth < MAX_FIELD_DEPTH; depth++, o = pdf_dict_get(ctx, o, PDF_NAME(Parent))) {
         const char *da = pdf_dict_get_text_string(ctx, o, PDF_NAME(DA));
         const char *tf = da ? strstr(da, "Tf") : NULL;
         if (!tf) continue;

@@ -26,26 +26,36 @@ pt_glfw_key_fn glfwSetKeyCallback(void *window, pt_glfw_key_fn fn)
 }
 
 typedef void (*glfw_close_fn)(void *window);
+
 glfw_close_fn glfwSetWindowCloseCallback(void *window, glfw_close_fn fn)
 {
     (void)window, (void)fn;
     return NULL;
 }
+
 void glfwSetWindowShouldClose(void *window, int value) { (void)window, (void)value; }
+
 void glfwFocusWindow(void *window) { (void)window; }
+
 void glfwRequestWindowAttention(void *window) { (void)window; }
 
 typedef struct {
     int width, height;
     unsigned char *pixels;
 } GLFWimage;
+
 void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot)
 {
     (void)image, (void)xhot, (void)yhot;
     return NULL;
 }
+
 void glfwSetCursor(void *window, void *cursor) { (void)window, (void)cursor; }
+
 void glfwDestroyCursor(void *cursor) { (void)cursor; }
+
+/* Ends glfwWaitEventsTimeout early; render worker threads call it when a page is ready. */
+void glfwPostEmptyEvent(void) { ALooper_wake(GetAndroidApp()->looper); }
 
 /* Sleep until the next activity or input event and dispatch it to raylib's handlers as PollInputEvents() does,
  * so an idle window stops redrawing at 60 fps. */

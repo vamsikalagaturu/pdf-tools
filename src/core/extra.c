@@ -3,15 +3,19 @@
  * carry as text go back onto the page as invisible text (render mode 3, Helvetica stretched to each word's box), so
  * the page can be searched, selected and redacted. */
 #include "content.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #ifdef PT_USE_OPENSSL
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/pkcs12.h>
 #include <openssl/pkcs7.h>
 #include <openssl/x509.h>
 #endif
+
+/* ---- text recognition ---- */
 
 #define OCR_DPI 300
 
@@ -111,6 +115,7 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
     {
         native = pt_stext(ctx, (fz_page *)page);
         pt_page_chars(native, &have);
+
         /* the OCR device reads the page at the resolution of the matrix it is given; 300 dpi as Tesseract advises */
         fz_matrix scale = fz_scale(OCR_DPI / 72.0f, OCR_DPI / 72.0f), back = fz_invert_matrix(scale);
         fz_rect bounds = fz_transform_rect(fz_bound_page(ctx, (fz_page *)page), scale);
@@ -123,6 +128,7 @@ int pt_ocr_page(fz_context *ctx, pdf_document *doc, int pno, const char *languag
         fz_run_page(ctx, (fz_page *)page, odev, scale, NULL);
         fz_close_device(ctx, odev);
         fz_close_device(ctx, sdev);
+
         helv = fz_new_base14_font(ctx, "Helvetica");
         fz_matrix to_pdf = pt_page_to_pdf(ctx, page);
         b = fz_new_buffer(ctx, 4096);
@@ -267,6 +273,7 @@ static signer *load_signer(fz_context *ctx, const char *path, const char *passwo
     if (pt_read_file(path, &file)) fz_throw(ctx, FZ_ERROR_SYSTEM, "cannot read %s", path);
     const unsigned char *p = file.data;
     PKCS12 *p12 = d2i_PKCS12(NULL, &p, (long)file.len);
+    OPENSSL_cleanse(file.data, file.len);
     free(file.data);
     if (!p12) fz_throw(ctx, FZ_ERROR_FORMAT, "%s is not a PKCS#12 (.p12/.pfx) certificate", pt_basename(path));
     signer *g = calloc(1, sizeof *g);
@@ -310,7 +317,16 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
 {
 #ifdef PT_USE_OPENSSL
     signer *g = load_signer(ctx, cert, cert_password);
-    char dir[] = "/tmp/pt-sign-XXXXXX";
+    /* Android has no /tmp: the app points TMPDIR at its cache folder */
+    const char *tmp = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!tmp || !*tmp) tmp = getenv("TEMP");
+    if (!tmp || !*tmp) tmp = ".";
+#else
+    if (!tmp || !*tmp) tmp = "/tmp";
+#endif
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s/pt-sign-XXXXXX", tmp);
     char *path = NULL;
     pdf_document *doc = NULL;
     fz_buffer *out = NULL;
@@ -342,6 +358,7 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
         }
         fz_always(ctx) fz_drop_page(ctx, (fz_page *)pg);
         fz_catch(ctx) fz_rethrow(ctx);
+
         pdf_write_options o = pdf_default_write_options;
         o.do_incremental = 1;
         pdf_save_document(ctx, doc, path, &o);
@@ -369,7 +386,7 @@ fz_buffer *pt_sign_pdf(fz_context *ctx, fz_buffer *pdf, const char *password, in
  * Their words in reading order, matched by the longest common subsequence; the words left over on each side are the
  * changes. */
 
-/* pages past this many words are compared in slices, so the table stays a few megabytes */
+/* pages past this many words are compared in windows, so the table stays a few megabytes */
 #define SLICE 2000
 
 static void words_of(fz_context *ctx, fz_page *page, pt_words *out)
@@ -381,8 +398,12 @@ static void words_of(fz_context *ctx, fz_page *page, pt_words *out)
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
-static void diff(const pt_words *a, int a0, int na, const pt_words *b, int b0, int nb, pt_rects *only_a,
-                 pt_rects *only_b)
+/* Diffs the windows a[a0, a0 + na) and b[b0, b0 + nb). A window that does not reach its sequence's end is only
+ * trusted up to its middle: the changes are kept up to the last common word before either such window's middle and
+ * the next windows start right after it, so an insertion shifts the windows instead of misaligning them. Returns
+ * the words used up through *used_a, *used_b. */
+static void diff(const pt_words *a, int a0, int na, int a_ends, const pt_words *b, int b0, int nb, int b_ends,
+                 pt_rects *only_a, pt_rects *only_b, int *used_a, int *used_b)
 {
     unsigned short *len = calloc((size_t)(na + 1) * (size_t)(nb + 1), sizeof *len);
     if (!len) abort();
@@ -392,12 +413,21 @@ static void diff(const pt_words *a, int a0, int na, const pt_words *b, int b0, i
             L(i, j) = !strcmp(a->v[a0 + i].text, b->v[b0 + j].text) ? L(i + 1, j + 1) + 1
                       : L(i + 1, j) >= L(i, j + 1)                  ? L(i + 1, j)
                                                                     : L(i, j + 1);
-    int i = 0, j = 0;
+    int i = 0, j = 0, match_i = -1, match_j = -1, kept_a = only_a->n, kept_b = only_b->n;
     while (i < na || j < nb) {
-        if (i < na && j < nb && !strcmp(a->v[a0 + i].text, b->v[b0 + j].text)) i++, j++;
-        else if (j >= nb || (i < na && L(i + 1, j) >= L(i, j + 1))) pt_push(*only_a, a->v[a0 + i++].rect);
+        if ((!a_ends && i >= na / 2) || (!b_ends && j >= nb / 2)) break;
+        if (i < na && j < nb && !strcmp(a->v[a0 + i].text, b->v[b0 + j].text)) {
+            i++, j++;
+            match_i = i, match_j = j, kept_a = only_a->n, kept_b = only_b->n;
+        } else if (j >= nb || (i < na && L(i + 1, j) >= L(i, j + 1))) pt_push(*only_a, a->v[a0 + i++].rect);
         else pt_push(*only_b, b->v[b0 + j++].rect);
     }
+    if ((i < na || j < nb) && match_i >= 0) {
+        /* stopped at a middle: drop the changes after the last common word, the next windows see them again */
+        only_a->n = kept_a, only_b->n = kept_b;
+        i = match_i, j = match_j;
+    }
+    *used_a = i, *used_b = j;
 #undef L
     free(len);
 }
@@ -409,9 +439,10 @@ void pt_compare_pages(fz_context *ctx, fz_page *a, fz_page *b, pt_rects *only_a,
     {
         words_of(ctx, a, &wa);
         words_of(ctx, b, &wb);
-        for (int ia = 0, ib = 0; ia < wa.n || ib < wb.n; ia += SLICE, ib += SLICE) {
-            int na = wa.n - ia < SLICE ? wa.n - ia : SLICE, nb = wb.n - ib < SLICE ? wb.n - ib : SLICE;
-            diff(&wa, ia, na > 0 ? na : 0, &wb, ib, nb > 0 ? nb : 0, only_a, only_b);
+        for (int ia = 0, ib = 0; ia < wa.n || ib < wb.n;) {
+            int na = wa.n - ia < SLICE ? wa.n - ia : SLICE, nb = wb.n - ib < SLICE ? wb.n - ib : SLICE, used_a, used_b;
+            diff(&wa, ia, na, ia + na == wa.n, &wb, ib, nb, ib + nb == wb.n, only_a, only_b, &used_a, &used_b);
+            ia += used_a, ib += used_b;
         }
     }
     fz_always(ctx)

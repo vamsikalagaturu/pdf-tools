@@ -1,10 +1,12 @@
-/* Views of documents. The page canvas of a document tab: lays out the pages, draws them with their edits,
- * annotations, crops and overlays, and turns mouse input into selections, bands, strokes, clicks and item moves for
- * the tools (edit.c); the fillable form fields over the page. Also presentation, the Compare tab, text recognition
- * into a copy, and the Combine & split tab. */
+/* Views of documents, drawn each frame by app.c. The page canvas of a document tab: lays out the pages, draws them
+ * (renders and tiles from document.c's caches) with their edits, annotations, crops and overlays, and turns mouse
+ * and touch input into selections, bands, strokes, clicks and item moves for the tools (edit.c); the fillable form
+ * fields over the page. Also presentation, the Compare tab, text recognition into a copy, and the Combine & split
+ * tab. */
 #include "dialogs.h"
 #include "rlgl.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,11 +19,14 @@ static const cursor_kind TOOL_CURSORS[T_COUNT] = {
     [T_SHAPE] = CUR_CROSS, [T_CROP] = CUR_CROSS,
 };
 
+/* ---- items: what moves, ink and shapes ---- */
+
 static int movable(pt_kind k)
 {
     return k == PT_REDACT || k == PT_TEXT || k == PT_SIGN || k == PT_IMAGE || k == PT_NOTE || k == PT_INK ||
            k == PT_SHAPE;
 }
+
 /* lines and arrows are defined by their ends, not their box: they move but do not resize */
 static int resizable(const pt_item *it)
 {
@@ -29,8 +34,6 @@ static int resizable(const pt_item *it)
            (it->kind == PT_SHAPE && it->shape <= PT_SHAPE_ELLIPSE);
 }
 
-/* A shape between two screen points, as its annotation is drawn: rectangle and ellipse strokes inside their box,
- * lines with round ends, an arrow with an open head at b. */
 /* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
  * one strip so its joints do not darken; the highlighter multiplies a light tint into the page, as the saved
  * annotation does. */
@@ -75,6 +78,8 @@ static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
         }
 }
 
+/* A shape between two screen points, as its annotation is drawn: rectangle and ellipse strokes inside their box,
+ * lines with round ends, an arrow with an open head at b. */
 static void draw_shape(pt_shape shape, Vector2 a, Vector2 b, float w, Color c)
 {
     Rectangle r = {fminf(a.x, b.x), fminf(a.y, b.y), fabsf(b.x - a.x), fabsf(b.y - a.y)};
@@ -109,30 +114,32 @@ static void draw_shape(pt_shape shape, Vector2 a, Vector2 b, float w, Color c)
 /* ---- image caches for item previews ---- */
 
 typedef struct {
-    unsigned long key;
+    uint64_t key;
     Texture2D tex;
     int w, h;
     double used;
 } cached_tex;
+
 #define TEX_CACHE 48
 static cached_tex tex_cache[TEX_CACHE];
 
-static unsigned long bytes_key(const unsigned char *d, size_t n)
+/* FNV-1a over at most 4096 evenly spaced bytes, so a large image hashes quickly; never 0, which marks a free slot */
+static uint64_t bytes_key(const unsigned char *d, size_t n)
 {
-    unsigned long h = 1469598103934665603ul ^ n;
+    uint64_t h = UINT64_C(1469598103934665603) ^ n;
     size_t step = n > 4096 ? n / 4096 : 1;
-    for (size_t i = 0; i < n; i += step) h = (h ^ d[i]) * 1099511628211ul;
+    for (size_t i = 0; i < n; i += step) h = (h ^ d[i]) * UINT64_C(1099511628211);
     return h | 1;
 }
 
-static unsigned long str_key(const char *s)
+static uint64_t str_key(const char *s)
 {
-    unsigned long h = 1469598103934665603ul;
-    while (*s) h = (h ^ (unsigned char)*s++) * 1099511628211ul;
+    uint64_t h = UINT64_C(1469598103934665603);
+    while (*s) h = (h ^ (unsigned char)*s++) * UINT64_C(1099511628211);
     return h | 1;
 }
 
-static cached_tex *cache_find(unsigned long key)
+static cached_tex *cache_find(uint64_t key)
 {
     for (int i = 0; i < TEX_CACHE; i++)
         if (tex_cache[i].key == key) {
@@ -142,7 +149,8 @@ static cached_tex *cache_find(unsigned long key)
     return NULL;
 }
 
-static cached_tex *cache_put(unsigned long key, fz_pixmap *pix)
+/* Uploads `pix` (not taken) as a mipmapped texture into a free or the least recently used slot. */
+static cached_tex *cache_put(uint64_t key, fz_pixmap *pix)
 {
     int slot = 0;
     for (int i = 0; i < TEX_CACHE; i++) {
@@ -153,6 +161,8 @@ static cached_tex *cache_put(unsigned long key, fz_pixmap *pix)
         if (tex_cache[i].used < tex_cache[slot].used) slot = i;
     }
     if (tex_cache[slot].key) UnloadTexture(tex_cache[slot].tex);
+
+    /* MuPDF's alpha is premultiplied, raylib's is not */
     unsigned char *rgba = malloc((size_t)pix->w * (size_t)pix->h * 4);
     for (int y = 0; y < pix->h; y++)
         for (int x = 0; x < pix->w; x++) {
@@ -170,10 +180,11 @@ static cached_tex *cache_put(unsigned long key, fz_pixmap *pix)
     return &tex_cache[slot];
 }
 
+/* The texture of encoded image bytes, owned by the cache; NULL when there are none or they do not decode. */
 static cached_tex *image_texture(const pt_bytes *data)
 {
     if (!data->len) return NULL;
-    unsigned long key = bytes_key(data->data, data->len);
+    uint64_t key = bytes_key(data->data, data->len);
     cached_tex *c = cache_find(key);
     if (c) return c;
     fz_pixmap *pix = NULL;
@@ -201,13 +212,14 @@ static cached_tex *image_texture(const pt_bytes *data)
     return c;
 }
 
-/* Text box `it` drawn by the PDF engine on a transparent image, so the preview matches the saved file. */
+/* Text box `it` drawn by the PDF engine on a transparent image, so the preview matches the saved file. Owned by
+ * the cache; NULL when it cannot be drawn. */
 static cached_tex *text_texture(tab *t, const pt_item *it)
 {
     char *k = pt_format("%s|%s|%g|%d,%d,%d|%g|%g,%g", it->text ? it->text : "", it->font ? it->font : "", it->size,
                         it->rgb[0], it->rgb[1], it->rgb[2], it->box_width, it->rect.x1 - it->rect.x0,
                         it->rect.y1 - it->rect.y0);
-    unsigned long key = str_key(k);
+    uint64_t key = str_key(k);
     free(k);
     cached_tex *c = cache_find(key);
     if (c) return c;
@@ -266,6 +278,7 @@ void layout_scene(tab *t)
         if (!cont && i != here) continue;
         width = fmaxf(width, spread_width(t, i));
     }
+
     float y = 0;
     for (int i = 0; i < t->st.order.n; i += spread_len(t, i)) {
         if (!cont && i != here) continue;
@@ -284,7 +297,6 @@ void layout_scene(tab *t)
     t->scene_h = y + PAGE_GAP;
 }
 
-/* the first position (in page order) of the row holding position i: pairs, or the cover alone then pairs */
 int spread_start(tab *t, int i)
 {
     if (!t->two_pages || i < 0) return i;
@@ -400,6 +412,8 @@ static int dragging_item(tab *t, int index)
     return (t->gesture == G_MOVE || t->gesture == G_RESIZE) && t->sel == SEL_ITEM && t->sel_index == index;
 }
 
+/* Where gesture `g` (a move or a resize from the bottom-right handle) puts the dragged item or crop, in scene space;
+ * signatures and images keep their aspect. */
 static fz_rect drag_rect_for(tab *t, gesture_kind g)
 {
     fz_point now = screen_to_scene(t, ui.mouse);
@@ -486,8 +500,8 @@ static void draw_item(tab *t, int index)
 
 typedef struct {
     sel_kind kind;
-    int page, index;
-    int handle;
+    int page, index; /* index: into st.items or st.crop, or the annotation's xref */
+    int handle;      /* on the resize handle */
 } hit_obj;
 
 static int in_screen(Rectangle r) { return CheckCollisionPointRec(ui.mouse, r); }
@@ -545,7 +559,10 @@ static int on_field(tab *t)
     return 0;
 }
 
-/* What a drag on bare page does: 'flow' text selection, a 'rect' band, a 'draw' stroke, or nothing. */
+/* ---- input ---- */
+
+/* What a press on bare page starts with the current tool: a text selection in reading order (G_FLOW), a band, an
+ * ink stroke, a shape, or G_NONE (then the release is a click). */
 static gesture_kind selection_mode(tab *t)
 {
     int alt = ui.alt;
@@ -570,7 +587,7 @@ static int moved_far(tab *t)
 
 /* one wheel notch scrolls the view's extent^(2/3), as GTK does (gtkrange.c); on Android a wheel unit is 60 px of
  * finger travel (android_main.c), so the page stays under the finger */
-static float wheel_step(float extent)
+float wheel_step(float extent)
 {
 #ifdef __ANDROID__
     (void)extent;
@@ -580,6 +597,8 @@ static float wheel_step(float extent)
 #endif
 }
 
+/* The page view's input: wheel and pinch scrolling and zoom, then the current tool's gesture on the pages
+ * (t->gesture: started by a press, followed while held, finished on release). */
 static void handle_input(tab *t, Rectangle area)
 {
     int over = ui_hover(area);
@@ -601,6 +620,7 @@ static void handle_input(tab *t, Rectangle area)
         }
         close_popover(t, 1);
     }
+
     if (over && ui.pinch != 1) {
         /* keep the point between the fingers in place, as Ctrl+wheel keeps the one under the pointer */
         fz_point anchor = screen_to_scene(t, ui.pinch_at);
@@ -612,6 +632,7 @@ static void handle_input(tab *t, Rectangle area)
         if (t->scene_w * t->zoom > t->view.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
         close_popover(t, 1);
     }
+
     /* touch: a double tap zooms in around the spot, and back to fit width */
     if (ui.double_tap && CheckCollisionPointRec(ui.double_tap_at, area) && !dialogs_open() && !menu_is_open()) {
         fz_point anchor = screen_to_scene(t, ui.double_tap_at);
@@ -625,10 +646,12 @@ static void handle_input(tab *t, Rectangle area)
         else t->scroll_x = 0;
         close_popover(t, 1);
     }
+
     if (!ui.focus && !dialogs_open()) {
         if (ui_key(KEY_UP)) t->scroll_y -= 40;
         if (ui_key(KEY_DOWN)) t->scroll_y += 40;
     }
+
     /* the scrollbars belong to themselves: no tool cursor, gesture or click on the page under them */
     Rectangle vbar = {area.x + area.width - 12, area.y, 12, area.height};
     Rectangle hbar = {area.x, area.y + area.height - 12, area.width, 12};
@@ -665,6 +688,7 @@ static void handle_input(tab *t, Rectangle area)
         if (tip) ui_tooltip(ui_id(t, 900 + h.index), item_screen_rect(t, h.index), tip);
     }
 
+    /* a press selects the item, crop or annotation under it (and starts moving it), or starts the tool's gesture */
     if (over && ui.pressed) t->thumbs_focus = 0;
     if (over && ui.pressed && !field) {
         fz_point scene = screen_to_scene(t, ui.mouse);
@@ -714,6 +738,7 @@ static void handle_input(tab *t, Rectangle area)
             }
         } else if (t->gesture == G_NONE) t->gesture = G_CLICK;
     }
+
     if (over && ui.rpressed && t->gesture == G_NONE) {
         close_popover(t, 1);
         if (h.kind != SEL_NONE) {
@@ -723,6 +748,8 @@ static void handle_input(tab *t, Rectangle area)
     }
 
     if (t->gesture == G_NONE) return;
+
+    /* held */
     fz_point now = screen_to_scene(t, ui.mouse);
     if (ui.down) {
         if (t->gesture == G_STROKE || t->gesture == G_SHAPE) {
@@ -741,6 +768,7 @@ static void handle_input(tab *t, Rectangle area)
         if (ui.mouse.y > area.y + area.height - 10) t->scroll_y += 12;
         return;
     }
+
     /* released */
     gesture_kind g = t->gesture;
     t->gesture = G_NONE;
@@ -785,6 +813,8 @@ static void handle_input(tab *t, Rectangle area)
         on_click(t, t->press_scene);
     }
 }
+
+/* ---- pages and the view's frame ---- */
 
 /* the zoom at which page p is rendered whole; above it, tiles draw over that render */
 static float base_scale(tab *t, int p)
@@ -894,6 +924,7 @@ void view_frame(tab *t, Rectangle area)
         t->scroll_x = t->scroll_y = 0;
         t->want_scroll_page = -1;
     }
+
     /* an animated zoom step (buttons, keys): ease out over ZOOM_GLIDE_S around the middle of the view */
     if (t->zanim_t0 > 0) {
         double k = (ui.now - t->zanim_t0) / ZOOM_GLIDE_S;
@@ -914,6 +945,7 @@ void view_frame(tab *t, Rectangle area)
         }
         ui.dirty = 1;
     }
+
     /* a fit holds through rotation and resizing until the zoom is changed */
     if (t->fit == FIT_WIDTH && area.width > 100 && fabsf(area.width - t->fit_w) > 0.5f) {
         /* the scene point at the top of the view stays there */
@@ -928,6 +960,7 @@ void view_frame(tab *t, Rectangle area)
         tab_fit(t, FIT_HEIGHT);
         t->want_scroll_page = t->pno;
     }
+
     layout_scene(t);
     if (t->restore_pending && t->off_y[t->pno] > -1e8f) {
         t->scroll_y = (t->off_y[t->pno] + t->restore_top + PAGE_GAP) * t->zoom;
@@ -947,7 +980,9 @@ void view_frame(tab *t, Rectangle area)
         }
         t->want_center = 0;
     }
+
     handle_input(t, area);
+
     /* a soft keyboard that just opened (the view got shorter) or a field just focused must not cover the field */
     if (ui.focus && (area.height < t->last_view_h - 0.5f || ui.focus != t->last_focus)) t->reveal_until = ui.now + 0.5;
     if (ui.focus && ui.now < t->reveal_until) {
@@ -961,6 +996,7 @@ void view_frame(tab *t, Rectangle area)
     t->last_view_h = area.height;
     t->last_focus = ui.focus;
     clamp_scroll(t);
+
     /* in continuous view the page at the centre of the view is the current one */
     if (continuous() && t->gesture == G_NONE && t->want_scroll_page < 0 && !t->want_center) {
         int p = page_at(t, screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2}));
@@ -989,6 +1025,7 @@ void view_frame(tab *t, Rectangle area)
         if (t->off_y[p] < -1e8f || (t->tb.active && t->tb.index == i)) continue;
         draw_item(t, i);
     }
+
     /* the PDF's own annotations: a frame when hovered or selected */
     for (int k = 0; k < t->st.order.n; k++) {
         int p = t->st.order.v[k];
@@ -1008,6 +1045,8 @@ void view_frame(tab *t, Rectangle area)
             if (in_screen(r)) ui_tooltip(ui_id(t, 5000 + as->v[i].xref), r, tipbuf);
         }
     }
+
+    /* overlays: crops, find matches, the text selection, previews, SyncTeX marks, the gesture in progress */
     for (int i = 0; i < t->st.crop.n; i++) draw_crop(t, i);
     for (int i = 0; i < t->matches.n; i++) {
         int p = t->matches.v[i].page;
@@ -1030,8 +1069,8 @@ void view_frame(tab *t, Rectangle area)
             DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, t->flow_page, t->flow_preview.v[i])), c);
     }
     if (t->sync_marks.n) {
-        if (ui.now > t->sync_until) t->sync_marks.n = 0;
-        else ui.dirty = 1;
+        if (ui.now >= t->sync_until) t->sync_marks.n = 0;
+        else ui_redraw_at(t->sync_until);
         for (int i = 0; i < t->sync_marks.n; i++) {
             int p = t->sync_marks.v[i].page;
             if (t->off_y[p] > -1e8f)
@@ -1052,6 +1091,7 @@ void view_frame(tab *t, Rectangle area)
         draw_ink(v, t->stroke.n, pt_pen_width(pen_style(), t->pen_width) * t->zoom, rgb3(t->pen_rgb), pen_style());
         free(v);
     }
+
     for (int k = 0; k < t->st.order.n; k++) {
         int p = t->st.order.v[k];
         if (t->off_y[p] < -1e8f) continue;
@@ -1096,7 +1136,10 @@ pt_key coalesce_key = {-1, -1};
 
 void fields_reset(tab *t)
 {
-    for (int i = 0; i < t->editors.n; i++) text_free(&t->editors.v[i].text);
+    for (int i = 0; i < t->editors.n; i++) {
+        text_free(&t->editors.v[i]->text);
+        free(t->editors.v[i]);
+    }
     t->editors.n = 0;
     coalesce_key = (pt_key){-1, -1};
 }
@@ -1133,7 +1176,8 @@ static void drop_form(tab *t, pt_key key)
         }
 }
 
-/* Store a field value; consecutive typing in one field is a single undo step. */
+/* Stores a field value, or drops the edit when the value is the file's own. `record` pushes an undo step unless
+ * `coalesce` continues typing into the field of the previous coalescing call, so that typing is one undo step. */
 static void set_form(tab *t, field_info *f, const char *text, int is_bool, int on, int coalesce, int record)
 {
     pt_key key = f->key;
@@ -1150,19 +1194,21 @@ static void set_form(tab *t, field_info *f, const char *text, int is_bool, int o
     else pt_set_form(&t->st, key, text, is_bool, on, 0);
 }
 
+/* The text editor of field `f`, made on first use from its edited or stored value; fields_reset frees them. */
 static field_editor *editor_for(tab *t, field_info *f)
 {
     for (int i = 0; i < t->editors.n; i++)
-        if (!memcmp(&t->editors.v[i].key, &f->key, sizeof f->key)) return &t->editors.v[i];
-    field_editor e = {0};
-    e.key = f->key;
+        if (!memcmp(&t->editors.v[i]->key, &f->key, sizeof f->key)) return t->editors.v[i];
+    field_editor *e = calloc(1, sizeof *e);
+    if (!e) abort();
+    e->key = f->key;
     const pt_form_value *v = form_value(t, f->key);
-    text_set(&e.text, v && !v->is_bool ? v->text : f->value);
-    e.text.multiline = f->multiline;
-    e.text.caret = e.text.anchor = 0;
-    e.choice = -1;
+    text_set(&e->text, v && !v->is_bool ? v->text : f->value);
+    e->text.multiline = f->multiline;
+    e->text.caret = e->text.anchor = 0;
+    e->choice = -1;
     pt_push(t->editors, e);
-    return &t->editors.v[t->editors.n - 1];
+    return e;
 }
 
 /* count lines the way a wrapping text box lays the text out */
@@ -1184,7 +1230,8 @@ static int fits(const char *text, float px, float w, float h, int multiline)
     return lines * px * 1.36f <= h - 4;
 }
 
-/* The field's font size, shrunk (as auto-size fields do) until the text fits the box. */
+/* The field's font size, shrunk (as auto-size fields do) until the text fits the box; remembered in `e` until the
+ * text or the box changes. */
 static float fit_text(field_info *f, field_editor *e, fz_rect r)
 {
     float w = r.x1 - r.x0, h = r.y1 - r.y0;
@@ -1200,6 +1247,7 @@ static float fit_text(field_info *f, field_editor *e, fz_rect r)
     return (float)px;
 }
 
+/* checking a radio button unchecks the others of its group (same field name) in the same undo step */
 static void set_check(tab *t, field_info *f, int on)
 {
     set_form(t, f, on ? "Yes" : "Off", 1, on, 0, 1);
@@ -1292,7 +1340,7 @@ void fields_frame(tab *t, int page)
             float ax = r.x + r.width - 10, cy = r.y + r.height / 2;
             DrawTriangle((Vector2){ax - 4, cy - 2}, (Vector2){ax, cy + 3}, (Vector2){ax + 4, cy - 2}, pal.field_frame);
             int before = e->choice;
-            /* ui_combo draws its own button; only its dropdown is wanted here */
+            /* a menu rather than ui_combo, which draws its own button over the field */
             if (ui_hover(r)) set_cursor(CUR_HAND);
             if (ui_hover(r) && ui.pressed) ui.active = id;
             if (ui_hover(r) && ui.released && ui.active == id) {
@@ -1375,7 +1423,7 @@ void present_frame(void)
         Rectangle r = {ui.w - w - 16, ui.h - 44, w, 28};
         DrawRectangleRounded(r, 0.5f, 8, pal.present_label);
         draw_text_in(label, r, FS_NORMAL, F_REGULAR, pal.on_backdrop, 0);
-        ui.dirty = 1;
+        ui_redraw_at(changed_at + 1.5);
     }
     presentation.position = pos, presentation.page_changed_at = changed_at;
     if (ui_key(KEY_ESCAPE) || ui_key(KEY_F5)) present_stop();
@@ -1409,7 +1457,8 @@ static void drop_textures(compare *c)
         if (c->tex_ok[s]) UnloadTexture(c->tex[s]), c->tex_ok[s] = 0;
 }
 
-/* the changes on position `pos`, and with load set, the two pages as textures at c->scale */
+/* The number of words that differ at position `pos`, kept in c->changed (0 when the comparison fails); with `load`
+ * set also the two pages as textures at c->scale. */
 static int diff_at(compare *c, int pos, int load)
 {
     fz_page *p[2] = {NULL, NULL};
@@ -1536,6 +1585,7 @@ void compare_shortcuts(compare *c)
     if ((ui_key(KEY_RIGHT) || ui_key(KEY_PAGE_DOWN)) && c->pos + 1 < c->n) c->pos++;
 }
 
+/* takes both documents */
 static void open_compare(fz_document *mine, const char *my_path, fz_document *other, const char *path)
 {
     compare *c = calloc(1, sizeof *c);
@@ -1545,6 +1595,7 @@ static void open_compare(fz_document *mine, const char *my_path, fz_document *ot
     app_add_compare(c);
 }
 
+/* the two documents while the other one's password is asked for */
 typedef struct {
     fz_document *mine;
     char *my_path, *path;
@@ -1566,12 +1617,14 @@ static void other_password(void *ctx, const char *password)
 
 static void other_chosen(void *ctx, pt_strs *paths)
 {
-    tab *t = ctx;
-    if (!paths->n) return;
+    tab *t = app_doc_by_id((unsigned)(uintptr_t)ctx);
+    if (!t || !t->doc || !paths->n) return;
     fz_document *mine = NULL, *doc = NULL;
+    fz_var(mine), fz_var(doc);
+    /* the tab's file as last read (t->file), not what is on disk now */
     fz_try(CTX)
     {
-        mine = (fz_document *)pt_open_pdf(CTX, t->path, t->password, NULL);
+        mine = (fz_document *)pt_open_pdf_buffer(CTX, t->file, t->path, t->password, NULL);
         doc = fz_open_document(CTX, paths->v[0]);
     }
     fz_catch(CTX)
@@ -1598,25 +1651,27 @@ void compare_start(tab *t)
     if (!t->doc) return;
     if (tab_edit_count(t)) status("Compare uses the saved file; unsaved edits are not part of it", 6);
     char *dir = pt_dirname(t->path);
-    file_dialog(FD_OPEN, "Compare with", dir, "PDF", "*.pdf", other_chosen, t);
+    file_dialog(FD_OPEN, "Compare with", dir, "PDF", "*.pdf", other_chosen, (void *)(uintptr_t)t->id);
     free(dir);
 }
 
-/* ---- text recognition: a copy of the file with an invisible text layer on the chosen pages, opened in a new tab ----
- */
+/* ---- text recognition ----
+ * A copy of the file with an invisible text layer on the chosen pages, saved and opened in a new tab. The dialog
+ * recognizes the pages itself, one per frame, while it shows the progress. */
 
 typedef struct {
-    tab *t;
+    unsigned tab_id;
     ui_text pages, language;
     int first, running, next, failed;
+    /* the file chooser holds `o` until it answers, and the dialog may close first */
+    int choosing, closed;
     pt_ints list;
     char *out, *datadir;
     pdf_document *doc;
 } ocr_data;
 
-static void ocr_free(dialog *d)
+static void ocr_data_free(ocr_data *o)
 {
-    ocr_data *o = d->data;
     text_free(&o->pages), text_free(&o->language);
     pt_vec_free(o->list);
     free(o->out), free(o->datadir);
@@ -1624,17 +1679,29 @@ static void ocr_free(dialog *d)
     free(o);
 }
 
+static void ocr_free(dialog *d)
+{
+    ocr_data *o = d->data;
+    if (o->choosing) o->closed = 1;
+    else ocr_data_free(o);
+}
+
 static void out_chosen(void *ctx, pt_strs *paths)
 {
     ocr_data *o = ctx;
-    if (!paths->n) return;
-    tab *t = o->t;
+    o->choosing = 0;
+    if (o->closed) {
+        ocr_data_free(o);
+        return;
+    }
+    tab *t = app_doc_by_id(o->tab_id);
+    if (!t || !paths->n) return;
     if (pt_exists(paths->v[0]) && pt_same_file(paths->v[0], t->path)) {
         message_box(MSG_ERROR, APP_NAME, "Choose another file: the recognized copy cannot replace the open file.", NULL,
                     NULL);
         return;
     }
-    fz_try(CTX) o->doc = pt_open_pdf(CTX, t->path, t->password, NULL);
+    fz_try(CTX) o->doc = pt_open_pdf_buffer(CTX, t->file, t->path, t->password, NULL);
     fz_catch(CTX)
     {
         char *msg = pt_format("Cannot open %s:\n%s", pt_basename(t->path), fz_caught_message(CTX));
@@ -1647,16 +1714,18 @@ static void out_chosen(void *ctx, pt_strs *paths)
     o->next = 0;
 }
 
-static void finish(ocr_data *o)
+/* writes the recognized copy, encrypted as the original was, and opens it */
+static void finish(tab *t, ocr_data *o)
 {
-    tab *t = o->t;
-    fz_buffer *data = NULL;
+    fz_buffer *data = NULL, *plain = NULL;
+    fz_var(data), fz_var(plain);
     fz_try(CTX)
     {
-        data = pt_doc_bytes(CTX, o->doc, t->password);
+        plain = pt_doc_bytes(CTX, o->doc, NULL);
+        data = pt_keep_encryption(CTX, plain, o->doc, t->password, NULL);
         if (pt_write_file(o->out, data->data, data->len)) fz_throw(CTX, FZ_ERROR_SYSTEM, "cannot write %s", o->out);
     }
-    fz_always(CTX) fz_drop_buffer(CTX, data);
+    fz_always(CTX) fz_drop_buffer(CTX, data), fz_drop_buffer(CTX, plain);
     fz_catch(CTX)
     {
         char *msg = pt_format("Could not save the recognized copy:\n%s", fz_caught_message(CTX));
@@ -1672,9 +1741,10 @@ static void finish(ocr_data *o)
     tab_open_with_password(o->out, t->password, 0, NULL);
 }
 
-static int running_frame(dialog *d, ocr_data *o, Rectangle b)
+/* Recognizes the next page and draws the progress; 1 closes the dialog (all pages done and the copy written, or
+ * Cancel). */
+static int running_frame(dialog *d, tab *t, ocr_data *o, Rectangle b)
 {
-    /* one page per frame: each takes a second or more */
     if (o->next < o->list.n) {
         fz_try(CTX) pt_ocr_page(CTX, o->doc, o->list.v[o->next], text_get(&o->language), o->datadir);
         fz_catch(CTX)
@@ -1694,7 +1764,7 @@ static int running_frame(dialog *d, ocr_data *o, Rectangle b)
     DrawRectangleRounded((Rectangle){bar.x, bar.y, bar.width * o->next / fmaxf(1, o->list.n), bar.height}, 1, 4,
                          pal.highlight);
     if (o->next >= o->list.n) {
-        finish(o);
+        finish(t, o);
         return 1;
     }
     return ui_button(ui_id(d, 9), (Rectangle){b.x + b.width - 90, b.y + b.height - 30, 90, 30}, "Cancel", NULL, 0,
@@ -1704,8 +1774,9 @@ static int running_frame(dialog *d, ocr_data *o, Rectangle b)
 static int ocr_frame(dialog *d, Rectangle b)
 {
     ocr_data *o = d->data;
-    tab *t = o->t;
-    if (o->running) return running_frame(d, o, b);
+    tab *t = app_doc_by_id(o->tab_id);
+    if (!t) return 1;
+    if (o->running) return running_frame(d, t, o, b);
     if (o->first) text_focus(&o->pages), text_select_all(&o->pages), o->first = 0;
     char label[48];
     snprintf(label, sizeof label, "Pages (of %d):", t->own);
@@ -1744,7 +1815,11 @@ static int ocr_frame(dialog *d, Rectangle b)
         pt_settings_set_str(&app.settings, "ocr_language", text_get(&o->language));
         char *stem = pt_stem(t->path), *dir = pt_dirname(t->path), *name = pt_format("%s-ocr.pdf", stem),
              *start = pt_join(dir, name);
-        file_dialog(FD_SAVE, "Save recognized copy", start, "PDF", "*.pdf", out_chosen, o);
+        /* a busy chooser ignores the request and never answers */
+        if (!file_dialog_busy()) {
+            o->choosing = 1;
+            file_dialog(FD_SAVE, "Save recognized copy", start, "PDF", "*.pdf", out_chosen, o);
+        }
         free(stem), free(dir), free(name), free(start);
     }
     if (ui_button(ui_id(d, 4), (Rectangle){go.x - 98, go.y, 90, 30}, "Cancel", NULL, 0, NULL) ||
@@ -1758,7 +1833,7 @@ void ocr_dialog(tab *t)
     if (!t->doc) return;
     dialog *d = calloc(1, sizeof *d);
     ocr_data *o = calloc(1, sizeof *o);
-    o->t = t, o->first = 1;
+    o->tab_id = t->id, o->first = 1;
     char *all = pt_format("1-%d", t->own);
     text_set(&o->pages, all);
     free(all);
@@ -1767,9 +1842,10 @@ void ocr_dialog(tab *t)
     dialog_push(d);
 }
 
-/* ---- the Combine & split tab: one workspace for merging, splitting and extracting pages ----
- * Pages of every added PDF or image sit in one grid; dragging reorders them, Delete drops them and the strip left of
- * a page cuts there. Each part becomes one file, or a single combined file when there are no cuts. */
+/* ---- the Combine & split tab ----
+ * One workspace for merging, splitting and extracting pages. Pages of every added PDF or image sit in one grid;
+ * dragging reorders them, Delete drops them and the strip left of a page cuts there. Each part becomes one file, or
+ * a single combined file when there are no cuts. Every source is held as an unlocked copy in memory. */
 
 #define CARD_THUMB_W 148.0f
 #define CARD_THUMB_H 200.0f
@@ -1782,18 +1858,22 @@ static const char *IMAGE_SUFFIXES[] = {".png", ".jpg", ".jpeg", ".webp", ".bmp",
 
 typedef struct {
     pdf_document *doc;
-    char *path, *password;
+    char *path, *password; /* password: the file's, so that parts made only from it stay protected; else NULL */
 } source;
+
 typedef struct {
-    int src, page, cut, selected;
+    int src, page, cut, selected; /* cut: a new part starts at this card */
     Texture2D thumb;
     int thumb_ok;
     float tw, th;
 } card;
+
+/* a file name the user gave a part, kept by the part's first page */
 typedef struct {
     int src, page;
     char *name;
 } part_name;
+
 PT_VEC(sources, source);
 PT_VEC(cards, card);
 PT_VEC(part_names, part_name);
@@ -1805,13 +1885,13 @@ struct workspace {
     int every;
     float scroll;
     char *start_dir;
-    int anchor;
+    int anchor; /* the card a Shift+click selects from, -1 none */
     int drag, drag_from;
     Vector2 drag_at;
-    int renaming;
+    int renaming; /* the part whose name is being edited, -1 none */
     ui_text rename;
-    pt_strs queue;
-    char *asking, *asked_password;
+    pt_strs queue;                 /* files still to add */
+    char *asking, *asked_password; /* the file whose password is being asked for */
     int tries;
     float parts_scroll;
 };
@@ -1854,6 +1934,7 @@ void workspace_free(workspace *w)
     free(w);
 }
 
+/* takes `doc` */
 static void add_document(workspace *w, pdf_document *doc, const char *name, const char *password)
 {
     int s = w->src.n;
@@ -1902,7 +1983,8 @@ static void password_given(void *ctx, const char *password)
     process_queue(w);
 }
 
-/* Add the queued files one by one; protected PDFs ask for their password first. */
+/* Adds the queued files one by one; a protected PDF asks for its password and the queue resumes from the answer
+ * (password_given). Files that are neither PDFs nor images are skipped. */
 static void process_queue(workspace *w)
 {
     while (w->asking || w->queue.n) {
@@ -1920,6 +2002,7 @@ static void process_queue(workspace *w)
             free(path);
             continue;
         }
+
         pdf_document *doc = NULL;
         fz_try(CTX) doc = is_image(path) ? pt_image_document(CTX, path) : pdf_open_document(CTX, path);
         fz_catch(CTX)
@@ -1940,6 +2023,7 @@ static void process_queue(workspace *w)
             free(prompt);
             return;
         }
+
         /* keep an unlocked copy in memory */
         fz_buffer *bytes = NULL;
         pdf_document *unlocked = NULL;
@@ -1967,7 +2051,7 @@ void workspace_add_paths(workspace *w, pt_strs *paths)
     if (!w->asking) process_queue(w);
 }
 
-/* ---- parts ---- */
+/* ---- parts and saving ---- */
 
 static int part_count(workspace *w)
 {
@@ -1976,7 +2060,7 @@ static int part_count(workspace *w)
     return n;
 }
 
-/* card index ranges of each part */
+/* the first card of each part; a part runs to the next one's first card */
 static void parts(workspace *w, pt_ints *starts)
 {
     starts->n = 0;
@@ -1992,8 +2076,9 @@ static const char *custom_name(workspace *w, int first)
     return NULL;
 }
 
-/* The suggested file name of part `k` of `count`: named after its source file when it has only one, else
- * "combined"; a single part ends in -pages, several in -partN. */
+/* The file name of part `k` of `count` (cards lo..hi-1), for the caller to free: the name the user gave it, else
+ * named after its source file when it has only one, else "combined"; a single part ends in -pages, several in
+ * -partN. */
 static char *file_name(workspace *w, int k, int count, int lo, int hi)
 {
     const char *custom = custom_name(w, lo);
@@ -2007,10 +2092,12 @@ static char *file_name(workspace *w, int k, int count, int lo, int hi)
     return out;
 }
 
+/* the PDF of cards lo..hi-1, for the caller to drop; NULL on failure */
 static fz_buffer *build(workspace *w, int lo, int hi)
 {
     fz_buffer *data = NULL;
     pdf_document *out = NULL;
+    fz_var(data), fz_var(out);
     fz_try(CTX)
     {
         out = pdf_create_document(CTX);
@@ -2040,6 +2127,7 @@ static fz_buffer *build(workspace *w, int lo, int hi)
     return data;
 }
 
+/* one save, from the file dialog to the "Open?" question; freed by its last answer */
 typedef struct {
     workspace *w;
     pt_strs outputs;
@@ -2181,8 +2269,9 @@ static void cut_every(workspace *w, int n)
     for (int i = 0; i < w->cards.n; i++) w->cards.v[i].cut = n > 0 && i > 0 && i % n == 0;
 }
 
-/* ---- drawing ---- */
+/* ---- the workspace's toolbar and grid ---- */
 
+/* Renders up to THUMBS_PER_FRAME missing thumbnails (one that fails stays blank) and asks for another frame. */
 static void draw_thumbs(workspace *w)
 {
     int done = 0;
@@ -2315,6 +2404,7 @@ void workspace_frame(workspace *w, Rectangle area)
     draw_text(line, in.x, in.y + 32, FS_NORMAL, F_REGULAR, pal.disabled_text);
     free(line);
     ui_tooltip(ui_id(w, 8), (Rectangle){in.x, in.y + 28, in.width, 24}, about);
+
     float top = in.y + 62, footer = 44;
     pt_ints starts = {0};
     parts(w, &starts);
@@ -2328,6 +2418,8 @@ void workspace_frame(workspace *w, Rectangle area)
         if (ui_hover(grid) && ui.wheel) w->scroll -= ui.wheel * 80;
         w->scroll = fminf(fmaxf(w->scroll, 0), fmaxf(0, rows * CELL_H - grid.height));
         ui_scissor_begin(grid);
+
+        /* the cards; drop_at is where a drag would insert the selected ones */
         int drop_at = -1;
         int part = 0;
         for (int i = 0; i < w->cards.n; i++) {
@@ -2395,6 +2487,7 @@ void workspace_frame(workspace *w, Rectangle area)
                 if (!ui.shift) w->anchor = i;
             }
         }
+
         int moving = w->drag && ui.down && fabsf(ui.mouse.x - w->drag_at.x) + fabsf(ui.mouse.y - w->drag_at.y) > 6;
         if (moving && drop_at >= 0) {
             Rectangle cell = {grid.x + (drop_at % cols) * CELL_W, grid.y + (drop_at / cols) * CELL_H - w->scroll,
@@ -2436,6 +2529,8 @@ void workspace_frame(workspace *w, Rectangle area)
             w->drag = 0;
         }
         ui_scissor_end();
+
+        /* a press beside the cards clears the selection */
         if (ui_hover(grid) && ui.pressed && !w->drag) {
             int on_card = 0;
             for (int i = 0; i < w->cards.n; i++) {
@@ -2464,6 +2559,7 @@ void workspace_frame(workspace *w, Rectangle area)
             char num[16];
             snprintf(num, sizeof num, "%d", k + 1);
             draw_text(num, list.x + 8, y + 4, FS_NORMAL, F_REGULAR, pal.text);
+
             /* the pages of each source, in compact ranges */
             size_t cap = 256;
             char *pages = calloc(cap, 1);
@@ -2495,6 +2591,7 @@ void workspace_frame(workspace *w, Rectangle area)
             char *pe = elide_right(pages, c2 - 12, FS_NORMAL, F_REGULAR);
             draw_text(pe, list.x + c1 + 8, y + 4, FS_NORMAL, F_REGULAR, pal.text);
             free(pe);
+
             Rectangle name_r = {list.x + c1 + c2 + 4, y + 1, c3 - 8, 24};
             static char tipb[1024];
             snprintf(tipb, sizeof tipb, "%s", pages);

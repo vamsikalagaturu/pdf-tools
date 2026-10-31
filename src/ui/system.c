@@ -1,7 +1,12 @@
-/* The window's ties to the rest of the system: other windows, and printing.
+/* The window's ties to the rest of the system: other windows, and printing. app.c calls the ipc_* functions from
+ * the main loop; on Windows the sockets, printing and ipc_dir() come from platform/windows/system_win32.c.
  * How launches reach running windows: raylib has one window per process, so every window is a process that listens
- * on a Unix socket in the runtime directory and publishes its open files and when it was last focused; a later
- * launch picks the window showing the file (or the one used last) and sends it a JSON message. */
+ * on a Unix socket (abstract on Linux) and publishes its open files and when it was last focused in a state file in
+ * ipc_dir(); a later launch picks the window showing the file (or the one used last) and sends it a one-line JSON
+ * message, which app_handle_message() carries out. */
+#ifdef __linux__
+#define _GNU_SOURCE /* struct ucred */
+#endif
 #include "tab.h"
 #include <dirent.h>
 #include <math.h>
@@ -11,27 +16,23 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "pt_win32.h"
+#define send_to pt_win_ipc_send
+#define remove_socket pt_win_ipc_remove
+#else
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#endif
 
-static int server = -1;
-static char *state_path;
-
-char *ipc_dir(void)
-{
-    const char *run = getenv("XDG_RUNTIME_DIR");
-    char *dir = run && *run ? pt_join(run, APP_ID) : pt_format("/tmp/%s-%d", APP_ID, (int)getuid());
-    mkdir(dir, 0700);
-    return dir;
-}
-
-/* ---- a tiny JSON reader ---- */
+/* ---- a tiny JSON reader, for the launch messages ---- */
 
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } jtype;
+
 struct json {
     jtype type;
     double num;
@@ -58,6 +59,7 @@ static char *parse_string(const char **s)
         int len = 1;
         tmp[0] = c;
         if (c == '\\') {
+            if (!**s) break;
             c = *(*s)++;
             switch (c) {
             case 'n': tmp[0] = '\n'; break;
@@ -90,11 +92,16 @@ static char *parse_string(const char **s)
     return out;
 }
 
-static json *parse_value(const char **s)
+/* messages come from any process of this user: deeper nesting than a launch request needs ends the parse */
+#define JSON_DEPTH_MAX 32
+
+static json *parse_value(const char **s, int depth)
 {
     ws(s);
     json *j = calloc(1, sizeof *j);
-    if (**s == '"') {
+    if (depth > JSON_DEPTH_MAX) {
+        *s += strlen(*s);
+    } else if (**s == '"') {
         j->type = J_STR;
         j->str = parse_string(s);
     } else if (**s == '[' || **s == '{') {
@@ -109,8 +116,8 @@ static json *parse_value(const char **s)
                 item->str = parse_string(s);
                 ws(s);
                 if (**s == ':') (*s)++;
-                item->value = parse_value(s);
-            } else item = parse_value(s);
+                item->value = parse_value(s, depth + 1);
+            } else item = parse_value(s, depth + 1);
             j->items = pt_realloc(j->items, sizeof(json *) * (size_t)(j->n + 1));
             j->items[j->n++] = item;
             ws(s);
@@ -128,13 +135,13 @@ static json *parse_value(const char **s)
         char *end;
         j->type = J_NUM;
         j->num = strtod(*s, &end);
-        if (end == *s) end++;
+        if (end == *s && **s) end++;
         *s = end;
     }
     return j;
 }
 
-json *json_parse(const char *text) { return text ? parse_value(&text) : NULL; }
+json *json_parse(const char *text) { return text ? parse_value(&text, 0) : NULL; }
 
 void json_free(json *j)
 {
@@ -155,9 +162,13 @@ json *json_get(json *j, const char *key)
 }
 
 json *json_at(json *j, int i) { return j && j->type == J_ARR && i >= 0 && i < j->n ? j->items[i] : NULL; }
+
 int json_len(const json *j) { return j && j->type == J_ARR ? j->n : 0; }
+
 const char *json_str(const json *j) { return j && j->type == J_STR ? j->str : NULL; }
+
 double json_num(const json *j) { return j && (j->type == J_NUM || j->type == J_BOOL) ? j->num : 0; }
+
 int json_bool(const json *j) { return j && j->type == J_BOOL && j->num; }
 
 char *json_quote(const char *s)
@@ -178,51 +189,26 @@ char *json_quote(const char *s)
 
 /* ---- the windows' registry ---- */
 
-typedef struct {
-    int pid;
-    double focused;
-    pt_strs paths;
-} window_entry;
-PT_VEC(window_entries, window_entry);
+static int server = -1;
+static char *state_path;
 
-static void remove_socket(int pid);
-
-static void read_windows(window_entries *out)
+#ifndef _WIN32
+/* Anyone can make a folder of that name in /tmp first: one this user does not own, or others may enter, is not
+ * used, and this window works alone in a private folder instead of letting others read or plant its state. */
+char *ipc_dir(void)
 {
-    char *dir = ipc_dir();
-    DIR *d = opendir(dir);
-    if (!d) {
-        free(dir);
-        return;
-    }
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        size_t n = strlen(e->d_name);
-        if (n < 6 || strcmp(e->d_name + n - 5, ".json")) continue;
-        int pid = atoi(e->d_name);
-        char *file = pt_join(dir, e->d_name);
-        if (pid <= 0 || pid == getpid() || kill(pid, 0)) {
-            if (pid > 0 && pid != getpid() && errno == ESRCH) unlink(file), remove_socket(pid);
-            free(file);
-            continue;
-        }
-        pt_bytes b = {0};
-        if (!pt_read_file(file, &b)) {
-            char *text = calloc(b.len + 1, 1);
-            memcpy(text, b.data, b.len);
-            json *j = json_parse(text);
-            window_entry w = {pid, json_num(json_get(j, "focused")), {0}};
-            json *paths = json_get(j, "paths");
-            for (int i = 0; i < json_len(paths); i++) pt_push(w.paths, pt_strdup(json_str(json_at(paths, i))));
-            pt_push(*out, w);
-            json_free(j);
-            free(text);
-            free(b.data);
-        }
-        free(file);
-    }
-    closedir(d);
+    const char *run = getenv("XDG_RUNTIME_DIR");
+    char *dir = run && *run ? pt_join(run, APP_ID) : pt_format("/tmp/%s-%d", APP_ID, (int)getuid());
+    mkdir(dir, 0700);
+    struct stat st;
+    if (!lstat(dir, &st) && S_ISDIR(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 077)) return dir;
     free(dir);
+    static char *own;
+    if (!own) {
+        own = pt_format("/tmp/%s-%d-XXXXXX", APP_ID, (int)getuid());
+        if (!mkdtemp(own)) pt_log(PT_LOG_WARN, "no private folder for window messages");
+    }
+    return pt_strdup(own);
 }
 
 #ifdef __linux__
@@ -258,17 +244,82 @@ static void remove_socket(int pid)
 }
 #endif
 
+/* Linux's abstract sockets have no file permissions, and on Android other apps share the namespace: only this
+ * user's (this app's) processes may send messages. */
+static int peer_is_me(int fd)
+{
+#if defined(__linux__)
+    struct ucred cred;
+    socklen_t len = sizeof cred;
+    return !getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) && cred.uid == getuid();
+#else
+    uid_t uid;
+    gid_t gid;
+    return !getpeereid(fd, &uid, &gid) && uid == getuid();
+#endif
+}
+
+/* another user may have bound the name first: paths go only to this user's window */
 static int send_to(int pid, const char *message)
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0), ok = 0;
     struct sockaddr_un addr;
     socklen_t len = socket_address(pid, &addr);
-    if (fd >= 0 && !connect(fd, (struct sockaddr *)&addr, len)) {
+    if (fd >= 0 && !connect(fd, (struct sockaddr *)&addr, len) && peer_is_me(fd)) {
         size_t len = strlen(message);
         ok = write(fd, message, len) == (ssize_t)len && write(fd, "\n", 1) == 1;
     }
     if (fd >= 0) close(fd);
     return ok;
+}
+#endif
+
+typedef struct {
+    int pid;
+    double focused;
+    pt_strs paths;
+} window_entry;
+
+PT_VEC(window_entries, window_entry);
+
+/* The other live windows' published states; state files of windows that are gone are removed on the way. */
+static void read_windows(window_entries *out)
+{
+    char *dir = ipc_dir();
+    DIR *d = opendir(dir);
+    if (!d) {
+        free(dir);
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t n = strlen(e->d_name);
+        if (n < 6 || strcmp(e->d_name + n - 5, ".json")) continue;
+        int pid = atoi(e->d_name);
+        char *file = pt_join(dir, e->d_name);
+        if (pid <= 0 || pid == getpid() || kill(pid, 0)) {
+            if (pid > 0 && pid != getpid() && errno == ESRCH) unlink(file), remove_socket(pid);
+            free(file);
+            continue;
+        }
+        pt_bytes b = {0};
+        if (!pt_read_file(file, &b)) {
+            char *text = calloc(b.len + 1, 1);
+            memcpy(text, b.data, b.len);
+            json *j = json_parse(text);
+            window_entry w = {pid, json_num(json_get(j, "focused")), {0}};
+            json *paths = json_get(j, "paths");
+            for (int i = 0; i < json_len(paths); i++)
+                if (json_str(json_at(paths, i))) pt_push(w.paths, pt_strdup(json_str(json_at(paths, i))));
+            pt_push(*out, w);
+            json_free(j);
+            free(text);
+            free(b.data);
+        }
+        free(file);
+    }
+    closedir(d);
+    free(dir);
 }
 
 static int shows(const window_entry *w, const char *path)
@@ -278,7 +329,6 @@ static int shows(const window_entry *w, const char *path)
     return 0;
 }
 
-/* Hand a launch request to the running windows; 0 when none is running (this process opens a window). */
 int ipc_send_to_running(const char *message)
 {
     window_entries wins = {0};
@@ -335,6 +385,9 @@ void ipc_serve(void)
     char *dir = ipc_dir();
     state_path = pt_format("%s/%d.json", dir, (int)getpid());
     free(dir);
+#ifdef _WIN32
+    pt_win_ipc_listen((int)getpid());
+#else
     server = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un addr;
     socklen_t len = socket_address((int)getpid(), &addr);
@@ -342,43 +395,97 @@ void ipc_serve(void)
     if (server < 0 || bind(server, (struct sockaddr *)&addr, len) || listen(server, 8)) {
         if (server >= 0) close(server);
         server = -1;
+        /* unreachable: published state would send later launches to whoever holds the name */
+        free(state_path);
+        state_path = NULL;
         return;
     }
     fcntl(server, F_SETFL, fcntl(server, F_GETFL) | O_NONBLOCK);
+    /* so file choosers, printers and browsers started from the window do not hold the socket open */
+    fcntl(server, F_SETFD, FD_CLOEXEC);
+#endif
 }
+
+#ifndef _WIN32
+/* connections whose message is still arriving: read a little each time instead of waiting on a slow sender */
+typedef struct {
+    int fd;
+    char *buf;
+    size_t len;
+    double since;
+} ipc_conn;
+
+#define IPC_CONNS 8
+#define IPC_TIMEOUT_S 2.0
+#define IPC_MESSAGE_MAX (1 << 20)
+static ipc_conn conns[IPC_CONNS];
+static int nconns;
 
 void ipc_poll(void)
 {
     if (server < 0) return;
-    for (;;) {
-        int fd = accept(server, NULL, NULL);
-        if (fd < 0) break;
-        char *buf = NULL;
-        size_t len = 0;
-        char chunk[4096];
-        struct timeval tv = {1, 0};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        for (;;) {
-            ssize_t n = read(fd, chunk, sizeof chunk);
-            if (n <= 0) break;
-            buf = pt_realloc(buf, len + (size_t)n + 1);
-            memcpy(buf + len, chunk, (size_t)n);
-            len += (size_t)n;
-            buf[len] = 0;
-            if (buf[len - 1] == '\n') break;
+    int fd;
+    while ((fd = accept(server, NULL, NULL)) >= 0) {
+        if (nconns == IPC_CONNS || !peer_is_me(fd)) {
+            close(fd);
+            continue;
         }
-        close(fd);
-        if (buf) app_handle_message(buf);
-        free(buf);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        conns[nconns++] = (ipc_conn){fd, NULL, 0, GetTime()};
+    }
+    for (int i = 0; i < nconns;) {
+        ipc_conn *c = &conns[i];
+        char chunk[4096];
+        ssize_t n;
+        int complete = 0, too_long = 0;
+        while ((n = read(c->fd, chunk, sizeof chunk)) > 0) {
+            if (c->len + (size_t)n > IPC_MESSAGE_MAX) {
+                too_long = 1;
+                break;
+            }
+            c->buf = pt_realloc(c->buf, c->len + (size_t)n + 1);
+            memcpy(c->buf + c->len, chunk, (size_t)n);
+            c->len += (size_t)n;
+            c->buf[c->len] = 0;
+            if (c->buf[c->len - 1] == '\n') {
+                complete = 1;
+                break;
+            }
+        }
+        int failed = too_long || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+        if (n == 0) complete = 1;
+        if (!complete && !failed && GetTime() - c->since < IPC_TIMEOUT_S) {
+            i++;
+            continue;
+        }
+        close(c->fd);
+        if (complete && c->buf) app_handle_message(c->buf);
+        free(c->buf);
+        conns[i] = conns[--nconns];
         ui.dirty = 1;
     }
 }
+#else
+void ipc_poll(void)
+{
+    for (char *message; (message = pt_win_ipc_receive());) {
+        app_handle_message(message);
+        free(message);
+        ui.dirty = 1;
+    }
+}
+#endif
 
 void ipc_publish(const pt_strs *paths, int focused)
 {
     if (!state_path) return;
     static double focused_at;
-    if (focused) focused_at = (double)time(NULL) + (double)(clock() % 1000) / 1000.0;
+    if (focused) {
+        struct timespec now;
+        timespec_get(&now, TIME_UTC);
+        focused_at = (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+    }
     char *tmp = pt_format("%s.tmp", state_path);
     FILE *f = fopen(tmp, "w");
     if (!f) {
@@ -400,11 +507,13 @@ void ipc_publish(const pt_strs *paths, int focused)
 void ipc_stop(void)
 {
     if (server >= 0) close(server), remove_socket((int)getpid());
+#ifdef _WIN32
+    pt_win_ipc_close();
+#endif
     server = -1;
     if (state_path) unlink(state_path);
 }
 
-/* Ask every other window to close (File > Quit). */
 void ipc_quit_all(void)
 {
     window_entries wins = {0};
@@ -417,8 +526,8 @@ void ipc_quit_all(void)
 }
 
 /* ---- printing ----
- * Through CUPS (`lp`, with the printers `lpstat` lists; on Android the system print dialog) and a print preview of
- * the edited document. */
+ * Through CUPS (`lp`, with the printers `lpstat` lists; on Android the system print dialog; on Windows the print
+ * spooler, with pages drawn by MuPDF) and a print preview of the edited document. */
 
 #define CTX app.ctx
 
@@ -435,7 +544,9 @@ typedef struct {
     float tex_scale;
 } print_job;
 
-#ifndef __ANDROID__
+#ifdef _WIN32
+static void list_printers(print_job *j) { pt_win_printers(&j->printers, &j->printer); }
+#elif !defined(__ANDROID__)
 static void list_printers(print_job *j)
 {
     FILE *p = popen("lpstat -e 2>/dev/null", "r");
@@ -473,6 +584,16 @@ static void job_free(print_job *j)
     free(j);
 }
 
+#ifdef _WIN32
+static int send_to_printer(print_job *j)
+{
+    int first = j->range == 1 ? j->current + 1 : j->range == 2 ? j->from : 0;
+    int last = j->range == 1 ? j->current + 1 : j->range == 2 ? j->to : 0;
+    return pt_win_print(CTX, j->data->data, j->data->len, pt_basename(j->t->path),
+                        j->printers.n ? j->printers.v[j->printer] : NULL, j->copies, first, last, j->collate,
+                        j->reverse);
+}
+#else
 static int send_to_printer(print_job *j)
 {
     char tmp[] = "/tmp/pdf-tools-print-XXXXXX";
@@ -507,8 +628,7 @@ static int send_to_printer(print_job *j)
     unlink(tmp);
     return pid > 0 && WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1;
 }
-
-static void print_dialog_open(print_job *j);
+#endif
 
 #ifdef __ANDROID__
 char *pt_java(const char *method, int nargs, ...);
@@ -592,14 +712,16 @@ static int preview_frame(dialog *d, Rectangle b)
     DrawRectangleRec(view, pal.page_bg);
     if (j->doc) {
         fz_rect bounds = fz_empty_rect;
+        fz_page *p = NULL;
+        fz_var(p);
         fz_try(CTX)
         {
-            fz_page *p = fz_load_page(CTX, (fz_document *)j->doc, j->shown);
+            p = fz_load_page(CTX, (fz_document *)j->doc, j->shown);
             bounds = fz_bound_page(CTX, p);
             float scale =
                 fminf((view.width - 20) / (bounds.x1 - bounds.x0), (view.height - 20) / (bounds.y1 - bounds.y0));
             if (!j->tex_ok || j->tex_page != j->shown || fabsf(j->tex_scale - scale) > 0.01f) {
-                if (j->tex_ok) UnloadTexture(j->tex);
+                if (j->tex_ok) UnloadTexture(j->tex), j->tex_ok = 0;
                 fz_pixmap *pix = pt_render_page(CTX, p, scale * UI_PX, 0);
                 Image img = {pix->samples, pix->w, pix->h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8};
                 j->tex = LoadTextureFromImage(img);
@@ -607,12 +729,12 @@ static int preview_frame(dialog *d, Rectangle b)
                 j->tex_ok = 1, j->tex_page = j->shown, j->tex_scale = scale;
                 fz_drop_pixmap(CTX, pix);
             }
-            fz_drop_page(CTX, p);
             float w = (bounds.x1 - bounds.x0) * scale, h = (bounds.y1 - bounds.y0) * scale;
             Rectangle dst = {view.x + (view.width - w) / 2, view.y + (view.height - h) / 2, w, h};
             DrawTexturePro(j->tex, (Rectangle){0, 0, (float)j->tex.width, (float)j->tex.height}, dst, (Vector2){0, 0},
                            0, WHITE);
         }
+        fz_always(CTX) fz_drop_page(CTX, p);
         fz_catch(CTX) fz_ignore_error(CTX);
     }
     float y = b.y + b.height - 32;

@@ -63,6 +63,8 @@ target_compile_definitions(pdf-tools PRIVATE SetClipboardText=pt_android_set_cli
 # Android replacements for a few calls, swapped in per file so the shared sources stay untouched (android_glue.h).
 set_source_files_properties(${PT_ROOT}/src/ui/app.c PROPERTIES COMPILE_DEFINITIONS
   "InitWindow=pt_android_init_window;file_dialogs_poll=pt_android_frame;run_detached=pt_android_run_detached")
+set_source_files_properties(${PT_ROOT}/src/ui/document.c PROPERTIES COMPILE_DEFINITIONS
+  "run_detached=pt_android_run_detached")
 set_source_files_properties(${PT_ROOT}/src/ui/widgets.c PROPERTIES COMPILE_DEFINITIONS
   "GetCharPressed=pt_android_char_pressed;GetMouseWheelMoveV=pt_android_wheel")
 # C++ link for MuPDF's HarfBuzz (libc++ is static: ANDROID_STL defaults to c++_static)

@@ -1,7 +1,7 @@
 /* Fonts for text boxes: picking the font to draw with, measuring text, bold/italic variants.
  * A font name resolves to a standard base-14 font, else a font embedded in the PDF, else the closest installed
- * font (fontconfig, Android's font matcher or Core Text), else Helvetica; each step only counts if it has glyphs for
- * the text. */
+ * font (fontconfig, Android's font matcher, Core Text or the Windows font list), else Helvetica; each step only counts
+ * if it has glyphs for the text. */
 #include "pt_core.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -29,6 +29,7 @@ static const struct {
     {"Courier", "cour"},           {"Courier-Bold", "cobo"},
     {"Courier-Oblique", "coit"},   {"Courier-BoldOblique", "cobi"},
 };
+
 #define NBASE14 (int)(sizeof BASE14 / sizeof *BASE14)
 
 static const char *FAMILIES[3][4] = {
@@ -41,6 +42,8 @@ static const char *STYLE_WORDS[] = {
     "regular", "roman",  "book",     "bold",     "italic", "oblique",   "bolditalic", "boldoblique",
     "light",   "medium", "semibold", "demibold", "black",  "condensed", NULL,
 };
+
+/* ---- font names: family, style, variants ---- */
 
 const char *pt_base_font_name(const char *name)
 {
@@ -206,16 +209,18 @@ char *pt_styled_font(const char *name, int bold, int italic, const pt_strs *cand
     return out;
 }
 
+/* ---- installed fonts ---- */
+
 int pt_have_fontconfig(void)
 {
-#if defined(PT_USE_FONTCONFIG) || defined(__ANDROID__) || defined(__APPLE__)
+#if defined(PT_USE_FONTCONFIG) || defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
     return 1;
 #else
     return 0;
 #endif
 }
 
-#if !defined(PT_USE_FONTCONFIG) && (defined(__ANDROID__) || defined(__APPLE__))
+#if !defined(PT_USE_FONTCONFIG) && (defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32))
 static int font_file_ok(const char *path)
 {
     size_t n = strlen(path);
@@ -305,6 +310,23 @@ static char *mac_matched_font(const char *family, int bold, int italic)
 }
 #endif
 
+#if !defined(PT_USE_FONTCONFIG) && defined(_WIN32)
+/* the PDF's family, else a stand-in that ships with Windows */
+static char *win_matched_font(const char *family, int bold, int italic)
+{
+    const char *generic = generic_family(family);
+    const char *names[2] = {family, !strcmp(generic, "serif")       ? "Times New Roman"
+                                    : !strcmp(generic, "monospace") ? "Courier New"
+                                                                    : "Arial"};
+    for (int i = 0; i < 2; i++) {
+        char *file = pt_win_font_file(names[i], bold, italic);
+        if (file && font_file_ok(file)) return file;
+        free(file);
+    }
+    return NULL;
+}
+#endif
+
 char *pt_system_font_file(const char *name)
 {
 #ifdef PT_USE_FONTCONFIG
@@ -342,11 +364,20 @@ char *pt_system_font_file(const char *name)
     char *file = mac_matched_font(family, bold, italic);
     free(family);
     return file;
+#elif defined(_WIN32)
+    char *family = pt_font_family(name);
+    int bold, italic;
+    pt_font_style(name, &bold, &italic);
+    char *file = win_matched_font(family, bold, italic);
+    free(family);
+    return file;
 #else
     (void)name;
     return NULL;
 #endif
 }
+
+/* ---- fonts of the PDF and resolving a font name ---- */
 
 static int has(const pt_strs *s, const char *v)
 {
@@ -402,6 +433,7 @@ static fz_font *embedded_font(fz_context *ctx, pdf_document *doc, const char *ba
             if (!file) continue;
             fz_buffer *buf = NULL;
             fz_font *font = NULL;
+            fz_var(buf), fz_var(font);
             fz_try(ctx)
             {
                 buf = pdf_load_stream(ctx, file);
@@ -442,12 +474,14 @@ void pt_resolve_font(fz_context *ctx, pdf_document *doc, const char *name, const
         snprintf(out->desc, sizeof out->desc, "%s (standard PDF font)", base);
         return;
     }
+
     int xref = 0;
     if (doc && (out->font = embedded_font(ctx, doc, base, text, &xref))) {
         snprintf(out->name, sizeof out->name, "E%d", xref);
         snprintf(out->desc, sizeof out->desc, "%s (embedded in PDF)", base);
         return;
     }
+
     char *path = pt_system_font_file(name);
     if (path) {
         fz_font *font = NULL;
@@ -465,6 +499,7 @@ void pt_resolve_font(fz_context *ctx, pdf_document *doc, const char *name, const
         fz_drop_font(ctx, font);
         free(path);
     }
+
     out->font = fz_new_base14_font(ctx, "Helvetica");
     fz_strlcpy(out->name, "helv", sizeof out->name);
     fz_strlcpy(out->base14, "Helvetica", sizeof out->base14);
@@ -476,6 +511,8 @@ void pt_drop_resolved_font(fz_context *ctx, pt_resolved_font *f)
     fz_drop_font(ctx, f->font);
     f->font = NULL;
 }
+
+/* ---- measuring and wrapping text ---- */
 
 float pt_text_length(fz_context *ctx, fz_font *font, const char *text, float size)
 {

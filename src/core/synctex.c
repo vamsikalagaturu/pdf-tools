@@ -8,11 +8,16 @@
 
 /* record syntax: synctex_parser.c (TeX Live, SyncTeX 1); positions are scaled points from the page's top-left */
 #define SP_PER_BP 65781.76
+/* far beyond any typeset document; a page number past it in a corrupt or hostile file would make one empty slot per
+ * page below it */
+#define MAX_PAGES 100000
+
+/* ---- reading the file ---- */
 
 static char *with_suffix(const char *pdf, const char *suffix)
 {
-    const char *slash = strrchr(pdf, '/'), *dot = strrchr(pdf, '.');
-    size_t n = dot && (!slash || dot > slash) ? (size_t)(dot - pdf) : strlen(pdf);
+    const char *dot = strrchr(pt_basename(pdf), '.');
+    size_t n = dot ? (size_t)(dot - pdf) : strlen(pdf);
     return pt_format("%.*s%s", (int)n, pdf, suffix);
 }
 
@@ -73,6 +78,7 @@ void pt_synctex_load(fz_context *ctx, pt_synctex *s, const char *pdf)
     double unit = 1, x_off = 0, y_off = 0;
     int page = -1;
     char line[8192];
+    fz_var(stm);
     fz_try(ctx)
     {
         stm = n > 3 && !strcmp(s->path + n - 3, ".gz") ? fz_open_flated(ctx, file, 15 + 16) : fz_keep_stream(ctx, file);
@@ -87,7 +93,8 @@ void pt_synctex_load(fz_context *ctx, pt_synctex *s, const char *pdf)
             else if (!strncmp(line, "X Offset:", 9)) x_off = atof(line + 9);
             else if (!strncmp(line, "Y Offset:", 9)) y_off = atof(line + 9);
             else if (line[0] == '{') {
-                page = atoi(line + 1) - 1;
+                long number = strtol(line + 1, NULL, 10);
+                page = number >= 1 && number <= MAX_PAGES ? (int)number - 1 : -1;
                 while (page >= 0 && s->pages.n <= page) pt_push(s->pages, (pt_sync_nodes){0});
             } else if (line[0] == '}') page = -1;
             else if (page >= 0) {
@@ -130,6 +137,8 @@ int pt_synctex_stale(const pt_synctex *s)
     return now != s->mtime;
 }
 
+/* ---- PDF position to source line ---- */
+
 static const char *source_of(const pt_synctex *s, int tag)
 {
     for (int i = 0; i < s->inputs.n; i++)
@@ -148,6 +157,8 @@ static float distance(fz_rect r, float x, float y)
 int pt_synctex_inverse(const pt_synctex *s, int page, float x, float y, const char **source, int *line)
 {
     if (page < 0 || page >= s->pages.n) return 0;
+
+    /* the smallest hbox around the point, else the nearest one */
     const pt_sync_nodes *nodes = &s->pages.v[page];
     const pt_sync_node *box = NULL;
     float best = 0;
@@ -165,6 +176,8 @@ int pt_synctex_inverse(const pt_synctex *s, int page, float x, float y, const ch
         }
     }
     if (!box) return 0;
+
+    /* then the record on that line nearest left of the point, else the line's first */
     const pt_sync_node *before = NULL, *first = NULL;
     fz_rect band = box->rect;
     band.y0 -= 1, band.y1 += 1;
@@ -179,6 +192,8 @@ int pt_synctex_inverse(const pt_synctex *s, int page, float x, float y, const ch
     *line = pick->line;
     return 1;
 }
+
+/* ---- source line to PDF positions ---- */
 
 /* Input tags naming `source`: the same resolved path, else the same file name. */
 static void tags_for(const pt_synctex *s, const char *source, pt_ints *tags)
@@ -232,6 +247,8 @@ void pt_synctex_forward(const pt_synctex *s, const char *source, int line, pt_sy
             if (has_tag(&tags, n->tag) && n->line >= line) pt_push(lines, n->line);
         }
     qsort(lines.v, (size_t)lines.n, sizeof(int), cmp_int);
+
+    /* a line that typesets nothing maps to the next one that does */
     int tried = 0;
     for (int k = 0; k < lines.n && tried < 20; k++) {
         if (k && lines.v[k] == lines.v[k - 1]) continue;

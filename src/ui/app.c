@@ -1,9 +1,9 @@
-/* Entry point of the pdf-tools window binary and the window itself.
- *
- * Dispatches the window-free commands (cli.c) and the desktop flags; otherwise offers the request to a running window
- * (ipc.c) and only when none takes it opens a window: a header (menu, Home logo, the current tab's toolbar) above a
- * tab strip with document tabs and, on demand, the Home and Combine & split tabs, and a status line. Also the Home
- * tab and, on macOS, documents opened from Finder. */
+/* The window itself. pt_app_main() is what main.c runs when argv[1] is not a command: it handles the desktop flags
+ * and --help, otherwise offers the request to a running window (system.c) and only when none takes it opens a
+ * window: a header (menu, Home logo, the current tab's toolbar) above a tab strip with document tabs and, on demand,
+ * the Home, Combine & split and Compare tabs, and a status line. The main loop sleeps between frames and draws only
+ * when something changed (ui.dirty, ui.redraw_at, input, a render worker's wake-up). Also the Home tab and, on
+ * macOS, documents opened from Finder. */
 #include "ui.h"
 #include "pt_cli.h"
 #include "tab.h"
@@ -44,13 +44,7 @@ app_state app;
 #define TABS_H 34.0f
 #define STATUS_H 26.0f
 
-static int close_requested;
-
-static void on_close(void *window)
-{
-    glfwSetWindowShouldClose(window, 0);
-    close_requested = 1;
-}
+/* ---- the window's tabs ---- */
 
 void status(const char *text, double seconds)
 {
@@ -78,6 +72,13 @@ static int index_of_doc(const tab *t)
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc == t) return i;
     return -1;
+}
+
+tab *app_doc_by_id(unsigned id)
+{
+    for (int i = 0; i < app.tabs.n; i++)
+        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->id == id) return app.tabs.v[i].doc;
+    return NULL;
 }
 
 void app_publish_state(void)
@@ -243,6 +244,8 @@ static void move_to_new_window(tab *t)
     free(file);
 }
 
+/* ---- appearance ---- */
+
 void app_set_theme(const char *mode)
 {
     pt_settings_set_str(&app.settings, "theme", mode);
@@ -306,16 +309,15 @@ static void m_size(void *ctx, intptr_t percent)
 }
 #endif
 
-void app_about(void)
-{
-    message_box(MSG_INFO, "About " APP_NAME,
-                APP_NAME " " PT_VERSION "\n\nView, redact, fill, annotate, sign and merge PDFs.\n\n" REPO_URL
-                         "\n\nLicense: AGPL-3.0-or-later. Icons: Lucide (ISC). UI font: Noto Sans (OFL-1.1).\n"
-                         "Native build: MuPDF, raylib, raygui.",
-                NULL, NULL);
-}
-
 /* ---- closing ---- */
+
+static int close_requested;
+
+static void on_close(void *window)
+{
+    glfwSetWindowShouldClose(window, 0);
+    close_requested = 1;
+}
 
 static int dirty_docs(pt_strs *names)
 {
@@ -334,7 +336,6 @@ static void quit_answer(void *ctx, int yes)
     if (yes) app.quit = 1;
 }
 
-/* Ask once about unsaved edits in this window's documents, then close. */
 void app_quit_request(void)
 {
     pt_strs names = {0};
@@ -361,8 +362,8 @@ void app_handle_message(const char *text)
     json *j = json_parse(text);
     json *forward = json_get(j, "forward"), *open = json_get(j, "open"), *show = json_get(j, "show");
     if (json_bool(json_get(j, "quit"))) app_quit_request();
-    if (forward && json_len(forward) == 3) {
-        const char *pdf = json_str(json_at(forward, 0)), *source = json_str(json_at(forward, 2));
+    const char *pdf = json_str(json_at(forward, 0)), *source = json_str(json_at(forward, 2));
+    if (json_len(forward) == 3 && pdf && source) {
         int line = (int)json_num(json_at(forward, 1)), found = -1;
         for (int k = 0; k < app.tabs.n; k++)
             if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, pdf))
@@ -374,11 +375,12 @@ void app_handle_message(const char *text)
     }
     if (open) {
         pt_strs paths = {0};
-        for (int i = 0; i < json_len(open); i++) pt_push(paths, pt_strdup(json_str(json_at(open, i))));
+        for (int i = 0; i < json_len(open); i++)
+            if (json_str(json_at(open, i))) pt_push(paths, pt_strdup(json_str(json_at(open, i))));
         app_open_paths(&paths);
         pt_strs_free(&paths);
     }
-    if (show) {
+    if (json_str(show)) {
         pt_strs paths = {0};
         pt_push(paths, pt_strdup(json_str(show)));
         app_open_paths(&paths);
@@ -391,6 +393,15 @@ void app_handle_message(const char *text)
 }
 
 /* ---- the menu ---- */
+
+void app_about(void)
+{
+    message_box(MSG_INFO, "About " APP_NAME,
+                APP_NAME " " PT_VERSION "\n\nView, redact, fill, annotate, sign and merge PDFs.\n\n" REPO_URL
+                         "\n\nLicense: AGPL-3.0-or-later. Icons: Lucide (ISC). UI font: Noto Sans (OFL-1.1).\n"
+                         "Native build: MuPDF, raylib, raygui.",
+                NULL, NULL);
+}
 
 static void m_action(void *ctx, intptr_t a)
 {
@@ -484,13 +495,14 @@ ui_menu *app_build_menu(tab *t)
     return m;
 }
 
-/* ---- frame ---- */
+/* ---- the tab strip ---- */
 
 static void t_move(void *ctx, intptr_t a)
 {
     (void)a;
     move_to_new_window(ctx);
 }
+
 static void t_close(void *ctx, intptr_t a)
 {
     (void)a;
@@ -626,6 +638,7 @@ static void tab_strip(Rectangle r)
         total += widths[i] + 1;
     }
     while (titles.n > n) free(titles.v[--titles.n]);
+
     float max_scroll = fmaxf(0, total - strip.width);
     if (app.current != app.tab_shown) {
         if (cur_x < app.tab_scroll_to) app.tab_scroll_to = cur_x;
@@ -641,10 +654,12 @@ static void tab_strip(Rectangle r)
     if (fabsf(gap) > 0.5f) app.tab_scroll += gap * fminf(1, dt * 20), ui.dirty = 1;
     else app.tab_scroll = app.tab_scroll_to;
     app.tab_scroll = fmaxf(0, fminf(app.tab_scroll, max_scroll));
+
     if (ui_button(ui_id(&app.tabs, 600),
                   (Rectangle){r.x + r.width - TAB_LIST_W + 2, r.y + 2, TAB_LIST_W - 4, r.height - 4}, NULL, "find",
                   B_FLAT | B_ICON_ONLY, "Go to tab..."))
         tab_list_open();
+
     ui_scissor_begin(strip);
     float x = strip.x - app.tab_scroll;
     for (int i = 0; i < n; i++) {
@@ -702,6 +717,7 @@ static void tab_strip(Rectangle r)
         x += tw + 1;
     }
     ui_scissor_end();
+
     /* a scrollbar along the bottom of the strip, draggable, brighter while the pointer is over the strip */
     if (max_scroll > 0) {
         Rectangle track = {strip.x, r.y + r.height - 6, strip.width, 6};
@@ -719,6 +735,7 @@ static void tab_strip(Rectangle r)
         DrawRectangleRounded(thumb, 0.5f, 6,
                              ui.active == id || ui_hover(grip) ? pal.window_text : pal.scroll_thumb_hot);
     }
+
     if (move_to >= 0) {
         win_tab moving = app.tabs.v[app.current];
         drop_index(app.current);
@@ -730,6 +747,8 @@ static void tab_strip(Rectangle r)
     }
     if (!ui.down) app.dragging_tab = 0;
 }
+
+/* ---- frame ---- */
 
 static void global_shortcuts(void)
 {
@@ -789,6 +808,7 @@ static void frame(void)
     ClearBackground(pal.window);
     tab *t = app_current_doc();
     win_tab *cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
+
     /* header */
     Rectangle header = {0, 0, ui.w, HEADER_H};
     DrawRectangleRec(header, pal.window);
@@ -804,6 +824,7 @@ static void frame(void)
     if (t) tab_toolbar(t, tools);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_toolbar(app.ws, tools);
     else if (cur && cur->kind == TAB_COMPARE) compare_toolbar(cur->cmp, tools);
+
     tab_strip((Rectangle){0, HEADER_H, ui.w, TABS_H});
     Rectangle content = {0, HEADER_H + TABS_H, ui.w, ui.h - HEADER_H - TABS_H - STATUS_H};
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
@@ -812,6 +833,7 @@ static void frame(void)
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_frame(app.ws, content);
     else if (cur && cur->kind == TAB_COMPARE) compare_frame(cur->cmp, content);
     else if (t) tab_frame(t, content);
+
     /* status line */
     Rectangle bar = {0, ui.h - STATUS_H, ui.w, STATUS_H};
     DrawRectangleRec(bar, pal.window);
@@ -825,7 +847,9 @@ static void frame(void)
         char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
         draw_text_in(e, (Rectangle){s.x + 8, s.y, s.width, s.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
         free(e);
+        ui_redraw_at(app.status_until);
     }
+
     /* keys: the current tab's, then the window's */
     if (t) tab_shortcuts(t);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_shortcuts(app.ws);
@@ -833,12 +857,17 @@ static void frame(void)
     global_shortcuts();
     ui_end_frame();
     cursor_commit();
+
+    /* a shortcut may have closed or switched the tab: look again */
+    t = app_current_doc();
+    cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
     /* other tabs keep watching their files, and give their page renders back */
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) {
             tab_poll(app.tabs.v[i].doc);
             tab_release_renders(app.tabs.v[i].doc);
         }
+
     char title[600];
     if (t && t->path)
         snprintf(title, sizeof title, "%s%s - %s", tab_edit_count(t) ? "* " : "", pt_basename(t->path), APP_NAME);
@@ -863,10 +892,16 @@ static const char *exe_path(const char *argv0)
 #ifdef __APPLE__
     uint32_t size = sizeof buf;
     if (!_NSGetExecutablePath(buf, &size)) return buf;
+#elif defined(_WIN32)
+    if (!pt_win_exe_path(buf, sizeof buf)) return buf;
 #else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n > 0) {
         buf[n] = 0;
+        /* the binary was replaced while running (an upgrade): the new one is at the old name */
+        static const char deleted[] = " (deleted)";
+        size_t len = (size_t)n, dl = sizeof deleted - 1;
+        if (len > dl && !strcmp(buf + len - dl, deleted)) buf[len - dl] = 0;
         return buf;
     }
 #endif
@@ -919,6 +954,16 @@ static void refresh_desktop_database(void)
     free(base);
 }
 
+/* Sleeps until input (a render worker's glfwPostEmptyEvent() counts), the redraw a widget asked for
+ * (ui.redraw_at) or 0.3 s, whichever comes first; the timeout is what watches open files for changes and picks up
+ * messages from other windows. */
+static void idle_wait(void)
+{
+    double wait = 0.3;
+    if (ui.redraw_at) wait = fmax(0, fmin(wait, ui.redraw_at - GetTime()));
+    glfwWaitEventsTimeout(wait);
+}
+
 int pt_app_main(int argc, char **argv)
 {
     if (argc == 2 && (!strcmp(argv[1], "--install-desktop") || !strcmp(argv[1], "--uninstall-desktop"))) {
@@ -936,8 +981,10 @@ int pt_app_main(int argc, char **argv)
         refresh_desktop_database();
         return 0;
     }
+
     if (argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))) {
         /* the manual in a terminal; piped (scripts, agents) or without man, the short usage */
+#ifndef _WIN32
         if (isatty(1) && !access("/usr/bin/man", X_OK)) {
             char tmp[] = "/tmp/pdf-tools-man-XXXXXX";
             int fd = mkstemp(tmp);
@@ -946,6 +993,7 @@ int pt_app_main(int argc, char **argv)
                 execlp("man", "man", "-l", tmp, (char *)NULL);
             }
         }
+#endif
         pt_cli_usage(stdout);
         return 0;
     }
@@ -957,6 +1005,7 @@ int pt_app_main(int argc, char **argv)
         free(message);
         return 0;
     }
+
     snprintf(app.exe, sizeof app.exe, "%s", exe_path(argv[0]));
     app.ctx = fz_new_context(NULL, render_locks(), FZ_STORE_DEFAULT);
     fz_register_document_handlers(app.ctx);
@@ -971,6 +1020,7 @@ int pt_app_main(int argc, char **argv)
     SetTraceLogLevel(RAYLIB_LEVEL[pt_log_threshold()]);
     pt_log_set_sink(log_to_raylib);
     pt_log_mupdf(app.ctx);
+
 #ifdef __APPLE__
     /* a Retina framebuffer: layout stays in points, text and pages render at ui.density */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
@@ -1013,6 +1063,7 @@ int pt_app_main(int argc, char **argv)
     Image icon = LoadImageFromTexture(logo_texture());
     SetWindowIcon(icon);
     UnloadImage(icon);
+
     ipc_serve();
     app.current = -1;
     app_go_home();
@@ -1045,31 +1096,35 @@ int pt_app_main(int argc, char **argv)
             ipc_publish(&paths, 1);
             pt_strs_free(&paths);
         }
+        /* a text field's caret blinks only in the focused window */
+        if (focused != was_focused) ui.dirty = 1;
         was_focused = focused;
-        /* woken by the timer alone: watch the files, and draw only if that changed something */
-        if (timer_wake && !ui_input_since_frame() && !IsWindowResized() && !IsFileDropped() && !*app.status) {
+        /* woken by the timer alone: watch the files, and draw only if that (or a message, a dialog result or a
+         * callback since the last frame) changed something */
+        if (timer_wake && !ui_input_since_frame() && !IsWindowResized() && !IsFileDropped()) {
             ui.now = GetTime();
-            ui.dirty = 0;
             for (int i = 0; i < app.tabs.n; i++)
                 if (app.tabs.v[i].kind == TAB_DOC) tab_poll(app.tabs.v[i].doc);
-            if (!ui.dirty) {
-                glfwWaitEventsTimeout(0.3);
+            tab *shown = app_current_doc();
+            if (shown && render_ready(shown)) ui.dirty = 1;
+            if (!ui.dirty && !(ui.redraw_at && ui.now >= ui.redraw_at)) {
+                idle_wait();
                 continue;
             }
         }
         timer_wake = 0;
         ui.dirty = 0;
+        ui.redraw_at = 0;
         BeginDrawing();
         frame();
         EndDrawing();
-        /* idle: sleep until input (or a short timeout for file watching and messages); input that arrived while
-         * drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now */
-        if (!ui.dirty && !ui.down && !ui_input_since_frame() && !file_dialog_busy() &&
-            !(*app.status && ui.now < app.status_until)) {
-            glfwWaitEventsTimeout(0.3);
+        /* input that arrived while drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now */
+        if (!ui.dirty && !ui.down && !ui_input_since_frame()) {
+            idle_wait();
             timer_wake = 1;
         }
     }
+
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
         else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);
