@@ -1381,6 +1381,11 @@ struct ui_menu {
 
 #define MENU_ROW 26
 #define MENU_SEP 9
+#define MENU_ICON 18 /* an item's icon */
+#define MENU_CHIP 24 /* the accent square behind an active item's icon */
+#define MENU_CHIP_ROUND 0.3f
+#define MENU_CHIP_SEGMENTS 6
+#define MENU_CHECK_W 2.0f /* the swatch ring and the tick */
 static ui_menu *open_menus[8];
 static int nopen;
 static Vector2 menu_at;
@@ -1542,14 +1547,23 @@ void menus_frame(void)
             if (hover || sub_open) DrawRectangleRounded(row, 0.2f, 4, pal.highlight);
             Color fg = !e->enabled ? pal.disabled_text : hover || sub_open ? pal.highlighted_text : pal.window_text;
             float x = row.x + 8;
+            /* the active choice or setting: its icon on an accent chip, as the selected tool in the toolbar */
+            Rectangle chip = {x - (MENU_CHIP - MENU_ICON) / 2, y + (MENU_ROW - MENU_CHIP) / 2, MENU_CHIP, MENU_CHIP};
+            if (e->checked && e->has_swatch)
+                DrawRectangleRoundedLinesEx(chip, MENU_CHIP_ROUND, MENU_CHIP_SEGMENTS, MENU_CHECK_W, pal.highlight);
+            else if (e->checked)
+                DrawRectangleRounded(chip, MENU_CHIP_ROUND, MENU_CHIP_SEGMENTS,
+                                     hover ? pal.highlighted_text : pal.highlight);
+            Color ink = e->checked && !e->has_swatch ? hover ? pal.highlight : pal.highlighted_text : fg;
             if (e->has_swatch) ui_swatch((Rectangle){x, y + 5, 16, 16}, e->rgb);
-            else if (e->icon) draw_icon(e->icon, (Rectangle){x, y + 4, 18, 18}, fg);
-            if (e->checked) {
-                Rectangle c = {row.x + row.width - (e->shortcut ? 24 : 22), y + 6, 14, 14};
-                if (!e->shortcut) {
-                    DrawLineEx((Vector2){c.x + 2, c.y + 7}, (Vector2){c.x + 5.5f, c.y + 11}, 2, fg);
-                    DrawLineEx((Vector2){c.x + 5.5f, c.y + 11}, (Vector2){c.x + 12, c.y + 3}, 2, fg);
-                } else DrawCircle((int)(x - 2), (int)(y + MENU_ROW / 2), 3, fg);
+            else if (e->icon) draw_icon(e->icon, (Rectangle){x, y + 4, MENU_ICON, MENU_ICON}, ink);
+            else if (e->checked) {
+                /* a tick on the chip of an item without an icon (a list of choices) */
+                Vector2 a = {chip.x + MENU_CHIP * 0.2f, chip.y + MENU_CHIP * 0.5f},
+                        b = {chip.x + MENU_CHIP * 0.42f, chip.y + MENU_CHIP * 0.7f},
+                        c = {chip.x + MENU_CHIP * 0.8f, chip.y + MENU_CHIP * 0.3f};
+                DrawLineEx(a, b, MENU_CHECK_W, ink);
+                DrawLineEx(b, c, MENU_CHECK_W, ink);
             }
             draw_text_in(e->label, (Rectangle){x + 26, y, row.width, MENU_ROW}, FS_NORMAL, F_REGULAR, fg, -1);
             if (e->shortcut)

@@ -119,6 +119,9 @@ float ui_px(void);
 void ui_set_insets(float left, float top, float right, float bottom); /* screen pixels kept free at each edge */
 void ui_touch_drag_area(Rectangle r);                            /* a one-finger drag here draws instead of panning */
 void ui_add_pinch(float factor, float screen_x, float screen_y); /* touch: applied at the next frame */
+/* touchpad pinch on the desktop (gestures.c), which GLFW does not report: fed to ui_add_pinch */
+void gestures_init(void); /* after the window opens */
+void gestures_poll(void); /* each turn of the main loop, before the frame */
 void ui_add_double_tap(float screen_x, float screen_y);
 int ui_touch_drags_at(float screen_x, float screen_y);
 void ui_touch_zoom_area(Rectangle r); /* a double tap here zooms instead of clicking twice */

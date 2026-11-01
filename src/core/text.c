@@ -587,6 +587,165 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
     return s;
 }
 
+pt_numbering pt_numbering_from(const char *name)
+{
+    if (name && !strcmp(name, "page")) return PT_NUMBER_PAGE;
+    if (name && !strcmp(name, "paragraph")) return PT_NUMBER_PARAGRAPH;
+    return PT_NUMBER_DOCUMENT;
+}
+
+/* points a piece on the previous line's baseline may start before that line's end and still continue it */
+#define BASELINE_JOIN_OVERLAP 1
+/* a block narrower than this share of the page beside other blocks may be a table's column */
+#define CELL_COLUMN_W 0.25f
+/* lines a column of cells shares with a block beside it to make them one table */
+#define TABLE_SHARED_LINES 2
+/* a line ending more than this many line heights short of its column's edge ends its paragraph */
+#define SHORT_LINE_H 1.5f
+/* a gap of more than this many line heights between lines starts a paragraph */
+#define PARAGRAPH_GAP_H 0.6f
+/* a line whose height differs by more than this share from the previous one's (a heading) starts a paragraph */
+#define HEADING_SIZE_CHANGE 0.25f
+
+static int overlap_x(fz_rect a, fz_rect b) { return a.x0 <= b.x1 && b.x0 <= a.x1; }
+
+static int on_baseline_of(fz_rect a, fz_rect b)
+{
+    float cy = (a.y0 + a.y1) / 2;
+    return cy > b.y0 && cy < b.y1;
+}
+
+/* a run of lines each overlapping the previous one horizontally: a column, or a column of a table's cells */
+typedef struct {
+    int a, z, set;
+    fz_rect r;
+} line_block;
+
+PT_VEC(line_blocks, line_block);
+
+static int block_set(line_blocks *b, int i)
+{
+    while (b->v[i].set != i) i = b->v[i].set;
+    return i;
+}
+
+static int shared_baselines(const pt_text_lines *l, const line_block *b, const line_block *c)
+{
+    int n = 0;
+    for (int i = b->a; i < b->z; i++)
+        for (int k = c->a; k < c->z; k++)
+            if (on_baseline_of(l->v[i].r, l->v[k].r)) {
+                n++;
+                break;
+            }
+    return n;
+}
+
+static int by_middle(const void *a, const void *b)
+{
+    const pt_text_line *x = a, *y = b;
+    float d = (x->r.y0 + x->r.y1) - (y->r.y0 + y->r.y1);
+    return d < 0 ? -1 : d > 0;
+}
+
+void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
+                     pt_text_lines *out)
+{
+    pt_text_lines lines = {0};
+    for (int i = 0; i < words->n; i++) {
+        fz_rect r = words->v[i].rect;
+        if (i && words->v[i].line == words->v[i - 1].line) {
+            lines.v[lines.n - 1].r = fz_union_rect(lines.v[lines.n - 1].r, r);
+            continue;
+        }
+        /* a section number and its title, or a label and its text, set apart on one baseline */
+        if (lines.n) {
+            fz_rect *last = &lines.v[lines.n - 1].r;
+            if (on_baseline_of(r, *last) && r.x0 >= last->x1 - BASELINE_JOIN_OVERLAP) {
+                *last = fz_union_rect(*last, r);
+                continue;
+            }
+        }
+        pt_push(lines, ((pt_text_line){r, 0, 0, 0}));
+    }
+    line_blocks blocks = {0};
+    for (int a = 0, k = 1; k <= lines.n; k++) {
+        if (k < lines.n && overlap_x(lines.v[k].r, lines.v[k - 1].r)) continue;
+        fz_rect r = lines.v[a].r;
+        for (int i = a + 1; i < k; i++) r = fz_union_rect(r, lines.v[i].r);
+        int self = blocks.n;
+        pt_push(blocks, ((line_block){a, k, self, r}));
+        a = k;
+    }
+    /* A table is not columns of text: a narrow block whose lines share baselines with blocks beside it is a column
+     * of cells, and the blocks it sits beside are the table's other columns. A table is numbered by its rows, at its
+     * left edge. */
+    for (int i = 0; i < blocks.n; i++) {
+        line_block *b = &blocks.v[i];
+        if (b->r.x1 - b->r.x0 >= CELL_COLUMN_W * page_w) continue;
+        for (int k = 0; k < blocks.n; k++) {
+            line_block *c = &blocks.v[k];
+            if (k == i || overlap_x(b->r, c->r) || c->r.y0 > b->r.y1 || b->r.y0 > c->r.y1) continue;
+            int need = b->z - b->a < TABLE_SHARED_LINES ? b->z - b->a : TABLE_SHARED_LINES;
+            if (shared_baselines(&lines, b, c) >= need) blocks.v[block_set(&blocks, k)].set = block_set(&blocks, i);
+        }
+    }
+    out->n = 0;
+    pt_text_lines rows = {0};
+    for (int i = 0; i < blocks.n; i++) {
+        int s = block_set(&blocks, i), alone = 1;
+        for (int k = 0; k < blocks.n && alone; k++) alone = k == i || block_set(&blocks, k) != s;
+        if (alone) {
+            for (int k = blocks.v[i].a; k < blocks.v[i].z; k++) {
+                pt_text_line l = lines.v[k];
+                l.col_x0 = blocks.v[i].r.x0, l.col_x1 = blocks.v[i].r.x1;
+                pt_push(*out, l);
+            }
+            continue;
+        }
+        int first = 1;
+        for (int k = 0; k < i && first; k++) first = block_set(&blocks, k) != s;
+        if (!first) continue;
+        rows.n = 0;
+        fz_rect table = fz_empty_rect;
+        for (int k = 0; k < blocks.n; k++) {
+            if (block_set(&blocks, k) != s) continue;
+            table = fz_union_rect(table, blocks.v[k].r);
+            for (int m = blocks.v[k].a; m < blocks.v[k].z; m++) pt_push(rows, lines.v[m]);
+        }
+        qsort(rows.v, (size_t)rows.n, sizeof *rows.v, by_middle);
+        for (int k = 0; k < rows.n; k++) {
+            if (k && on_baseline_of(rows.v[k].r, out->v[out->n - 1].r)) {
+                out->v[out->n - 1].r = fz_union_rect(out->v[out->n - 1].r, rows.v[k].r);
+                continue;
+            }
+            pt_push(*out, ((pt_text_line){rows.v[k].r, table.x0, table.x1, 0}));
+        }
+    }
+    pt_vec_free(rows);
+    pt_vec_free(blocks);
+    pt_vec_free(lines);
+    if (mode == PT_NUMBER_PAGE) state->next = 1;
+    for (int k = 0; k < out->n; k++) {
+        pt_text_line *l = &out->v[k];
+        /* a paragraph ends with a line short of its column's edge or a gap of more than half a line after it; a
+         * line of another size (a heading) starts one too */
+        float lh = l->r.y1 - l->r.y0;
+        int starts = !state->open;
+        if (k) {
+            const pt_text_line *p = &out->v[k - 1];
+            float gap = l->col_x0 == p->col_x0 ? l->r.y0 - p->r.y1 : 0;
+            starts = p->r.x1 < p->col_x1 - SHORT_LINE_H * state->h || gap > PARAGRAPH_GAP_H * state->h;
+        }
+        if (state->h > 0 && fabsf(lh - state->h) > HEADING_SIZE_CHANGE * fmaxf(lh, state->h)) starts = 1;
+        state->tail = starts ? 1 : state->tail + 1;
+        l->n = mode == PT_NUMBER_PARAGRAPH ? state->tail : state->next;
+        state->next++;
+        state->open = l->r.x1 >= l->col_x1 - SHORT_LINE_H * lh;
+        state->h = lh;
+    }
+}
+
 /* ---- personal data ----
  * E-mail addresses, phone numbers, IBANs, card numbers, dates and ID numbers, found with regular expressions over
  * the page text (one line per text line) and checked where a checksum exists (IBAN mod 97, ISO 13616; card numbers

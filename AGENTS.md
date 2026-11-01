@@ -53,8 +53,8 @@ Notes:
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
 - Field names for `fill` come from `info` (`fields[].name`); checkboxes take `true`/`false`.
 - Other formats, by file extension: XPS/OXPS, CBZ/CBT, images (PNG, JPEG, GIF, BMP, TIFF, JP2, JXR, PSD, PNM),
-  SVG, EPUB, MOBI, FB2, DOCX, XLSX, PPTX. `info`, `search`, `inspect`, `render`, `export-images`, `compare` and
-  `ocr` read them as they are (e-books and Office documents laid out at A5, 11 pt, as `convert` does by default);
+  SVG, EPUB, MOBI, FB2, DOCX, XLSX, PPTX. `info`, `search`, `inspect`, `comments`, `render`, `export-images`,
+  `compare` and `ocr` read them as they are (e-books and Office documents laid out at A5, 11 pt, as `convert` does by default);
   the commands that edit fail with `"... is not a PDF; convert it first: pdf-tools convert IN -o OUT.pdf"`
   (`merge` still takes images). `convert` keeps the text searchable, links and the outline.
 - `merge`: give each encrypted input's password as `--password-for FILE=PW`, FILE spelled as on the command
@@ -65,6 +65,7 @@ Notes:
 ```sh
 pdf-tools search in.pdf --text "total" [--pages 1-3] [--case-sensitive]   # -> pages and boxes of each match
 pdf-tools inspect in.pdf                                     # annotations (with per-page index) and form fields
+pdf-tools comments in.pdf [-o out.md] [--format md|json] [--numbering document|page|paragraph] [--pages 1-3]
 pdf-tools render in.pdf -o page.png [--page 1] [--dpi 150]
 pdf-tools export-images in.pdf -d outdir/ [--pages 1-3] [--format png|jpeg] [--dpi 150]   # outdir/in-page1.png, ...
 pdf-tools ocr in.pdf -o out.pdf [--pages 1-3] [--language deu+eng] [--tessdata DIR]       # invisible, searchable text layer
@@ -87,6 +88,14 @@ pdf-tools scrub in.pdf -o out.pdf                            # metadata, attachm
 - `sign --cert` writes a PKCS#7 digital signature (incremental save); `--image` alone only
   places a picture, which is not a cryptographic signature.
 - `bates` numbers count only the selected pages; the output gives `first` and `last`.
+- `comments` lists marked text (with the text under it), notes, text boxes, stamps, carets and any other
+  annotation with a comment, each with its replies (`/IRT`), as
+  `{"file", "numbering", "comments": [{"page", "lines": [first, last], "type", "author", "date", "quote",
+  "comment", "replies": [...]}], "count"}`. Lines are numbered as the window's line numbers count them
+  (`--numbering`: through the document, per page or per paragraph); `lines` is null on a page without text,
+  `date` is ISO 8601 in UTC. With `-o` the list goes to that file (Markdown when it ends in `.md` or with
+  `--format md`, else this JSON) and the output is `{"output", "count"}`; `--format md` needs `-o`.
+  No comments: exit 3, nothing written.
 
 ## Windowed use
 

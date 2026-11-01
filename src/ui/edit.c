@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define CTX app.ctx
 #define FIND_H 38.0f
 #define SPLITTER 5.0f
 #define OPTS_H 40.0f
@@ -133,15 +134,19 @@ enum {
     A_FIT_HEIGHT,
     A_PREV,
     A_NEXT,
+    A_BACK,
+    A_FORWARD,
     A_GOTO,
     A_PII,
     A_BATES,
     A_WATERMARK,
     A_PROPERTIES,
     A_EXPORT_IMAGES,
+    A_EXPORT_COMMENTS,
     A_TWO_PAGES,
     A_COVER,
-    A_LINE_NUMBERS,
+    A_LINE_NUMBERS, /* off; + 1 + pt_numbering: on, counting that way */
+    A_LINE_NUMBERS_LAST = A_LINE_NUMBERS + 3,
     A_PRESENT,
     A_COMPARE,
     A_OCR,
@@ -160,6 +165,8 @@ static void ask_goto(tab *t);
 
 /* Carries out action `a` (A_*) on the tab `ctx`: toolbar buttons, menu items and shortcuts all come through here,
  * so a menu (a ui_action) can name any of them. */
+static void export_comments(tab *t);
+
 static void run(void *ctx, intptr_t a)
 {
     tab *t = ctx;
@@ -226,11 +233,14 @@ static void run(void *ctx, intptr_t a)
     case A_PREV: tab_step_page(t, -1); break;
     case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
+    case A_BACK: nav_go(t, 1); break;
+    case A_FORWARD: nav_go(t, 0); break;
     case A_PII: pii_dialog(t); break;
     case A_BATES: bates_dialog(t); break;
     case A_WATERMARK: watermark_dialog(t); break;
     case A_PROPERTIES: properties_dialog(t); break;
     case A_EXPORT_IMAGES: export_images_dialog(t); break;
+    case A_EXPORT_COMMENTS: export_comments(t); break;
     case A_TWO_PAGES:
     case A_COVER:
         if (a == A_TWO_PAGES) t->two_pages = !t->two_pages;
@@ -239,8 +249,17 @@ static void run(void *ctx, intptr_t a)
         t->want_scroll_page = t->pno;
         break;
     case A_LINE_NUMBERS:
-        pt_settings_set_int(&app.settings, "line_numbers", !pt_settings_int(&app.settings, "line_numbers"));
+    case A_LINE_NUMBERS + 1:
+    case A_LINE_NUMBERS + 2:
+    case A_LINE_NUMBERS_LAST: {
+        static const char *const RESTART[] = {"document", "page", "paragraph"};
+        pt_settings_set_int(&app.settings, "line_numbers", a != A_LINE_NUMBERS);
+        if (a != A_LINE_NUMBERS)
+            pt_settings_set_str(&app.settings, "line_numbers_restart", RESTART[a - A_LINE_NUMBERS - 1]);
+        /* the counts kept for the pages before the view were made the old way */
+        memset(t->line_info, 0, sizeof(page_lines_info) * (size_t)t->npages);
         break;
+    }
     case A_PRESENT: present_start(t); break;
     case A_COMPARE: compare_start(t); break;
     case A_OCR: ocr_dialog(t); break;
@@ -268,6 +287,7 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(file, "Save optimized copy...", "save", NULL, run, t, A_OPTIMIZE, doc, 0);
         menu_item(file, "Export pages...", "export", "Ctrl+E", run, t, A_EXPORT, doc, 0);
         menu_item(file, "Export pages as images...", "export-images", NULL, run, t, A_EXPORT_IMAGES, doc, 0);
+        menu_item(file, "Export comments...", "note", NULL, run, t, A_EXPORT_COMMENTS, doc, 0);
         menu_item(file, "Properties...", "about", NULL, run, t, A_PROPERTIES, doc, 0);
         menu_sep(file);
         menu_item(file, "Protect with password...", "lock", NULL, run, t, A_PROTECT, doc, 0);
@@ -350,8 +370,15 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(view, "Continuous", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
         menu_item(view, "Two pages", "two-pages", NULL, run, t, A_TWO_PAGES, doc, t->two_pages);
         menu_item(view, "Cover page alone", "file", NULL, run, t, A_COVER, doc && t->two_pages, t->cover_alone);
-        menu_item(view, "Line numbers", "hash", NULL, run, t, A_LINE_NUMBERS, doc,
-                  pt_settings_int(&app.settings, "line_numbers"));
+        ui_menu *ln = menu_sub(view, "Line numbers", "hash");
+        int on = pt_settings_int(&app.settings, "line_numbers");
+        pt_numbering mode = pt_numbering_from(pt_settings_str(&app.settings, "line_numbers_restart"));
+        menu_item(ln, "Off", "close", NULL, run, t, A_LINE_NUMBERS, doc, !on);
+        menu_item(ln, "Through the document", "book-open", NULL, run, t, A_LINE_NUMBERS + 1, doc,
+                  on && mode == PT_NUMBER_DOCUMENT);
+        menu_item(ln, "Per page", "file", NULL, run, t, A_LINE_NUMBERS + 2, doc, on && mode == PT_NUMBER_PAGE);
+        menu_item(ln, "Per paragraph", "scan-text", NULL, run, t, A_LINE_NUMBERS + 3, doc,
+                  on && mode == PT_NUMBER_PARAGRAPH);
         menu_item(view, "Presentation", "presentation", "F5", run, t, A_PRESENT, doc, 0);
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
@@ -361,9 +388,64 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_sep(view);
         menu_item(view, "Previous page", "prev", "Left", run, t, A_PREV, doc, 0);
         menu_item(view, "Next page", "next", "Right", run, t, A_NEXT, doc, 0);
+        menu_item(view, "Back", "undo", "Alt+Left", run, t, A_BACK, doc && t->nav_nback, 0);
+        menu_item(view, "Forward", "redo", "Alt+Right", run, t, A_FORWARD, doc && t->nav_nfwd, 0);
         menu_item(view, "Go to page...", "goto", "Ctrl+G", run, t, A_GOTO, doc, 0);
         menu_sep(view);
     }
+}
+
+/* File > Export comments...: the document's annotations as Markdown (pt_collect_comments), numbered the way the
+ * line numbers count; edits not saved yet are not in it */
+static void comments_chosen(void *ctx, pt_strs *paths)
+{
+    tab *t = app_doc_by_id((unsigned)(uintptr_t)ctx);
+    if (!t || !t->doc || !paths->n) return;
+    if (pt_exists(paths->v[0]) && pt_same_file(paths->v[0], t->path)) {
+        message_box(MSG_ERROR, APP_NAME, "Choose another file: the comments cannot replace the open file.", NULL, NULL);
+        return;
+    }
+    pt_comments c = {0};
+    fz_buffer *md = NULL;
+    int failed = 0;
+    fz_var(md);
+    fz_var(failed);
+    fz_try(CTX)
+    {
+        pt_numbering mode = pt_numbering_from(pt_settings_str(&app.settings, "line_numbers_restart"));
+        pt_collect_comments(CTX, (fz_document *)t->doc, mode, NULL, &c);
+        if (c.n) {
+            char *title = pt_format("Comments on %s", pt_basename(t->path));
+            fz_try(CTX) md = pt_comments_markdown(CTX, &c, title);
+            fz_always(CTX) free(title);
+            fz_catch(CTX) fz_rethrow(CTX);
+        }
+    }
+    fz_catch(CTX)
+    {
+        fz_report_error(CTX);
+        failed = 1;
+    }
+    if (!failed && !c.n) status("The document has no comments", 4);
+    else if (failed || !md || pt_write_file(paths->v[0], md->data, md->len))
+        message_box(MSG_ERROR, APP_NAME, "Could not write the comments file.", NULL, NULL);
+    else {
+        char *msg = pt_format("Exported %d comment%s%s", c.n, c.n == 1 ? "" : "s",
+                              tab_edit_count(t) ? " (unsaved edits are not included)" : "");
+        status(msg, 6);
+        free(msg);
+    }
+    fz_drop_buffer(CTX, md);
+    pt_comments_free(&c);
+}
+
+static void export_comments(tab *t)
+{
+    if (!t->doc || file_dialog_busy()) return;
+    char *stem = pt_stem(t->path), *dir = pt_dirname(t->path), *name = pt_format("%s-comments.md", stem),
+         *start = pt_join(dir, name);
+    file_dialog(FD_SAVE, "Export comments", start, "Markdown", "*.md", comments_chosen, (void *)(uintptr_t)t->id);
+    free(stem), free(dir), free(name), free(start);
 }
 
 static void goto_answered(void *ctx, const char *text)
@@ -377,6 +459,7 @@ static void goto_answered(void *ctx, const char *text)
         status("No such page", 3);
         return;
     }
+    nav_mark(t);
     tab_goto(t, t->st.order.v[n - 1]);
 }
 
@@ -427,6 +510,9 @@ void tab_shortcuts(tab *t)
     for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
         if (ui_shortcut(keys[i].ctrl, keys[i].shift, keys[i].key)) run(t, keys[i].action);
     if (!t->doc) return;
+    /* a mouse's side buttons: back and forward, as in browsers */
+    if (ui_shortcut_alt(0, 0, 1, KEY_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_SIDE)) nav_go(t, 1);
+    if (ui_shortcut_alt(0, 0, 1, KEY_RIGHT) || IsMouseButtonPressed(MOUSE_BUTTON_EXTRA)) nav_go(t, 0);
     for (int i = 0; i < T_COUNT; i++)
         if (ui_shortcut(0, 0, TOOLS[i].shortcut)) tool_set(t, (tool_id)i);
     if (ui_shortcut(0, 0, KEY_ESCAPE)) {
@@ -788,6 +874,12 @@ void tab_toolbar(tab *t, Rectangle area)
 
 /* ---- find bar ---- */
 
+/* "All tabs" in the find bar: the query runs in every open document, and stepping past a tab's last match goes on
+ * to the next tab with matches */
+static int find_all;
+
+static int other_matches(const tab *t, int *tabs);
+
 static void find_bar(tab *t, Rectangle r)
 {
     DrawRectangleRec(r, pal.window);
@@ -826,6 +918,12 @@ static void find_bar(tab *t, Rectangle r)
         }
         x += 36;
     }
+    if (ui_button(bid(t, 108), (Rectangle){x, y, 34, h}, NULL, "merge", find_all ? B_CHECKED : B_FLAT,
+                  "Search all open tabs")) {
+        find_all = !find_all;
+        run_search(t);
+    }
+    x += 36;
     if (ui_button(bid(t, 102), (Rectangle){x, y, 30, h}, NULL, "prev", B_FLAT, "Previous match (Shift+Enter)"))
         step_match(t, -1);
     x += 32;
@@ -844,12 +942,16 @@ static void find_bar(tab *t, Rectangle r)
         rx = r.x + r.width;
     }
 
-    int m = t->matches.n;
-    char count[48] = "";
+    int m = t->matches.n, tabs, others = find_all ? other_matches(t, &tabs) : 0;
+    char count[96] = "";
     if (m) snprintf(count, sizeof count, "%d of %d", t->match_idx + 1, m);
     else if (t->find_bad && !t->find_due) snprintf(count, sizeof count, "Invalid pattern");
-    else if (*text_get(&t->find) && !t->find_due) snprintf(count, sizeof count, "No matches");
-    draw_text_in(count, (Rectangle){x, y, 110, h}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    else if (*text_get(&t->find) && !t->find_due) snprintf(count, sizeof count, others ? "None here" : "No matches");
+    if (others) {
+        size_t n = strlen(count);
+        snprintf(count + n, sizeof count - n, ", %d in %d other tab%s", others, tabs, tabs == 1 ? "" : "s");
+    }
+    draw_text_in(count, (Rectangle){x, y, others ? 230 : 110, h}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
     char all[48];
     snprintf(all, sizeof all, m ? "Redact all (%d)" : "Redact all", m);
     float aw = button_width(all, NULL, 0) + 8;
@@ -1006,8 +1108,6 @@ void tab_status(tab *t, Rectangle area)
 /* ---- the tools ----
  * Select, redact, mark, note, text, sign, image, draw, shape and crop, their right-click menus, the comment popover,
  * the text box typed on the page with its format bar, and find. */
-
-#define CTX app.ctx
 
 /* the one menu open at a time keeps its target here */
 static struct {
@@ -2649,7 +2749,52 @@ static void show_match(tab *t)
     t->pno = m.page;
 }
 
+static void search_tab(tab *t, int show);
+
+static int other_matches(const tab *t, int *tabs)
+{
+    int n = 0;
+    *tabs = 0;
+    for (int k = 0; k < app.tabs.n; k++) {
+        const tab *o = app.tabs.v[k].kind == TAB_DOC ? app.tabs.v[k].doc : NULL;
+        if (!o || o == t || !o->matches.n) continue;
+        n += o->matches.n;
+        (*tabs)++;
+    }
+    return n;
+}
+
 void run_search(tab *t)
+{
+    search_tab(t, 1);
+    if (!find_all) return;
+    for (int k = 0; k < app.tabs.n; k++) {
+        tab *o = app.tabs.v[k].kind == TAB_DOC ? app.tabs.v[k].doc : NULL;
+        if (!o || o == t || !o->doc) continue;
+        text_set(&o->find, text_get(&t->find));
+        o->find_case = t->find_case, o->find_regex = t->find_regex;
+        search_tab(o, 0);
+    }
+}
+
+/* the next tab after (delta 1) or before (-1) t that has matches; NULL when none */
+static tab *tab_with_matches(const tab *t, int delta)
+{
+    int here = -1;
+    for (int k = 0; k < app.tabs.n; k++)
+        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc == t) here = k;
+    for (int s = 1; s < app.tabs.n; s++) {
+        int k = ((here + delta * s) % app.tabs.n + app.tabs.n) % app.tabs.n;
+        tab *o = app.tabs.v[k].kind == TAB_DOC ? app.tabs.v[k].doc : NULL;
+        if (o && o != t && o->matches.n) {
+            app.current = k;
+            return o;
+        }
+    }
+    return NULL;
+}
+
+static void search_tab(tab *t, int show)
 {
     t->find_due = 0;
     t->matches.n = 0;
@@ -2709,7 +2854,7 @@ void run_search(tab *t)
                 t->match_idx = i;
                 break;
             }
-        show_match(t);
+        if (show) show_match(t);
     }
 }
 
@@ -2719,8 +2864,18 @@ void step_match(tab *t, int delta)
         run_search(t);
         return;
     }
+    int next = t->match_idx + delta;
+    if (find_all && (next < 0 || next >= t->matches.n)) {
+        tab *o = tab_with_matches(t, delta);
+        if (o) {
+            o->find_open = 1;
+            o->match_idx = delta > 0 ? 0 : o->matches.n - 1;
+            show_match(o);
+            return;
+        }
+    }
     if (!t->matches.n) return;
-    t->match_idx = ((t->match_idx + delta) % t->matches.n + t->matches.n) % t->matches.n;
+    t->match_idx = (next % t->matches.n + t->matches.n) % t->matches.n;
     show_match(t);
 }
 

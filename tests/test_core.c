@@ -1,17 +1,19 @@
 /* Core library tests (pt_core.h without the window): page ranges, the save pipeline (blank pages, shapes, stamps,
  * repeated pages, what a redaction takes with it), merging, keeping encryption, the optimized copy, regex search,
- * personal data, the Edits list, settings and reading GitHub releases for updates. Test documents are made here with
- * MuPDF; files go to a temporary folder. */
+ * personal data, the Edits list, settings, reading GitHub releases and updating an install prefix. Test documents are
+ * made here with MuPDF; files go to a temporary folder. */
 #define _XOPEN_SOURCE 700
 /* macOS hides mkdtemp() under a strict _XOPEN_SOURCE */
 #define _DARWIN_C_SOURCE
 #include "pt_core.h"
+#include <errno.h>
 #include <ftw.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static fz_context *ctx;
@@ -846,6 +848,9 @@ static void test_release(void)
     CHECK(!strcmp(a, "PDF_Tools-x86_64.AppImage") && !strcmp(t, "PDF-Tools-Linux-aarch64.tar.gz"));
     CHECK(!pt_update_asset(PT_INSTALL_MACOS, "x86_64") && !pt_update_asset(PT_INSTALL_NONE, "x86_64"));
     free(a), free(t);
+    t = pt_update_asset(PT_INSTALL_PREFIX, "x86_64");
+    CHECK(!strcmp(t, "PDF-Tools-Linux-x86_64.tar.gz"));
+    free(t);
 
     static const char json[] =
         "{\"tag_name\": \"v0.5.0\", \"html_url\": \"https://example.org/r\", \"assets\": ["
@@ -877,6 +882,101 @@ static void test_release(void)
           !strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     free(path);
 }
+
+#ifndef _WIN32
+static char *prefix_file(const char *prefix, const char *name, const char *text, mode_t mode)
+{
+    char *path = pt_join(prefix, name);
+    pt_write_file(path, text, strlen(text));
+    chmod(path, mode);
+    return path;
+}
+
+static int file_is(const char *path, const char *text)
+{
+    pt_bytes b = {0};
+    int same = !pt_read_file(path, &b) && b.len == strlen(text) && !memcmp(b.data, text, b.len);
+    free(b.data);
+    return same;
+}
+
+/* updating a `build.sh install` prefix: which layouts qualify, what the update may write, the file swap */
+static void test_prefix_update(void)
+{
+    char *dir = tmp_path("prefix"), *prefix = (pt_mkdirs(dir), pt_realpath(dir));
+    char *exe = prefix_file(prefix, "bin/pdf-tools", "old program", 0755);
+    char *data = prefix_file(prefix, "share/pdf-tools/tessdata/eng.traineddata", "old data", 0644);
+    char *entry =
+        prefix_file(prefix, "share/applications/pdf-tools.desktop", "[Desktop Entry]\nExec=pdf-tools %F\n", 0644);
+    char *other = prefix_file(prefix, "bin/other", "someone else's", 0755);
+    char *found = pt_updatable_prefix(exe);
+    CHECK(found && !strcmp(found, prefix));
+    free(found);
+    char *renamed = prefix_file(prefix, "bin/pdf-tools-2", "", 0755),
+         *wrong = prefix_file(prefix, "sbin/pdf-tools", "", 0755);
+    CHECK(!pt_updatable_prefix(renamed) && !pt_updatable_prefix(wrong));
+
+    pt_strs files = {0};
+    CHECK(!pt_tree_files(prefix, &files) && files.n == 6 && !strcmp(files.v[0], "bin/other") &&
+          !strcmp(files.v[1], "bin/pdf-tools") && !strcmp(files.v[5], "share/pdf-tools/tessdata/eng.traineddata"));
+    pt_strs_free(&files);
+    pt_push(files, pt_strdup("share/man/man1/pdf-tools.1"));
+    CHECK(!pt_prefix_blocked(prefix, &files));
+    char *link = pt_join(prefix, "share/pdf-tools/link");
+    CHECK(!symlink(data, link));
+    CHECK(pt_tree_files(prefix, &files) && !pt_updatable_prefix(exe));
+    unlink(link);
+    pt_strs_free(&files);
+    /* permissions do not bind root */
+    if (geteuid()) {
+        char *apps = pt_join(prefix, "share/applications");
+        chmod(entry, 0444);
+        CHECK(!pt_updatable_prefix(exe));
+        chmod(entry, 0644);
+        chmod(apps, 0555);
+        CHECK(!pt_updatable_prefix(exe));
+        pt_push(files, pt_strdup("share/applications/new/x"));
+        CHECK(pt_prefix_blocked(prefix, &files) == files.v[0]);
+        chmod(apps, 0755);
+        pt_strs_free(&files);
+        free(apps);
+    }
+
+    char *fresh = tmp_path("fresh-program"), *man = pt_join(prefix, "share/man/man1/pdf-tools.1");
+    pt_write_file(fresh, "new program", 11);
+    chmod(fresh, 0750);
+    struct stat st;
+    CHECK(!pt_replace_file(fresh, exe) && file_is(exe, "new program") && !stat(exe, &st) &&
+          (st.st_mode & 0777) == 0750);
+    CHECK(!pt_replace_file(fresh, man) && file_is(man, "new program"));
+    char *tmp = pt_format("%s.tmp-%d", exe, (int)getpid());
+    CHECK(!pt_exists(tmp));
+    CHECK(pt_replace_file(dir, data) && file_is(data, "old data"));
+    CHECK(pt_replace_file(link, data) && errno == ENOENT && file_is(data, "old data"));
+    CHECK(file_is(other, "someone else's"));
+
+    char *kept = pt_desktop_keep_exec("[Desktop Entry]\nName=PDF Tools\nExec=pdf-tools %F\nIcon=pdf-tools\n",
+                                      "[Desktop Entry]\nExec=\"/home/u/.local/bin/pdf-tools\" %F\nName=Old\n");
+    CHECK(!strcmp(kept, "[Desktop Entry]\nName=PDF Tools\nExec=\"/home/u/.local/bin/pdf-tools\" %F\nIcon=pdf-tools\n"));
+    free(kept);
+    kept = pt_desktop_keep_exec("Exec=pdf-tools %F\n", "[Desktop Entry]\nName=x\n");
+    CHECK(!strcmp(kept, "Exec=pdf-tools %F\n"));
+    free(kept);
+
+    free(tmp);
+    free(fresh);
+    free(man);
+    free(link);
+    free(renamed);
+    free(wrong);
+    free(other);
+    free(entry);
+    free(data);
+    free(exe);
+    free(prefix);
+    free(dir);
+}
+#endif
 
 /* nftw() callback that empties and removes the temporary folder */
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
@@ -911,6 +1011,9 @@ int main(void)
     test_keep_encryption();
     test_bad_arguments();
     test_release();
+#ifndef _WIN32
+    test_prefix_update();
+#endif
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;
     if (failures) fprintf(stderr, "%d check(s) failed\n", failures);

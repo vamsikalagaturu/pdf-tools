@@ -1800,6 +1800,123 @@ static int cmd_inspect(args *a)
     return emit_end(&j, OK);
 }
 
+static void json_string_or_null(pt_json *j, const char *key, const char *s)
+{
+    pt_json_key(j, key);
+    if (s) pt_json_string(j, s);
+    else pt_json_null(j);
+}
+
+static void json_comment(pt_json *j, const pt_comment *c, int reply)
+{
+    pt_json_begin_object(j);
+    if (!reply) {
+        pt_json_key(j, "page");
+        pt_json_int(j, c->page + 1);
+        pt_json_key(j, "lines");
+        if (c->line0) {
+            pt_json_begin_array(j);
+            pt_json_int(j, c->line0);
+            pt_json_int(j, c->line1);
+            pt_json_end_array(j);
+        } else pt_json_null(j);
+    }
+    json_string_or_null(j, "type", c->type);
+    json_string_or_null(j, "author", c->author);
+    json_string_or_null(j, "date", c->date);
+    if (!reply) json_string_or_null(j, "quote", c->quote);
+    json_string_or_null(j, "comment", c->text);
+    pt_json_key(j, "replies");
+    pt_json_begin_array(j);
+    for (int i = 0; i < c->replies.n; i++) json_comment(j, &c->replies.v[i], 1);
+    pt_json_end_array(j);
+    pt_json_end_object(j);
+}
+
+static void json_comments(pt_json *j, const char *file, const char *numbering, const pt_comments *found)
+{
+    pt_json_key(j, "file");
+    pt_json_string(j, file);
+    pt_json_key(j, "numbering");
+    pt_json_string(j, numbering);
+    pt_json_key(j, "comments");
+    pt_json_begin_array(j);
+    for (int i = 0; i < found->n; i++) json_comment(j, &found->v[i], 0);
+    pt_json_end_array(j);
+    pt_json_key(j, "count");
+    pt_json_int(j, found->n);
+}
+
+static int cmd_comments(args *a)
+{
+    const char *path = input(a), *out = get(a, "--output"), *format = get(a, "--format");
+    const char *numbering = get(a, "--numbering");
+    if (strcmp(numbering, "document") && strcmp(numbering, "page") && strcmp(numbering, "paragraph"))
+        usage_error(a->c, "argument --numbering: document, page or paragraph, got '%s'", numbering);
+    int markdown;
+    if (!format) {
+        size_t n = out ? strlen(out) : 0;
+        markdown = n >= 3 && !strcasecmp(out + n - 3, ".md");
+    } else if (!strcmp(format, "md") || !strcmp(format, "json")) markdown = !strcmp(format, "md");
+    else usage_error(a->c, "argument --format: md or json, got '%s'", format);
+    /* stdout carries the one JSON object */
+    if (markdown && !out) usage_error(a->c, "argument --format: md needs -o FILE");
+    if (out) refuse_overwrite(out, path);
+
+    fz_document *doc = opened_any(path, get(a, "--password"));
+    /* static: a MuPDF error unwinds past the frees (fail), and the process ends with them still reachable */
+    static pt_ints pages;
+    static pt_comments found;
+    static fz_buffer *data;
+    static char *title;
+    if (get(a, "--pages")) page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
+    pt_collect_comments(ctx, doc, pt_numbering_from(numbering), get(a, "--pages") ? &pages : NULL, &found);
+    fz_drop_document(ctx, doc);
+
+    static pt_json j;
+    if (!out) {
+        emit_begin(&j);
+        json_comments(&j, path, numbering, &found);
+    } else if (found.n) {
+        if (markdown) {
+            title = pt_format("Comments on %s", pt_basename(path));
+            data = pt_comments_markdown(ctx, &found, title);
+        } else {
+            FILE *f = tmpfile();
+            if (!f) fail("cannot make a temporary file");
+            pt_json fj;
+            pt_json_init(&fj, f);
+            pt_json_begin_object(&fj);
+            json_comments(&fj, path, numbering, &found);
+            pt_json_end_object(&fj);
+            pt_json_finish(&fj);
+            data = fz_new_buffer(ctx, 4096);
+            rewind(f);
+            char chunk[4096];
+            for (size_t n; (n = fread(chunk, 1, sizeof chunk, f)) > 0;) fz_append_data(ctx, data, chunk, n);
+            int bad = ferror(f);
+            fclose(f);
+            if (bad) fail("cannot read back the JSON");
+        }
+        char *written = write_out(out, data, path);
+        emit_begin(&j);
+        pt_json_key(&j, "output");
+        pt_json_string(&j, written);
+        free(written);
+    } else emit_begin(&j);
+    if (out) {
+        pt_json_key(&j, "count");
+        pt_json_int(&j, found.n);
+    }
+    int code = found.n ? OK : NO_MATCH;
+    fz_drop_buffer(ctx, data);
+    data = NULL;
+    free(title);
+    pt_comments_free(&found);
+    pt_vec_free(pages);
+    return emit_end(&j, code);
+}
+
 static int cmd_convert(args *a)
 {
     const char *path = input(a), *size = get(a, "--page-size"), *font = get(a, "--font-size");
@@ -2173,6 +2290,18 @@ static const cmd COMMANDS[] = {
      {OUTPUT, PASSWORD},
      {0}},
     {"inspect", "Annotations (with their per-page index) and form fields", INPUT, 0, cmd_inspect, {PASSWORD}, {0}},
+    {"comments",
+     "Export the comments (marked text, notes, replies) with their page and line numbers",
+     INPUT,
+     0,
+     cmd_comments,
+     {PASSWORD,
+      {"--output", "-o", VALUE, 0, "OUTPUT", "write them to this file (.md: Markdown) instead of stdout", NULL},
+      {"--format", NULL, VALUE, 0, "FORMAT", "md | json (default: md for an .md output, else json)", NULL},
+      {"--numbering", NULL, VALUE, 0, "NUMBERING",
+       "document | page | paragraph: where line numbers restart, as in the window (default document)", "document"},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL}},
+     {0}},
     {"edit-annotation",
      "Change the comment of an annotation, or remove it",
      INPUT,
@@ -2223,8 +2352,8 @@ void pt_cli_usage(FILE *out)
           "  pdf-tools --version\n"
           "  pdf-tools COMMAND ...                          without the window, JSON output:\n"
           "      info redact fill pages merge split protect unprotect flatten convert synctex\n"
-          "      search inspect render export-images annotate draw insert-text insert-image sign\n"
-          "      prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
+          "      search inspect comments render export-images annotate draw insert-text insert-image\n"
+          "      sign prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
           "  pdf-tools help                                 the guide for scripts and agents (AGENTS.md)\n",
           out);

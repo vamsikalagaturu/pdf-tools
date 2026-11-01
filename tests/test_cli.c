@@ -618,6 +618,67 @@ static void test_other_formats(const char *statement)
     free(epub), free(docx), free(cbz), free(tiff), free(o), free(big), free(r), free(png);
 }
 
+static int file_has(const char *path, const char *needle)
+{
+    pt_bytes b = {0};
+    if (pt_read_file(path, &b)) return 0;
+    char *s = pt_format("%.*s", (int)b.len, (const char *)b.data);
+    int found = strstr(s, needle) != NULL;
+    free(s), free(b.data);
+    return found;
+}
+
+/* a highlight on page 2 and a note on page 1 from annotate, then an author and a reply added here */
+static void test_comments(const char *statement)
+{
+    char *h = tmp("marked.pdf"), *n = tmp("noted.pdf"), *r = tmp("replied.pdf"), *md = tmp("comments.md"),
+         *js = tmp("comments.json");
+    CHECK(run("comments", statement, NULL) == NO_MATCH && has("\"comments\":[]") && has("\"count\":0"));
+    CHECK(run("comments", statement, "-o", md, NULL) == NO_MATCH && has("\"count\":0") && !exists(md));
+    CHECK(run("annotate", statement, "-o", h, "--page", "2", "--type", "highlight", "--rect", "45,108,104,125",
+              "--text", "check *this*", NULL) == OK);
+    CHECK(run("annotate", h, "-o", n, "--page", "1", "--type", "note", "--rect", "400,70,420,90", "--text", "A note",
+              NULL) == OK);
+
+    pdf_document *doc = pdf_open_document(ctx, n);
+    pdf_page *page = pdf_load_page(ctx, doc, 1);
+    pdf_annot *mark = pdf_first_annot(ctx, page), *reply = pdf_create_annot(ctx, page, PDF_ANNOT_TEXT);
+    pdf_set_annot_author(ctx, mark, "Max *M*");
+    pdf_set_annot_rect(ctx, reply, fz_make_rect(500, 100, 520, 120));
+    pdf_set_annot_contents(ctx, reply, "Agreed");
+    pdf_set_annot_author(ctx, reply, "Jane Doe");
+    pdf_dict_put(ctx, pdf_annot_obj(ctx, reply), PDF_NAME(IRT), pdf_annot_obj(ctx, mark));
+    pdf_set_annot_modification_date(ctx, reply, 1793363400); /* 2026-10-30T12:30:00Z */
+    pdf_drop_annot(ctx, reply);
+    pdf_save_document(ctx, doc, r, NULL);
+    fz_drop_page(ctx, (fz_page *)page);
+    pdf_drop_document(ctx, doc);
+
+    CHECK(run("comments", r, NULL) == OK && one_object() && has("\"numbering\":\"document\"") && has("\"count\":2"));
+    CHECK(has("{\"page\":1,\"lines\":[1,1],\"type\":\"Text\",\"author\":null,\"date\":null,\"quote\":null,"
+              "\"comment\":\"A note\",\"replies\":[]}"));
+    CHECK(has("{\"page\":2,\"lines\":[4,4],\"type\":\"Highlight\",\"author\":\"Max *M*\"") &&
+          has("\"quote\":\"Rossmann\",\"comment\":\"check *this*\""));
+    CHECK(has("\"replies\":[{\"type\":\"Text\",\"author\":\"Jane Doe\",\"date\":\"2026-10-30T12:30:00Z\","
+              "\"comment\":\"Agreed\",\"replies\":[]}]"));
+    CHECK(run("comments", r, "--numbering", "page", NULL) == OK && has("\"page\":2,\"lines\":[2,2]"));
+    CHECK(run("comments", r, "--pages", "2", NULL) == OK && has("\"count\":1") && !has("\"page\":1,"));
+
+    CHECK(run("comments", r, "-o", md, NULL) == OK && has("\"output\":") && has("\"count\":2") && !has("\"comments\""));
+    CHECK(file_has(md, "# Comments on replied.pdf\n\n- **p. 1, l. 1** · Note\n\n  A note\n\n"));
+    CHECK(file_has(md, "- **p. 2, l. 4** · Highlight · Max \\*M\\*\n  > Rossmann\n\n  check \\*this\\*\n\n"
+                       "  - **Reply** · Jane Doe, 2026-10-30\n\n    Agreed\n"));
+    CHECK(run("comments", r, "-o", js, NULL) == OK && file_has(js, "\"count\": 2") && file_has(js, "\"Agreed\""));
+    CHECK(run("comments", r, "-o", js, "--format", "md", NULL) == OK && file_has(js, "# Comments on"));
+
+    CHECK(run("comments", r, "--format", "md", NULL) == FAILED && one_object() && has("{\"error\":\"usage:"));
+    CHECK(run("comments", r, "--format", "xml", NULL) == FAILED && has("{\"error\":\"usage:"));
+    CHECK(run("comments", r, "--numbering", "line", NULL) == FAILED && has("{\"error\":\"usage:"));
+    CHECK(run("comments", r, "--pages", "9", NULL) == FAILED && one_object() && has("\"error\":"));
+    CHECK(run("comments", r, "-o", r, NULL) == FAILED && has("overwrite"));
+    free(h), free(n), free(r), free(md), free(js);
+}
+
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
     (void)st, (void)flag, (void)ftw;
@@ -659,6 +720,7 @@ int main(int argc, char **argv)
     test_synctex_bounds();
     test_owner_only_encryption(statement);
     test_other_formats(statement);
+    test_comments(statement);
     free(statement), free(form);
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;

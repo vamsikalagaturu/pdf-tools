@@ -2,8 +2,9 @@
  * a background thread asks GitHub for the latest release. When it is newer, a bar under the tab strip offers Update:
  * the release asset for this install is downloaded next to what it replaces, checked against the release's SHA-256
  * digest and installed: the AppImage file or the tarball's folder (Linux) and the .app bundle (macOS) are swapped in
- * place, the Windows folder by a cmd helper once the app has exited, and Android hands the APK to the system
- * installer. Installs the app cannot replace (a distro package, an install prefix) get the release page instead.
+ * place, the tarball's files are renamed over those of a `build.sh install` prefix one by one, the Windows folder is
+ * swapped by a cmd helper once the app has exited, and Android hands the APK to the system installer. Installs the app
+ * cannot replace (a distro package, a prefix the user may not write) get the release page instead.
  * HTTPS goes through the system's curl (Java's HttpsURLConnection on Android); the main loop is woken once when a job
  * ends and draws nothing while one runs, except the bar's progress during a download. */
 #include "ui.h"
@@ -55,7 +56,7 @@ typedef struct {
     fz_context *ctx;
     pt_install_kind install;
     char *asset;
-    char *target; /* the AppImage, the tarball's folder, the Windows folder, the .app; Android: cache/share */
+    char *target; /* the AppImage, the tarball's folder or prefix, the Windows folder, the .app; Android: cache/share */
     pt_release rel;
     char *part; /* the download, beside its destination; set before the thread starts */
     /* results */
@@ -146,7 +147,7 @@ static void remove_tree(const char *path)
 
 /* What this install is and the file or folder an update replaces (*where, malloc'd); PT_INSTALL_NONE when the app
  * cannot replace itself. A folder is swapped whole, so it qualifies only when it holds nothing but the package's
- * files: an install into a shared prefix (~/.local, /usr/local) never does. */
+ * files; a shared prefix (~/.local, /usr/local) gets its files replaced one by one instead, when the user may. */
 static pt_install_kind detect(char **where)
 {
     *where = NULL;
@@ -185,6 +186,7 @@ static pt_install_kind detect(char **where)
             only_entries(top, TOP) && only_entries(dir, BIN) && only_entries(share, SHARE) && can_write(top) &&
             can_write(parent))
             k = PT_INSTALL_TARBALL, *where = pt_strdup(top);
+        else if ((*where = pt_updatable_prefix(exe))) k = PT_INSTALL_PREFIX;
         free(share);
         free(own);
     }
@@ -396,6 +398,62 @@ static int swap_in(job *j, const char *fresh)
     free(old);
     return rc;
 }
+
+static char *text_of(const char *path)
+{
+    pt_bytes b = {0};
+    if (pt_read_file(path, &b)) return NULL;
+    char *text = pt_format("%.*s", (int)b.len, (const char *)b.data);
+    free(b.data);
+    return text;
+}
+
+/* --install-desktop may have written the prefix's entry with the program's full path */
+static void keep_exec(const char *fresh, const char *installed)
+{
+    char *a = text_of(fresh), *b = text_of(installed), *merged = a && b ? pt_desktop_keep_exec(a, b) : NULL;
+    if (merged && strcmp(merged, a)) pt_write_file(fresh, merged, strlen(merged));
+    free(a);
+    free(b);
+    free(merged);
+}
+
+/* The unpacked tarball's files over the prefix's, one rename each; nothing else there is touched. The program goes
+ * last: until then the old one stays, and it works with the new data files, so an update that stops on the way leaves
+ * a working install, which the next Update completes. */
+static void install_prefix(job *j, const char *fresh)
+{
+    pt_strs files = {0};
+    const char *blocked = NULL;
+    char *exe = pt_join(fresh, "bin/pdf-tools");
+    if (access(exe, X_OK)) fail(j, "The archive has no pdf-tools/bin/pdf-tools.", NULL);
+    else if (pt_tree_files(fresh, &files)) fail(j, "The archive holds something other than files and folders.", NULL);
+    else if ((blocked = pt_prefix_blocked(j->target, &files))) {
+        char *path = pt_join(j->target, blocked);
+        fail(j, "%s cannot be replaced. Nothing was installed.", path);
+        free(path);
+    }
+    int replaced = 0;
+    for (int last = 0; last < 2 && !j->failed; last++)
+        for (int i = 0; i < files.n && !j->failed; i++) {
+            if ((strcmp(files.v[i], "bin/pdf-tools") == 0) != last) continue;
+            char *from = pt_join(fresh, files.v[i]), *to = pt_join(j->target, files.v[i]);
+            if (!strcmp(files.v[i], "share/applications/pdf-tools.desktop") && pt_exists(to)) keep_exec(from, to);
+            if (!pt_replace_file(from, to)) replaced++;
+            else {
+                char *msg = pt_format("Could not replace %s: %s\n%d of the update's %d files were installed before "
+                                      "it; the program is still %s %s.",
+                                      to, strerror(errno), replaced, files.n, APP_NAME, PT_VERSION);
+                fail(j, "%s", msg);
+                free(msg);
+            }
+            free(from);
+            free(to);
+        }
+    if (!j->failed) j->exe = pt_join(j->target, "bin/pdf-tools");
+    pt_strs_free(&files);
+    free(exe);
+}
 #endif
 
 static void install(job *j)
@@ -406,7 +464,8 @@ static void install(job *j)
         return;
     }
     set_phase(j, PHASE_INSTALL);
-    char *stage = pt_format("%s.update-%d", j->target, (int)getpid());
+    char *stage = j->install == PT_INSTALL_PREFIX ? pt_format("%s/.pdf-tools-update-%d", j->target, (int)getpid())
+                                                  : pt_format("%s.update-%d", j->target, (int)getpid());
     switch (j->install) {
     case PT_INSTALL_APPIMAGE:
 #ifndef _WIN32
@@ -426,6 +485,17 @@ static void install(job *j)
         remove_tree(stage);
         free(fresh);
         free(exe);
+#endif
+        break;
+    }
+    case PT_INSTALL_PREFIX: {
+#if !defined(_WIN32) && !defined(__ANDROID__)
+        char *argv[] = {"tar", "-xzf", j->part, "-C", stage, NULL};
+        char *fresh = pt_join(stage, "pdf-tools");
+        if (mkdir(stage, 0755)) replace_failed(j, stage);
+        else if (!unpack(j, argv)) install_prefix(j, fresh);
+        remove_tree(stage);
+        free(fresh);
 #endif
         break;
     }
@@ -634,6 +704,8 @@ static void start_install(void)
     if (kind == PT_INSTALL_ANDROID) {
         pt_mkdirs(target);
         j->part = pt_join(target, "pdf-tools.apk.part");
+    } else if (kind == PT_INSTALL_PREFIX) {
+        j->part = pt_format("%s/.pdf-tools-update-%d.tar.gz", target, (int)getpid());
     } else {
         const char *ext = kind == PT_INSTALL_TARBALL   ? ".tar.gz"
                           : kind == PT_INSTALL_WINDOWS ? ".zip"

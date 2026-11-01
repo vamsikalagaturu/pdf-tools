@@ -13,7 +13,12 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
   insert and remove pages, Bates numbers, watermarks, document properties, outline.
 - **Sign**: a picture of your signature, or a digital certificate signature (.p12).
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
-  password, print. Undo and redo, find with regular expressions, two pages side by side, presentation mode (F5).
+  password, print. Undo and redo, find with regular expressions (in one tab or all), two pages side by side,
+  presentation mode (F5).
+- **Read**: line numbers in the margins as LaTeX's lineno sets them (through the document, per page or per
+  paragraph); a preview of where a link leads when resting on it; Back and Forward (Alt+Left/Right, mouse side
+  buttons) after following links; pinch to zoom on touchpads; the last session's tabs reopen at startup
+  (`reopen_tabs`).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
 - **Other documents**: XPS, comics (CBZ), images, SVG, e-books (EPUB, MOBI, FB2) and Office files (DOCX, XLSX,
   PPTX) open like PDFs; editing one makes a PDF copy, saved next to the original.
@@ -138,7 +143,7 @@ pdf-tools --version
 
 Commands print one JSON object and exit with a meaningful code; `AGENTS.md` documents them. Others: `search`,
 `render`, `annotate`, `draw`, `insert-text`, `insert-image`, `sign`, `bates`, `watermark`, `ocr`, `compare`,
-`export-images`, `scrub`, `inspect`.
+`export-images`, `scrub`, `inspect`, `comments` (annotations with page and line numbers, as Markdown or JSON).
 
 - Settings: `~/.config/pdf-tools/settings.toml`, on Windows `%APPDATA%\pdf-tools\settings.toml` (e.g.
   `editor_command = "code -g %f:%l"` for SyncTeX).
@@ -156,9 +161,11 @@ At startup, at most once a day, the window asks GitHub for the latest release
 (`https://api.github.com/repos/vamsikalagaturu/pdf-tools/releases/latest`, with a `pdf-tools/VERSION` user agent
 and nothing else). When it is newer, a bar offers **Update**: it downloads that release's package for this install,
 checks it against the SHA-256 digest GitHub lists for it, and replaces the AppImage, the tarball's folder, the macOS
-app or (after the app closes) the Windows folder; on Android the system installer takes the APK. Installs the app
-cannot replace itself (a distro package, `build.sh install`, a folder it may not write) get the release page
-instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
+app or (after the app closes) the Windows folder; on Android the system installer takes the APK. A
+`build.sh install PREFIX` that you can write (e.g. `~/.local`) gets the tarball's files put over its own one by one
+(the program, `share/pdf-tools`, the man page, the launcher entry and icon; nothing else in the prefix is touched,
+and a launcher entry keeps its `Exec=` line). Installs the app cannot replace itself (a distro package, a prefix
+such as `/usr/local` you may not write, a folder it may not write) get the release page instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
 settings) turns the check off. Desktop downloads go through the system's `curl`. The commands never use the
 network.
 

@@ -19,6 +19,8 @@ static const cursor_kind TOOL_CURSORS[T_COUNT] = {
     [T_SHAPE] = CUR_CROSS, [T_CROP] = CUR_CROSS,
 };
 
+static void link_preview_hover(tab *t, const link_info *l, Rectangle at);
+
 /* ---- items: what moves, ink and shapes ---- */
 
 static int movable(pt_kind k)
@@ -670,7 +672,8 @@ static void handle_input(tab *t, Rectangle area)
             fz_point anchor = screen_to_scene(t, ui.mouse);
             float old = t->zoom;
             t->zanim_t0 = 0;
-            set_zoom(t, t->zoom * (ui.wheel > 0 ? 1.25f : 0.8f));
+            /* a notch steps 1.25x; a precision touchpad's pinch (Ctrl+wheel on Windows) comes in fractions of one */
+            set_zoom(t, t->zoom * (notches(ui.wheel) ? (ui.wheel > 0 ? 1.25f : 0.8f) : powf(1.25f, ui.wheel)));
             t->want_scroll_page = -1;
             /* keep the point under the pointer in place */
             t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
@@ -735,11 +738,10 @@ static void handle_input(tab *t, Rectangle area)
         else if (t->tool == T_VIEW && link_at(t, screen_to_scene(t, ui.mouse))) {
             const link_info *l = link_at(t, screen_to_scene(t, ui.mouse));
             set_cursor(CUR_HAND);
-            static char tip[600];
-            if (l->uri) snprintf(tip, sizeof tip, "%s", l->uri);
-            else snprintf(tip, sizeof tip, "Go to page %d", order_index(t, l->page) + 1);
             int page = page_at(t, screen_to_scene(t, ui.mouse));
-            ui_tooltip(ui_id(t, 950), scene_rect_to_screen(t, disp_to_scene(t, page, l->rect)), tip);
+            Rectangle at = scene_rect_to_screen(t, disp_to_scene(t, page, l->rect));
+            if (l->uri) ui_tooltip(ui_id(t, 950), at, l->uri);
+            else if (!ui.down) link_preview_hover(t, l, at);
         } else set_cursor(TOOL_CURSORS[t->tool]);
     } else if (t->gesture == G_RESIZE) set_cursor(CUR_SIZE_FDIAG);
     else if (t->gesture == G_MOVE) set_cursor(CUR_MOVE);
@@ -1019,45 +1021,83 @@ static void request_landing(tab *t, Rectangle area)
     t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
 }
 
-/* ---- line numbers ----
- * Numbered through the whole document in reading order, as LaTeX's lineno package does: a column's numbers sit
- * beside it, in the left margin for a column in the page's left half and in the right margin for one in its right
- * half. Lines are the words' reading-order lines; a column is a run of lines each overlapping the previous one
- * horizontally. */
+/* ---- link preview ----
+ * Resting on a link to a place in the document shows that place: a strip of the target page from just above the
+ * link's target, full page width, drawn from the page's render (asked for when not there yet). */
 
-typedef struct {
-    fz_rect r;
-    int n;
-} text_line;
+#define PREVIEW_DELAY_S 0.35
+#define PREVIEW_LEAVE_S 0.2 /* a hover gap longer than this starts the delay again */
+#define PREVIEW_W 520.0f
+#define PREVIEW_H 220.0f
+#define PREVIEW_ABOVE_PT 12.0f /* page shown above the target point */
+#define PREVIEW_MARGIN 8.0f    /* from the view's sides */
+#define PREVIEW_GAP 6.0f       /* between the link and the preview */
+#define PREVIEW_HEAD 22.0f     /* the "Page N" strip */
+#define PREVIEW_SHADOW 70
 
-PT_VEC(text_lines, text_line);
+static struct {
+    const tab *t;
+    int page;
+    float y;
+    Rectangle at;
+    double since, seen; /* hovered since, last hovered at */
+} lp;
 
-static void page_lines(const pt_words *w, text_lines *out)
+static void link_preview_hover(tab *t, const link_info *l, Rectangle at)
 {
-    out->n = 0;
-    for (int i = 0; i < w->n; i++) {
-        if (i && w->v[i].line == w->v[i - 1].line) {
-            out->v[out->n - 1].r = fz_union_rect(out->v[out->n - 1].r, w->v[i].rect);
-            continue;
-        }
-        pt_push(*out, ((text_line){w->v[i].rect, 0}));
-    }
+    if (lp.t != t || lp.page != l->page || lp.y != l->y || lp.seen < ui.now - PREVIEW_LEAVE_S) lp.since = ui.now;
+    lp.t = t, lp.page = l->page, lp.y = l->y, lp.at = at, lp.seen = ui.now;
+    if (ui.now - lp.since < PREVIEW_DELAY_S) ui_redraw_at(lp.since + PREVIEW_DELAY_S);
 }
 
-static void number_column(tab *t, int p, const text_lines *lines, int from, int to, float page_w)
+static void draw_link_preview(tab *t)
 {
-    float x0 = lines->v[from].r.x0, x1 = lines->v[from].r.x1;
-    for (int i = from + 1; i < to; i++) x0 = fminf(x0, lines->v[i].r.x0), x1 = fmaxf(x1, lines->v[i].r.x1);
-    int right = x0 > page_w * 0.45f;
-    for (int i = from; i < to; i++) {
-        Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, lines->v[i].r));
+    if (lp.t != t || lp.seen != ui.now || ui.now - lp.since < PREVIEW_DELAY_S || order_index(t, lp.page) < 0) return;
+    fz_rect b = page_bounds(t, lp.page);
+    float pw = b.x1 - b.x0, w = fminf(PREVIEW_W, t->view.width - 2 * PREVIEW_MARGIN), s = w / pw,
+          h = fminf(PREVIEW_H, (b.y1 - lp.y + PREVIEW_ABOVE_PT) * s);
+    float top = fmaxf(b.y0, lp.y - PREVIEW_ABOVE_PT);
+    Rectangle r = {
+        fminf(fmaxf(ui.mouse.x - w / 2, t->view.x + PREVIEW_MARGIN), t->view.x + t->view.width - w - PREVIEW_MARGIN),
+        lp.at.y + lp.at.height + PREVIEW_GAP, w, h + PREVIEW_HEAD};
+    if (r.y + r.height > t->view.y + t->view.height - PREVIEW_MARGIN) r.y = lp.at.y - r.height - PREVIEW_GAP;
+    DrawRectangleRounded((Rectangle){r.x + 2, r.y + 3, r.width, r.height}, 0.03f, 4,
+                         with_alpha(pal.shadow, PREVIEW_SHADOW));
+    ui_panel(r, pal.window, pal.border, 6);
+    char label[32];
+    snprintf(label, sizeof label, "Page %d", order_index(t, lp.page) + 1);
+    draw_text_in(label, (Rectangle){r.x + PREVIEW_MARGIN, r.y, r.width - 2 * PREVIEW_MARGIN, PREVIEW_HEAD}, FS_SMALL,
+                 F_BOLD, pal.window_text, -1);
+    Rectangle paper = {r.x + 1, r.y + PREVIEW_HEAD, r.width - 2, h - 1};
+    DrawRectangleRec(paper, pal.paper);
+    Texture2D *tex = page_texture(t, lp.page, base_scale(t, lp.page, t->zoom), 0, 1);
+    if (!tex || tex->width <= 0) return;
+    float ts = tex->width / pw;
+    Rectangle src = {0, (top - b.y0) * ts, (float)tex->width, paper.height / s * ts};
+    DrawTexturePro(*tex, src, paper, (Vector2){0, 0}, 0, WHITE);
+}
+
+/* ---- line numbers ----
+ * Numbered as pt_number_lines counts them; a column's numbers sit beside it, as LaTeX's lineno package sets them in
+ * two columns: in the left margin for a column in the page's left half, in the right margin for one in its right
+ * half. One small size for all, scaled with the page like its text. */
+
+#define LINE_NUMBER_PT 7.0f
+#define LINE_NUMBER_GAP_PT 7.0f /* between a column and its numbers */
+#define RIGHT_COLUMN_FROM 0.45f /* a column starting past this share of the page width is numbered on its right */
+
+static void number_page(tab *t, int p, const pt_text_lines *lines)
+{
+    float page_w = page_bounds(t, p).x1 - page_bounds(t, p).x0, size = LINE_NUMBER_PT * t->zoom;
+    for (int i = 0; i < lines->n; i++) {
+        const pt_text_line *l = &lines->v[i];
+        Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, l->r));
         if (!CheckCollisionRecs(r, t->view)) continue;
-        Rectangle col = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(x0, 0, x1, 1)));
-        float size = fminf(fmaxf(r.height * 0.6f, 6), 16), gap = size * 0.8f;
+        Rectangle col = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(l->col_x0, 0, l->col_x1, 1)));
         char num[16];
-        snprintf(num, sizeof num, "%d", lines->v[i].n);
-        float w = text_width(num, size, F_REGULAR);
-        float x = right ? col.x + col.width + gap : col.x - gap - w;
+        snprintf(num, sizeof num, "%d", l->n);
+        float w = text_width(num, size, F_REGULAR), gap = LINE_NUMBER_GAP_PT * t->zoom;
+        float x = l->col_x0 > page_w * RIGHT_COLUMN_FROM ? col.x + col.width + gap : col.x - gap - w;
         draw_text(num, x, r.y + (r.height - size) / 2, size, F_REGULAR, GRAY);
     }
 }
@@ -1065,32 +1105,33 @@ static void number_column(tab *t, int p, const text_lines *lines, int from, int 
 static void draw_line_numbers(tab *t)
 {
     if (!pt_settings_int(&app.settings, "line_numbers")) return;
-    int first = 1, known = 1;
-    text_lines lines = {0};
+    pt_numbering mode = pt_numbering_from(pt_settings_str(&app.settings, "line_numbers_restart"));
+    pt_numbering_state state = {1, 0, 0, 0};
+    pt_text_lines lines = {0};
+    int known = 1;
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
-        if (!t->line_count[p]) {
-            /* every page before those in view is counted, from its words, extracted in the background */
-            if (!t->words_ok[p]) {
-                words_prefetch(t, p);
-                known = 0;
-                continue;
-            }
-            page_lines(&t->words[p], &lines);
-            t->line_count[p] = lines.n + 1;
-        }
         Rectangle pr = t->off_y[p] < -1e8f ? (Rectangle){0} : scene_rect_to_screen(t, page_scene_rect(t, p));
-        if (known && pr.width > 0 && CheckCollisionRecs(pr, t->view)) {
-            page_lines(&t->words[p], &lines);
-            for (int k = 0; k < lines.n; k++) lines.v[k].n = first + k;
-            fz_rect b = page_bounds(t, p);
-            for (int a = 0, k = 1; k <= lines.n; k++)
-                if (k == lines.n || lines.v[k].r.x0 > lines.v[k - 1].r.x1 || lines.v[k].r.x1 < lines.v[k - 1].r.x0) {
-                    number_column(t, p, &lines, a, k, b.x1 - b.x0);
-                    a = k;
-                }
-        } else if (pr.width > 0 && pr.y > t->view.y + t->view.height) break;
-        first += t->line_count[p] - 1;
+        int shown = pr.width > 0 && CheckCollisionRecs(pr, t->view);
+        if (pr.width > 0 && pr.y > t->view.y + t->view.height) break;
+        /* the pages before those in view are counted too (except per page), from their words, extracted in the
+         * background */
+        if (!t->words_ok[p] && (shown || mode != PT_NUMBER_PAGE)) {
+            words_prefetch(t, p);
+            known = 0;
+            continue;
+        }
+        fz_rect b = page_bounds(t, p);
+        if (shown && known) {
+            page_lines_info *li = &t->line_info[p];
+            pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
+            li->ok = 1, li->after = state;
+            number_page(t, p, &lines);
+        } else if (t->line_info[p].ok && known) state = t->line_info[p].after;
+        else if (known && mode != PT_NUMBER_PAGE) {
+            pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
+            t->line_info[p].ok = 1, t->line_info[p].after = state;
+        }
     }
     pt_vec_free(lines);
 }
@@ -1283,6 +1324,7 @@ void view_frame(tab *t, Rectangle area)
     }
     text_box_frame(t);
     cert_draw(t);
+    draw_link_preview(t);
     ui_scissor_end();
 
     /* scrollbars */

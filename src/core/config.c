@@ -44,6 +44,9 @@ const pt_setting_def pt_settings_defs[] = {
     {"ebook_font_size", PT_SET_INT, NULL, PT_EBOOK_FONT_SIZE, "Font size in points e-books are laid out with"},
     {"check_updates", PT_SET_BOOL, NULL, 1, "Ask GitHub for a newer release at startup, at most once a day"},
     {"line_numbers", PT_SET_BOOL, NULL, 0, "Number the text lines in the margins (View > Line numbers)"},
+    {"reopen_tabs", PT_SET_BOOL, NULL, 1,
+     "Starting without files reopens the documents open when the window last closed"},
+    {"line_numbers_restart", PT_SET_STR, "document", 0, "Line numbers count through the: document | page | paragraph"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 

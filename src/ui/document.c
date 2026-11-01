@@ -140,7 +140,7 @@ void tab_invalidate_pages(tab *t)
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok), free(t->line_count);
+    free(t->bounds), free(t->bounds_ok), free(t->line_info);
     pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
     t->outline_drag = -1;
@@ -160,7 +160,7 @@ void tab_invalidate_pages(tab *t)
     t->thumb_ok = calloc((size_t)n + 1, 1);
     t->words = calloc((size_t)n + 1, sizeof(pt_words));
     t->words_ok = calloc((size_t)n + 1, 1);
-    t->line_count = calloc((size_t)n + 1, sizeof(int));
+    t->line_info = calloc((size_t)n + 1, sizeof(page_lines_info));
     t->fields = calloc((size_t)n + 1, sizeof(field_infos));
     t->fields_ok = calloc((size_t)n + 1, 1);
     t->annots = calloc((size_t)n + 1, sizeof(annot_infos));
@@ -229,7 +229,7 @@ void tab_free(tab *t)
     free(t->ticked);
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok), free(t->line_count);
+    free(t->bounds), free(t->bounds_ok), free(t->line_info);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);
@@ -430,7 +430,7 @@ int tab_load(tab *t, const char *path, const char *password)
     float zoom, top;
     if (position_of(t->path, &page, &zoom, &top) && page >= 0 && page < t->own) {
         t->pno = page;
-        if (zoom > 0) t->fit_pending = FIT_NONE, t->zoom = fminf(fmaxf(zoom, 0.3f), 6);
+        if (zoom > 0) t->fit_pending = FIT_NONE, t->zoom = fminf(fmaxf(zoom, ZOOM_MIN), ZOOM_MAX);
         else if (zoom < 0) t->fit_pending = FIT_HEIGHT;
         t->restore_pending = 1, t->restore_top = top;
     }
@@ -868,6 +868,36 @@ void tab_goto(tab *t, int page)
     close_popover(t, 1);
 }
 
+static void nav_push(tab *t, int fwd)
+{
+    int *n = fwd ? &t->nav_nfwd : &t->nav_nback;
+    nav_spot *v = fwd ? t->nav_fwd : t->nav_back;
+    if (*n == NAV_MAX) memmove(v, v + 1, sizeof *v * (NAV_MAX - 1)), (*n)--;
+    float zoom;
+    current_position(t, &v[*n].page, &zoom, &v[*n].top);
+    (*n)++;
+}
+
+void nav_mark(tab *t)
+{
+    if (!t->doc) return;
+    nav_push(t, 0);
+    t->nav_nfwd = 0;
+}
+
+void nav_go(tab *t, int back)
+{
+    int *n = back ? &t->nav_nback : &t->nav_nfwd;
+    if (!t->doc || !*n) return;
+    nav_push(t, back);
+    (*n)--;
+    int page = (back ? t->nav_back : t->nav_fwd)[*n].page;
+    if (order_index(t, page) < 0) return;
+    tab_goto(t, page);
+    t->want_scroll_page = -1;
+    t->restore_pending = 1, t->restore_top = (back ? t->nav_back : t->nav_fwd)[*n].top;
+}
+
 void tab_step_page(tab *t, int delta)
 {
     int i = order_index(t, t->pno);
@@ -880,7 +910,7 @@ void tab_step_page(tab *t, int delta)
 void set_zoom(tab *t, float z)
 {
     if (!t->doc) return;
-    float zoom = fminf(fmaxf(z, 0.3f), 6);
+    float zoom = fminf(fmaxf(z, ZOOM_MIN), ZOOM_MAX);
     if (zoom != t->zoom) t->zoom_t = ui.now;
     t->zoom = zoom;
     t->fit = FIT_NONE;
@@ -913,7 +943,7 @@ void zoom_to(tab *t, float target, fit_mode fit)
     if (!t->doc) return;
     if (fit && !(target = fit_zoom(t, fit))) return;
     t->zanim_from = t->zoom;
-    t->zanim_to = fminf(fmaxf(target, 0.3f), 6);
+    t->zanim_to = fminf(fmaxf(target, ZOOM_MIN), ZOOM_MAX);
     t->zanim_fit = fit;
     t->zanim_t0 = ui.now;
     t->zanim_e = 0;
@@ -1757,6 +1787,7 @@ void follow_link(tab *t, const link_info *l)
         status("The link's page was removed", 4);
         return;
     }
+    nav_mark(t);
     tab_goto(t, l->page);
     /* the target point, a little below the top of the view */
     fz_point src = disp_to_src(t, l->page, (fz_point){l->x, l->y});

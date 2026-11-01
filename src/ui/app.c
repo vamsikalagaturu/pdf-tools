@@ -931,6 +931,72 @@ static const char *exe_path(const char *argv0)
     return argv0;
 }
 
+/* ---- the last session (setting reopen_tabs) ----
+ * The window that quits last writes its document tabs, one path per line after the current one's path; a launch
+ * without files, with no window running, opens them again, each where it was left (positions.tsv). Android keeps no
+ * paths: its documents come through the system picker and are not readable after a restart. */
+
+static char *session_file(void)
+{
+    char *base = pt_data_dir(), *path = pt_format("%s/pdf-tools/session.txt", base);
+    free(base);
+    return path;
+}
+
+static void session_save(void)
+{
+#ifndef __ANDROID__
+    if (!pt_settings_int(&app.settings, "reopen_tabs")) return;
+    tab *shown = app_current_doc();
+    char *text = pt_format("%s\n", shown && shown->path && !strchr(shown->path, '\n') ? shown->path : ""),
+         *path = session_file();
+    for (int i = 0; i < app.tabs.n; i++) {
+        tab *t = app.tabs.v[i].kind == TAB_DOC ? app.tabs.v[i].doc : NULL;
+        if (!t || !t->path || strchr(t->path, '\n')) continue;
+        char *more = pt_format("%s%s\n", text, t->path);
+        free(text);
+        text = more;
+    }
+    char *dir = pt_dirname(path);
+    pt_mkdirs(dir);
+    pt_write_file(path, text, strlen(text));
+    free(dir);
+    free(path);
+    free(text);
+#endif
+}
+
+static void session_reopen(void)
+{
+#ifndef __ANDROID__
+    if (!pt_settings_int(&app.settings, "reopen_tabs")) return;
+    char *path = session_file();
+    pt_bytes b = {0};
+    int ok = !pt_read_file(path, &b);
+    free(path);
+    if (!ok) return;
+    char *text = calloc(b.len + 1, 1);
+    if (!text) abort();
+    memcpy(text, b.data, b.len);
+    free(b.data);
+    pt_strs paths = {0};
+    char *line = strchr(text, '\n');
+    if (line) *line = 0;
+    while (line && line[1]) {
+        char *p = line + 1, *end = strchr(p, '\n');
+        if (end) *end = 0;
+        if (pt_exists(p)) pt_push(paths, pt_strdup(p));
+        line = end;
+    }
+    app_open_paths(&paths);
+    for (int k = 0; k < app.tabs.n && *text; k++)
+        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, text))
+            app.current = k;
+    pt_strs_free(&paths);
+    free(text);
+#endif
+}
+
 static char *build_message(int argc, char **argv, int *new_window)
 {
     *new_window = argc > 1 && !strcmp(argv[1], "--new-window");
@@ -1077,6 +1143,7 @@ int pt_app_main(int argc, char **argv)
 #endif
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);
     ui_input_init();
+    gestures_init();
 #ifdef __APPLE__
     mac_install_open_handler();
 #endif
@@ -1103,6 +1170,7 @@ int pt_app_main(int argc, char **argv)
         unlink(adopt);
         if (t) app_add_doc(t);
     } else if (message) app_handle_message(message);
+    if (argc == 1) session_reopen();
     free(message);
     update_start();
 
@@ -1113,6 +1181,7 @@ int pt_app_main(int argc, char **argv)
             app_quit_request();
         }
         ipc_poll();
+        gestures_poll();
         update_poll();
         file_dialogs_poll();
         handle_drops();
@@ -1165,6 +1234,7 @@ int pt_app_main(int argc, char **argv)
         }
     }
 
+    session_save();
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
         else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);

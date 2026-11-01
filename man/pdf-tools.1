@@ -368,6 +368,7 @@ default A5) and
 .BR info ,
 .BR search ,
 .BR inspect ,
+.BR comments ,
 .BR render ,
 .BR export\-images ,
 .B compare
@@ -389,6 +390,21 @@ Print the pages and boxes of each match
 .TP
 .BI "inspect " input.pdf
 List annotations, with their index on each page, and form fields.
+.TP
+.BI "comments " input.pdf
+Export the comments: marked text with the text under it, notes, text boxes,
+stamps and other annotations with a comment, with their replies, author, date,
+page and line numbers as the window numbers lines
+.RB ( \-\-numbering " document|page|paragraph,"
+.BR \-\-pages ).
+JSON on standard output, or with
+.BI \-o " file"
+written to that file: Markdown for a
+.I .md
+file or
+.BR "\-\-format md" ,
+else JSON.
+Exits with 3 when there are none.
 .TP
 .BI "render " "input.pdf " \-o " page.png"
 Render one page
@@ -519,6 +535,10 @@ Settings, with a comment for each; edit while the program is closed.
 .BR true )
 lets the window ask GitHub for a newer release at startup, at most once a day,
 and offer to install it; the commands never use the network.
+An install into a prefix you can write (e.g.
+.IR ~/.local )
+is updated file by file from the release tarball, and nothing else in the prefix is touched;
+a distro package or a prefix you cannot write gets the release page instead.
 .TP
 .I ~/.local/share/pdf-tools/update-check
 When the window last checked for updates, and the version it found.

@@ -583,6 +583,58 @@ void pt_words_free(pt_words *w);
  * '\n'; `rects` is reset to one rect per line. Positions between words snap to the nearest word. */
 char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rects *rects);
 
+/* Line numbers as LaTeX's lineno package sets them: the text lines in reading order (pieces on one baseline are one
+ * line), each in a column (a run of lines each overlapping the previous one horizontally), numbered through the
+ * document, per page or per paragraph. */
+typedef enum { PT_NUMBER_DOCUMENT, PT_NUMBER_PAGE, PT_NUMBER_PARAGRAPH } pt_numbering;
+
+typedef struct {
+    fz_rect r;
+    float col_x0, col_x1; /* its column's extent */
+    int n;                /* its number */
+} pt_text_line;
+
+PT_VEC(pt_text_lines, pt_text_line);
+
+/* what numbering a page depends on from the pages before it; {1, 0, 0, 0} before the first */
+typedef struct {
+    int next; /* the next number through the document */
+    int tail; /* lines so far of the paragraph still open */
+    int open; /* the last line ran to its column's edge: the paragraph goes on */
+    float h;  /* the last line's height */
+} pt_numbering_state;
+
+/* the lines of one page `page_w` wide from `words` (pt_reading_order_words), numbered from `state`, which moves past
+ * the page; a table's rows are one line each, at the table's left edge */
+void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
+                     pt_text_lines *out);
+pt_numbering pt_numbering_from(const char *name); /* "page", "paragraph", else document */
+
+/* ---- comments.c: exporting the annotations readers wrote ---- */
+typedef struct pt_comment pt_comment;
+PT_VEC(pt_comments, pt_comment);
+
+struct pt_comment {
+    int page;            /* 0-based */
+    int line0, line1;    /* the first and last numbered line it sits on; 0: the page has no text lines */
+    const char *type;    /* the PDF subtype (Highlight, Text, FreeText, ...); static */
+    char *author;        /* NULL: none, as for the rest */
+    char *date;          /* ISO 8601 in UTC, from /M, else /CreationDate */
+    char *quote;         /* text markup: the text under it */
+    char *text;          /* the comment (/Contents) */
+    pt_comments replies; /* the annotations whose /IRT points at this one, in the order the pages list them */
+};
+
+/* The comments on `pages` (0-based, sorted; NULL: all) of `doc`, in page order: text markup (with the text under
+ * it), notes, text boxes, stamps and carets always, other annotations (shapes, ink, attachments, redaction marks)
+ * when they carry a comment; never links, form fields or popups. A redaction mark gets no quote, so the export does
+ * not carry what it is to remove. Lines are numbered as the window numbers them with `mode`, counted through every
+ * page before. Another format than PDF has none. */
+void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, const pt_ints *pages, pt_comments *out);
+/* Markdown: "# title" (NULL: no title line), then one list item per comment with its replies nested */
+fz_buffer *pt_comments_markdown(fz_context *ctx, const pt_comments *c, const char *title);
+void pt_comments_free(pt_comments *c);
+
 /* ---- edits.c: the Edits list and discarding entries ---- */
 #define PT_DOCUMENT (-1)
 
@@ -723,15 +775,34 @@ int pt_release_read(fz_context *ctx, const char *json, const char *asset, pt_rel
 void pt_release_free(pt_release *r);
 
 typedef enum {
-    PT_INSTALL_NONE,     /* nothing the app can replace itself (a distro package, an install prefix) */
+    PT_INSTALL_NONE,     /* nothing the app can replace itself (a distro package, a prefix the user cannot write) */
     PT_INSTALL_APPIMAGE, /* Linux, PDF_Tools-<arch>.AppImage */
     PT_INSTALL_TARBALL,  /* Linux, the pdf-tools/ folder of PDF-Tools-Linux-<arch>.tar.gz */
     PT_INSTALL_WINDOWS,  /* the PDF-Tools folder of PDF-Tools-Windows.zip */
     PT_INSTALL_MACOS,    /* PDF Tools.app from PDF-Tools.dmg */
-    PT_INSTALL_ANDROID   /* pdf-tools.apk */
+    PT_INSTALL_ANDROID,  /* pdf-tools.apk */
+    PT_INSTALL_PREFIX    /* Linux, `build.sh install PREFIX`: the tarball's files, one by one over PREFIX's */
 } pt_install_kind;
 
 /* the release asset that updates such an install on `arch` ("x86_64", "aarch64"); NULL when releases have none */
 char *pt_update_asset(pt_install_kind kind, const char *arch);
 int pt_sha256_file(const char *path, char hex[65]); /* lowercase hex; 0, or -1 when the file cannot be read */
+
+#ifndef _WIN32
+/* PT_INSTALL_PREFIX: PREFIX (malloc'd) when `exe` is PREFIX/bin/pdf-tools beside a PREFIX/share/pdf-tools folder,
+ * PREFIX is not /usr and the user may write PREFIX and every file an update there replaces or adds; else NULL */
+char *pt_updatable_prefix(const char *exe);
+/* Appends the paths of the files under `root`, relative to it and sorted. 0, or -1 when it cannot be read or holds
+ * something other than folders and regular files. */
+int pt_tree_files(const char *root, pt_strs *out);
+/* the first of `files` (relative to prefix) that cannot be put there, NULL when all can: an existing one must be a
+ * regular file the user may write, in a folder the user may write; a missing one needs its nearest existing folder
+ * writable. Points into files. */
+const char *pt_prefix_blocked(const char *prefix, const pt_strs *files);
+/* Copies the regular file `from` with its permissions to `to`.tmp-PID and renames that over `to`, creating missing
+ * folders: `to` is the old file or the whole new one at any moment. 0, or -1 with errno set and `to` untouched. */
+int pt_replace_file(const char *from, const char *to);
+/* the desktop entry `fresh` with the Exec= line of `installed` (a copy of fresh when either has none) */
+char *pt_desktop_keep_exec(const char *fresh, const char *installed);
+#endif
 #endif

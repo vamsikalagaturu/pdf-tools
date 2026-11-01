@@ -15,6 +15,7 @@
  * just above the zoom, drawn slightly smaller), so nearby zooms share them. Texture memory is capped by bytes. */
 #define BASE_MAX_PX 1100.0f
 #define TILE_PX 512
+#define NAV_MAX 64
 #define TILE_LEVELS 4
 #define TILE_CACHE 128
 #define TILE_FADE_S 0.08
@@ -25,6 +26,8 @@
 #define PIX_CACHE 12
 #define TILE_BUDGET (96 << 20)
 #endif
+#define ZOOM_MIN 0.3f
+#define ZOOM_MAX 10.0f
 #define ZOOM_SETTLE_S 0.08
 #define ZOOM_GLIDE_S 0.18
 #define WHEEL_GLIDE_S 0.12
@@ -96,6 +99,17 @@ typedef struct {
     int page;
     fz_rect rect;
 } hit;
+
+typedef struct {
+    int page;
+    float top; /* the view's top below the page's, in points */
+} nav_spot;
+
+/* line numbering past a page, once its words are known (views.c) */
+typedef struct {
+    int ok;
+    pt_numbering_state after;
+} page_lines_info;
 
 PT_VEC(hits, hit);
 
@@ -252,6 +266,9 @@ struct tab {
     int want_scroll_page; /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
     int want_center;
+    /* Back and Forward: where a link or outline jump left from, and where Back came from */
+    nav_spot nav_back[NAV_MAX], nav_fwd[NAV_MAX];
+    int nav_nback, nav_nfwd;
     fit_mode fit_pending;
     int two_pages, cover_alone;      /* pages side by side in pairs; the first page on its own */
     char *cert_path, *cert_password; /* a certificate chosen to sign with; the password only in memory */
@@ -275,8 +292,8 @@ struct tab {
     char *thumb_ok;
     pt_words *words;
     char *words_ok;
-    int *line_count;     /* text lines per page once its words are known, plus 1 (0: not counted yet) */
-    field_infos *fields; /* per display page */
+    page_lines_info *line_info; /* per display page, once its words are known (line numbers) */
+    field_infos *fields;        /* per display page */
     char *fields_ok;
     annot_infos *annots;
     char *annots_ok;
@@ -396,6 +413,8 @@ void tab_redo(tab *t);
 int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
 void tab_step_page(tab *t, int delta);
+void nav_mark(tab *t);         /* before a jump (link, outline): Back returns here */
+void nav_go(tab *t, int back); /* Back (1) or Forward (0) */
 void set_zoom(tab *t, float z);
 /* zoom buttons and keys: glides to `target` around the middle of the view; with a fit mode the target is ignored and
  * the tab lands in that mode (nothing happens while the fitting zoom is not known yet) */
