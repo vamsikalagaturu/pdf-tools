@@ -225,6 +225,7 @@ struct tab {
     /* reading position (positions.tsv): one to restore once laid out, and the last one saved */
     int restore_pending;
     float restore_top;
+    int view_missing; /* renders wanted on screen in this frame that are not there yet (at another zoom, or none) */
     int saved_page;
     float saved_zoom, saved_top;
     double position_saved;
@@ -274,6 +275,7 @@ struct tab {
     char *thumb_ok;
     pt_words *words;
     char *words_ok;
+    int *line_count;     /* text lines per page once its words are known, plus 1 (0: not counted yet) */
     field_infos *fields; /* per display page */
     char *fields_ok;
     annot_infos *annots;
@@ -496,6 +498,7 @@ void tool_set(tab *t, tool_id tool);
 void on_band(tab *t, fz_rect scene);
 /* a drag through text from a to b: done 0 only updates t->flow_preview, done 1 applies the tool */
 void on_flow(tab *t, fz_point a, fz_point b, int done);
+int on_word(tab *t, fz_point p); /* a double-click: the word at p, selected as a drag over it would; 0 for no word */
 void on_click(tab *t, fz_point scene);
 /* a finished pen stroke (t->stroke): joins the drawing made just before on that page with the same pen, else starts
  * one */

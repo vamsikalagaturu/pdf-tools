@@ -141,6 +141,7 @@ enum {
     A_EXPORT_IMAGES,
     A_TWO_PAGES,
     A_COVER,
+    A_LINE_NUMBERS,
     A_PRESENT,
     A_COMPARE,
     A_OCR,
@@ -236,6 +237,9 @@ static void run(void *ctx, intptr_t a)
         else t->cover_alone = !t->cover_alone;
         if (t->fit) zoom_to(t, 0, t->fit);
         t->want_scroll_page = t->pno;
+        break;
+    case A_LINE_NUMBERS:
+        pt_settings_set_int(&app.settings, "line_numbers", !pt_settings_int(&app.settings, "line_numbers"));
         break;
     case A_PRESENT: present_start(t); break;
     case A_COMPARE: compare_start(t); break;
@@ -346,6 +350,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(view, "Continuous", "continuous", NULL, run, t, A_CONTINUOUS, doc, continuous());
         menu_item(view, "Two pages", "two-pages", NULL, run, t, A_TWO_PAGES, doc, t->two_pages);
         menu_item(view, "Cover page alone", "file", NULL, run, t, A_COVER, doc && t->two_pages, t->cover_alone);
+        menu_item(view, "Line numbers", "hash", NULL, run, t, A_LINE_NUMBERS, doc,
+                  pt_settings_int(&app.settings, "line_numbers"));
         menu_item(view, "Presentation", "presentation", "F5", run, t, A_PRESENT, doc, 0);
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", "Ctrl++", run, t, A_ZOOM_IN, doc, 0);
@@ -1198,6 +1204,23 @@ void on_flow(tab *t, fz_point a, fz_point b, int done)
     } else apply_selection(t, page, &rects, text);
     free(text);
     pt_vec_free(rects);
+}
+
+int on_word(tab *t, fz_point p)
+{
+    int page = t->doc ? page_at(t, p) : -1;
+    if (page < 0) return 0;
+    fz_point d = {p.x - t->off_x[page], p.y - t->off_y[page]};
+    pt_words *words = page_words(t, page);
+    for (int i = 0; i < words->n; i++) {
+        if (!fz_is_point_inside_rect(d, words->v[i].rect)) continue;
+        pt_rects rects = {0};
+        pt_push(rects, rect_disp_to_src(t, page, words->v[i].rect));
+        apply_selection(t, page, &rects, words->v[i].text);
+        pt_vec_free(rects);
+        return 1;
+    }
+    return 0;
 }
 
 /* ---- crops ---- */

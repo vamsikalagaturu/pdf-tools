@@ -8,6 +8,7 @@
 #include "pt_cli.h"
 #include "tab.h"
 #include "dialogs.h"
+#include "rlgl.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,20 @@ tab *app_current_doc(void)
     win_tab *w = &app.tabs.v[app.current];
     return w->kind == TAB_DOC ? w->doc : NULL;
 }
+
+#define HOLD_MAX_S 0.6
+static tab *held;
+static double held_until;
+static int held_new; /* set during a frame, whose view_missing still counts the pages from before */
+
+void app_hold_frames(tab *t)
+{
+    held = t;
+    held_until = GetTime() + HOLD_MAX_S;
+    held_new = 1;
+}
+
+int app_holding(void) { return held != NULL; }
 
 static int index_of_kind(tab_kind kind)
 {
@@ -1131,10 +1146,19 @@ int pt_app_main(int argc, char **argv)
         ui.redraw_at = 0;
         BeginDrawing();
         frame();
+        tab *shown = app_current_doc();
+        if (held && !held_new && (held != shown || !held->view_missing || GetTime() > held_until)) held = NULL;
+        if (held) {
+            /* drawn but not shown: the screen keeps the last frame while the rebuilt pages render */
+            rlDrawRenderBatchActive();
+            PollInputEvents();
+            if (held_new) held_new = 0, ui.dirty = 1;
+            else idle_wait(), timer_wake = 1;
+            continue;
+        }
         EndDrawing();
         /* input that arrived while drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now,
          * and so does a render finished meanwhile: EndDrawing's poll took the worker's wake-up event */
-        tab *shown = app_current_doc();
         if (!ui.dirty && !ui.down && !ui_input_since_frame() && !(shown && render_ready(shown))) {
             idle_wait();
             timer_wake = 1;

@@ -140,7 +140,7 @@ void tab_invalidate_pages(tab *t)
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok);
+    free(t->bounds), free(t->bounds_ok), free(t->line_count);
     pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
     t->outline_drag = -1;
@@ -160,6 +160,7 @@ void tab_invalidate_pages(tab *t)
     t->thumb_ok = calloc((size_t)n + 1, 1);
     t->words = calloc((size_t)n + 1, sizeof(pt_words));
     t->words_ok = calloc((size_t)n + 1, 1);
+    t->line_count = calloc((size_t)n + 1, sizeof(int));
     t->fields = calloc((size_t)n + 1, sizeof(field_infos));
     t->fields_ok = calloc((size_t)n + 1, 1);
     t->annots = calloc((size_t)n + 1, sizeof(annot_infos));
@@ -228,7 +229,7 @@ void tab_free(tab *t)
     free(t->ticked);
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok);
+    free(t->bounds), free(t->bounds_ok), free(t->line_count);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);
@@ -491,6 +492,7 @@ void reload_display(tab *t)
     t->pdf = fresh;
     t->doc_is_file = 0;
     tab_invalidate_pages(t);
+    app_hold_frames(t);
 }
 
 /* ---- documents of other formats ---- */
@@ -1363,26 +1365,45 @@ static void cache_insert(tab *t, const render_job *j)
 
 static size_t tex_bytes(Texture2D tex) { return (size_t)tex.width * (size_t)tex.height * 4; }
 
-/* Into a free slot within TILE_BUDGET, else in place of the least recently drawn tile (refilling its texture when
- * the size matches). A tile drawn in this frame is on screen and stays. */
+/* The least recently drawn tile, not drawn in this frame; for a prefetched tile of `page` (visible 0) only one of a
+ * page out of view and farther from the current page, so prefetching never pushes out what is shown or what it
+ * prefetched nearer. -1: none. */
+static int tile_victim(tab *t, int page, int visible)
+{
+    int lru = -1, here = order_index(t, t->pno), d = abs(order_index(t, page) - here);
+    for (int i = 0; i < TILE_CACHE; i++) {
+        if (!t->tiles[i].ok || t->tiles[i].used >= ui.now) continue;
+        if (lru >= 0 && t->tiles[i].used >= t->tiles[lru].used) continue;
+        int p = t->tiles[i].page;
+        if (!visible &&
+            (abs(order_index(t, p) - here) <= d ||
+             (t->off_y[p] > -1e8f && CheckCollisionRecs(scene_rect_to_screen(t, page_scene_rect(t, p)), t->view))))
+            continue;
+        lru = i;
+    }
+    return lru;
+}
+
+/* Into a free slot within TILE_BUDGET, else in place of tile_victim's (refilling its texture when the size
+ * matches). A tile drawn in this frame is on screen and stays. */
 static void tile_insert(tab *t, const render_job *j)
 {
     size_t need = j->pix ? (size_t)j->pix->w * (size_t)j->pix->h * 4 : 0;
     int slot;
     for (;;) {
-        int free_slot = -1, lru = -1;
+        int free_slot = -1, lru = tile_victim(t, j->page, j->visible), on_screen = 1;
         for (int i = 0; i < TILE_CACHE; i++) {
             if (!t->tiles[i].ok) {
                 if (free_slot < 0) free_slot = i;
-            } else if (t->tiles[i].used < ui.now && (lru < 0 || t->tiles[i].used < t->tiles[lru].used)) lru = i;
+            } else if (t->tiles[i].used < ui.now) on_screen = 0;
         }
         /* past the budget only when everything else is on screen: a dropped result would be asked for again */
-        if (free_slot >= 0 && (t->tile_bytes + need <= TILE_BUDGET || lru < 0)) {
+        if (free_slot >= 0 && (t->tile_bytes + need <= TILE_BUDGET || (j->visible && on_screen))) {
             slot = free_slot;
             t->tiles[slot].tex = reuse_texture(NULL, j->pix);
             break;
         }
-        if (lru < 0 || !j->visible) return;
+        if (lru < 0) return;
         if (j->pix && t->tiles[lru].tex.width == j->pix->w && t->tiles[lru].tex.height == j->pix->h) {
             slot = lru;
             t->tile_bytes -= tex_bytes(t->tiles[slot].tex);
@@ -1398,6 +1419,8 @@ static void tile_insert(tab *t, const render_job *j)
     t->tiles[slot].tx = (j->box.x0 - page_pixels(t, j->page, j->scale).x0) / TILE_PX;
     t->tiles[slot].ty = (j->box.y0 - page_pixels(t, j->page, j->scale).y0) / TILE_PX;
     t->tiles[slot].ok = 1, t->tiles[slot].used = t->tiles[slot].born = ui.now;
+    /* rendered while the screen holds its last frame: shown at once with the rest, not faded in after it */
+    if (app_holding()) t->tiles[slot].born -= TILE_FADE_S;
 }
 
 /* takes this tab's finished renders, uploading for a few ms per frame; results nobody took for a second go */
@@ -1469,11 +1492,12 @@ Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, 
             return &t->tiles[i].tex;
         }
     /* on screen: the worker wakes the window when it is done; the slow check only covers a request that got dropped */
-    if (born) ui_redraw_at(ui.now + RENDER_RECHECK_S);
+    if (born) ui_redraw_at(ui.now + RENDER_RECHECK_S), t->view_missing++;
     else {
         int free_slot = 0;
         for (int i = 0; i < TILE_CACHE && !free_slot; i++) free_slot = !t->tiles[i].ok;
-        if (!free_slot || t->tile_bytes + (size_t)TILE_PX * TILE_PX * 4 > TILE_BUDGET) return NULL;
+        if ((!free_slot || t->tile_bytes + (size_t)TILE_PX * TILE_PX * 4 > TILE_BUDGET) && tile_victim(t, page, 0) < 0)
+            return NULL;
     }
     int glide_target = t->zanim_t0 > 0 && fabsf(scale - tile_level(t->zanim_to * UI_PX)) < 0.001f;
     if (ui.now - t->zoom_t < ZOOM_SETTLE_S && !glide_target) {
@@ -1506,7 +1530,7 @@ Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible)
         if (fabsf(pt->scale - scale) < 0.001f) return &pt->tex;
         other = pt;
     }
-    if (visible) ui_redraw_at(ui.now + RENDER_RECHECK_S);
+    if (visible) ui_redraw_at(ui.now + RENDER_RECHECK_S), t->view_missing++;
     else if (pix_slot(t, page, 0) < 0) return other ? &other->tex : NULL;
     /* while the zoom is moving (pinch, wheel) the old render is stretched; a sharp one follows once it rests. A glide
      * knows where it lands, so the render at that zoom starts with it. */
@@ -1927,7 +1951,7 @@ static void save_confirmed(void *ctx, int yes)
                     NULL);
     } else {
         tab_report(t, path, &leaks, scrubbed);
-        tab_load(t, path, password);
+        if (!tab_load(t, path, password)) app_hold_frames(t);
     }
     pt_leaks_free(&leaks);
     free(tmp);
