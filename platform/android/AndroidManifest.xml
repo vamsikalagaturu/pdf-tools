@@ -2,7 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.vamsikalagaturu.pdftools">
 
-    <!-- no permissions: documents come through the system picker or another app's "Open with" -->
+    <!-- documents come through the system picker or another app's "Open with": no storage permission. The network
+         and installing packages are for updates only (update.c): the release check and the APK it hands to the
+         system installer. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="PDF Tools"
         android:icon="@mipmap/ic_launcher"

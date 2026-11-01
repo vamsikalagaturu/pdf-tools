@@ -12,9 +12,26 @@ android-36.1 and NDK 28.2.13676358 (`ANDROID_NDK` overrides); JDK (`javac`, `key
 zip, curl. All output goes to `~/.cache/pdf-tools-native/android/` (`PT_ANDROID_OUT` overrides), including the
 debug signing key; nothing is written into the repo. Re-runs are incremental.
 
+## Release signing
+
+Release APKs (`.github/workflows/release.yml`) are all signed with one permanent key, so a new version installs
+over the old one. `build.sh` uses it when `PT_ANDROID_KEYSTORE` (the `.jks`) and `PT_ANDROID_KEYSTORE_PASSWORD`
+are set (key alias `pdf-tools`, key password = store password); otherwise it signs with the local debug key. The
+release job takes them from two repository secrets and fails without them. Create the key once, keep the `.jks`
+and its password safe (a lost key means users must uninstall to update), and store both as secrets:
+
+```sh
+keytool -genkeypair -keystore ~/pdf-tools-release.jks -alias pdf-tools -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=PDF Tools"
+base64 -w0 ~/pdf-tools-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
+gh secret set ANDROID_KEYSTORE_PASSWORD      # prompts for the password
+```
+
+keytool asks for one password; with a PKCS12 keystore (keytool's default) the key password is the same.
+
 ## What build.sh does
 
-The versions and checksums are in `platform/versions.sh`.
+The versions and checksums are in `platform/versions.sh`. Steps 1-3 and the raylib/raygui sources are `deps.sh`,
+which `build.sh` runs first; `build.sh check` stops after compiling `libpdf-tools.so` in step 4.
 
 1. Downloads MuPDF's source and builds `libmupdf.a` and `libmupdf-third.a` (with Tesseract) with the NDK clang
    (API 30). A dummy `pkg-config` keeps host libraries out.
@@ -28,7 +45,7 @@ The versions and checksums are in `platform/versions.sh`.
 5. Compiles `PdfToolsActivity.java` with `javac` and `d8`, links the manifest, the launcher icons in `res/`
    (`assets/logo.svg` drawn at each density) and the assets with `aapt2` (minSdk 30, targetSdk 34,
    `--debug-mode`), adds `classes.dex` and the stripped `.so`, runs `zipalign -P 16` and signs with `apksigner`
-   using a debug keystore created in the cache folder.
+   using a debug keystore created in the cache folder (or the release key, above).
 
 targetSdk is 34 because apps targeting 35+ are always drawn edge-to-edge: the system bars and display cutout
 would cover the window, and raylib cannot inset its framebuffer.
@@ -43,7 +60,7 @@ would cover the window, and raylib cannot inset its framebuffer.
 | `file_dialog_android.c` | `file_dialog`, `file_dialogs_poll`, `file_dialog_busy` and `move_to_trash` for Android: the system document picker, copies of `content://` documents and writing them back (see below). |
 | `android_glue.h` | Declarations shared by the files above, including `pt_java()`, which calls a `String` method of the activity. |
 | `java/.../PdfToolsActivity.java` | `NativeActivity` subclass: keeps intents delivered while running (`onNewIntent` -> `setIntent`), runs the picker (`startActivityForResult`, result polled by the native side), takes persistable URI permissions, copies documents in and out through `ContentResolver`. |
-| `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. Storage permission: MANAGE_EXTERNAL_STORAGE ("All files access"). |
+| `AndroidManifest.xml` | Follows the device rotation (no `screenOrientation`); `configChanges` keeps the activity alive through rotation and resizes. `singleTask`, keyboard overlays the window (`adjustNothing`), VIEW filter for `application/pdf`. Permissions: `INTERNET` and `REQUEST_INSTALL_PACKAGES`, for updates only (see Storage access). |
 
 ### Substitutions in shared sources (keep in sync)
 
@@ -93,8 +110,11 @@ Cancel gives an empty list. Picked URIs keep their permission (`takePersistableU
 
 ### Storage access
 
-The app asks for no permissions. Every document comes through the system picker or another app's "Open with",
-works as a copy in the app's cache and is written back through its URI; `HOME` is `files/`.
+The app has no storage permission. Every document comes through the system picker or another app's "Open with",
+works as a copy in the app's cache and is written back through its URI; `HOME` is `files/`. Its only permissions,
+`INTERNET` and `REQUEST_INSTALL_PACKAGES`, are for updates (src/ui/update.c): `PdfToolsActivity.download` fetches
+the release check and the APK (into `cache/share/`), `installApk` hands that to the system installer through
+`ShareProvider`, first opening "Install unknown apps" when the app may not install packages yet.
 
 ## Touch
 

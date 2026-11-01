@@ -496,6 +496,7 @@ ui_menu *app_build_menu(tab *t)
     menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()),
               0);
     menu_sep(m);
+    update_menu_items(m);
     menu_item(m, "About " APP_NAME, "about", NULL, m_action, NULL, 11, 1, 0);
     return m;
 }
@@ -831,7 +832,9 @@ static void frame(void)
     else if (cur && cur->kind == TAB_COMPARE) compare_toolbar(cur->cmp, tools);
 
     tab_strip((Rectangle){0, HEADER_H, ui.w, TABS_H});
-    Rectangle content = {0, HEADER_H + TABS_H, ui.w, ui.h - HEADER_H - TABS_H - STATUS_H};
+    float update_h = update_bar_height();
+    update_bar((Rectangle){0, HEADER_H + TABS_H, ui.w, update_h});
+    Rectangle content = {0, HEADER_H + TABS_H + update_h, ui.w, ui.h - HEADER_H - TABS_H - update_h - STATUS_H};
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
     t = app_current_doc();
     if (cur && cur->kind == TAB_HOME) home_frame(content);
@@ -1052,7 +1055,10 @@ int pt_app_main(int argc, char **argv)
     /* vsync paces the frames: a sleeping 60 fps cap does not line up with a 90/120 Hz display */
     SetTargetFPS(0);
 #else
-    SetTargetFPS(60);
+    /* vsync paces the frames; the cap at the display's rate only bounds them where vsync is off. A lower cap drifts
+     * against the display's refresh and shows frames for uneven times. */
+    int hz = GetMonitorRefreshRate(GetCurrentMonitor());
+    SetTargetFPS(hz >= 30 ? hz : 60);
 #endif
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);
     ui_input_init();
@@ -1083,6 +1089,7 @@ int pt_app_main(int argc, char **argv)
         if (t) app_add_doc(t);
     } else if (message) app_handle_message(message);
     free(message);
+    update_start();
 
     int was_focused = 1, timer_wake = 0;
     while (!app.quit) {
@@ -1091,6 +1098,7 @@ int pt_app_main(int argc, char **argv)
             app_quit_request();
         }
         ipc_poll();
+        update_poll();
         file_dialogs_poll();
         handle_drops();
         int focused = IsWindowFocused();
@@ -1124,8 +1132,10 @@ int pt_app_main(int argc, char **argv)
         BeginDrawing();
         frame();
         EndDrawing();
-        /* input that arrived while drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now */
-        if (!ui.dirty && !ui.down && !ui_input_since_frame()) {
+        /* input that arrived while drawing (EndDrawing polls it, the wheel and pointer included) gets its frame now,
+         * and so does a render finished meanwhile: EndDrawing's poll took the worker's wake-up event */
+        tab *shown = app_current_doc();
+        if (!ui.dirty && !ui.down && !ui_input_since_frame() && !(shown && render_ready(shown))) {
             idle_wait();
             timer_wake = 1;
         }
@@ -1137,6 +1147,7 @@ int pt_app_main(int argc, char **argv)
     if (app.ws) workspace_free(app.ws);
     render_stop();
     ipc_stop();
+    update_stop();
     CloseWindow();
     pt_settings_free(&app.settings);
     fz_drop_context(app.ctx);

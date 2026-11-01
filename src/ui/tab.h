@@ -27,6 +27,7 @@
 #endif
 #define ZOOM_SETTLE_S 0.08
 #define ZOOM_GLIDE_S 0.18
+#define WHEEL_GLIDE_S 0.12
 #define THUMB_W 150.0f
 #define THUMB_H 196.0f
 #define NOTE_SIZE 18.0f
@@ -216,6 +217,8 @@ struct tab {
     float zanim_from, zanim_to; /* a zoom gliding from one value to another since zanim_t0 (0: none) */
     fit_mode zanim_fit;
     double zanim_t0;
+    float zanim_cy0, zanim_cy1; /* the scene y in the middle of the view at the glide's start and end */
+    float zanim_e;              /* how far along the glide the last frame was, 0 to 1 */
     float last_view_h;
     void *last_focus;
     double reveal_until; /* keep the focused field above the bottom of the view until then */
@@ -236,6 +239,10 @@ struct tab {
     /* layout of the scene */
     Rectangle view;
     float scroll_x, scroll_y;
+    /* wheel notches gliding since wheel_t0: the distance to scroll in all, how much of it is scrolled, and the speed
+     * (px/s) the glide started with */
+    double wheel_t0;
+    Vector2 wheel_total, wheel_done, wheel_v0;
     int npages;           /* pages in the display document */
     float *off_x, *off_y; /* per display page; off_y < -1e8 when not laid out */
     fz_rect *bounds;      /* per display page, once known (bounds_ok) */
@@ -393,6 +400,9 @@ void set_zoom(tab *t, float z);
 void zoom_to(tab *t, float target, fit_mode fit);
 void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
+float render_zoom(const tab *t); /* the zoom pages are rendered for: where a glide lands, else the zoom */
+/* the scale page `page` is rendered at whole at `zoom`; above it, tiles draw over that render */
+float base_scale(tab *t, int page, float zoom);
 int continuous(void);
 void toggle_continuous(tab *t);
 /* `prio`: the distance from the middle of the view in device pixels; the nearest requests render first. Prefetching

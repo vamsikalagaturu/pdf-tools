@@ -1,6 +1,6 @@
 /* The window's ties to the rest of Windows: messages between windows over AF_UNIX sockets with the protocol of
  * system.c and printing through the spooler (system.c calls these), starting programs and opening links (app.c,
- * document.c). */
+ * document.c, update.c). */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <afunix.h>
@@ -327,7 +327,8 @@ static wchar_t *find_program(const char *name)
     return NULL;
 }
 
-int run_detached(char *const argv[])
+/* the process handle in *process when it is not NULL, else closed; 0 when the program started */
+static int start_program(char *const argv[], DWORD flags, HANDLE *process)
 {
     wchar_t *program = find_program(argv[0]);
     if (!program) return -1;
@@ -350,12 +351,32 @@ int run_detached(char *const argv[])
     STARTUPINFOW si = {0};
     si.cb = sizeof si;
     PROCESS_INFORMATION pi;
-    int ok = CreateProcessW(script ? (n && n < MAX_PATH ? comspec : NULL) : program, wline, NULL, NULL, FALSE,
-                            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi);
-    if (ok) CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    int ok = CreateProcessW(script ? (n && n < MAX_PATH ? comspec : NULL) : program, wline, NULL, NULL, FALSE, flags,
+                            NULL, NULL, &si, &pi);
+    if (ok) {
+        CloseHandle(pi.hThread);
+        if (process) *process = pi.hProcess;
+        else CloseHandle(pi.hProcess);
+    }
     free(wline);
     free(program);
     return ok ? 0 : -1;
+}
+
+int run_detached(char *const argv[]) { return start_program(argv, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL); }
+
+/* CREATE_NO_WINDOW: a console of its own that is never shown, which the console programs a batch file starts
+ * share (without a console each of them would open a window) */
+int pt_win_run(char *const argv[], int wait)
+{
+    HANDLE process;
+    if (start_program(argv, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, wait ? &process : NULL)) return -1;
+    if (!wait) return 0;
+    DWORD code = 1;
+    WaitForSingleObject(process, INFINITE);
+    GetExitCodeProcess(process, &code);
+    CloseHandle(process);
+    return (int)code;
 }
 
 /* follow_link has already asked about anything but web and mail links */

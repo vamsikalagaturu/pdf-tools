@@ -18,6 +18,7 @@ void pt_raylib_follow_window(void); /* raylib_core.c: adopt the window's current
 /* PdfToolsActivity.<method>(String x nargs) returning String, nargs at most 4; the result is malloc'd, NULL for
  * Java null or a Java exception */
 char *pt_java(const char *method, int nargs, ...);
+void pt_android_thread_end(void); /* a thread other than the window's that called pt_java(), before it ends */
 
 /* file_dialog_android.c; the cache folder is set by android_main.c before the window starts */
 extern char *pt_android_cache_dir;

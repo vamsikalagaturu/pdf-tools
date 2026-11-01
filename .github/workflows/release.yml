@@ -1,0 +1,163 @@
+name: Release
+# Publishing a GitHub release builds the packages from its tag and attaches them to it. The libraries come from the
+# caches ci.yml fills (same keys); on a miss build.sh builds them through deps.sh.
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+env:
+  TAG: ${{ github.event.release.tag_name }}
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  linux:
+    # the oldest supported Ubuntu (24.04 and later, Arch): the binary needs the glibc it was built with or newer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      # before the packages are installed, as in ci.yml, so both compute the same key
+      - name: Cache key (runner image, compiler, pinned versions, deps.sh)
+        id: key
+        run: |
+          cc_version=$(cc --version)
+          cc_version=${cc_version%%$'\n'*}
+          echo "key=deps-linux-$ImageOS-${cc_version//[^A-Za-z0-9.-]/_}-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/linux/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-linux/dl
+            ${{ runner.temp }}/pdf-tools-linux/src
+            ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
+      - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libfontconfig-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols
+      - name: Build, test and pack the AppImage and tarball (platform/linux/build.sh)
+        run: PT_LINUX_OUT="$RUNNER_TEMP/pdf-tools-linux" platform/linux/build.sh
+      - name: Attach them to the release
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP/pdf-tools-linux/out/PDF_Tools-x86_64.AppImage" \
+            "$RUNNER_TEMP/pdf-tools-linux/out/PDF-Tools-Linux-x86_64.tar.gz"
+  android:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 28.2.13676358
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      # every release is signed with the same key, so an update installs over the previous version; outside the
+      # cached and uploaded folders
+      - name: Release signing key (secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD are not set (platform/android/README.md)"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d >"$RUNNER_TEMP/pdf-tools-release.jks"
+      - name: Ninja, Android build-tools, platform and NDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36.1" \
+            "ndk;$NDK_VERSION" >/dev/null
+      - name: Cache key (runner image, NDK, pinned versions, deps.sh)
+        id: key
+        run: |
+          echo "key=deps-android-$ImageOS-ndk$NDK_VERSION-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/android/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-android/dl
+            ${{ runner.temp }}/pdf-tools-android/src
+            ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-android/openssl-install-*
+      - name: Build the APK (platform/android/build.sh)
+        env:
+          PT_ANDROID_KEYSTORE: ${{ runner.temp }}/pdf-tools-release.jks
+          PT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          PT_ANDROID_OUT="$RUNNER_TEMP/pdf-tools-android" ANDROID_NDK="$ANDROID_HOME/ndk/$NDK_VERSION" \
+            platform/android/build.sh
+      - name: Attach it to the release
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP/pdf-tools-android/out/pdf-tools.apk"
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Cache key (runner image, compiler, pinned versions, deps.sh)
+        id: key
+        run: |
+          cc_version=$(cc --version)
+          cc_version=${cc_version%%$'\n'*}
+          echo "key=deps-macos-$ImageOS-${cc_version//[^A-Za-z0-9.-]/_}-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/macos/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: |
+            ${{ runner.temp }}/pdf-tools-macos/dl
+            ${{ runner.temp }}/pdf-tools-macos/src
+            ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
+            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
+            ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
+            ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
+      - name: Build, test and pack PDF Tools.app and PDF-Tools.dmg (platform/macos/build.sh)
+        run: PT_MACOS_OUT="$RUNNER_TEMP/pdf-tools-macos" platform/macos/build.sh
+      - name: Attach it to the release
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP/pdf-tools-macos/out/PDF-Tools.dmg"
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as committed (bash scripts break on CRLF)
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Cache key (runner image, MSVC, pinned versions, deps.sh)
+        id: key
+        # the MSVC version vcvars64.bat selects, as deps.sh finds Visual Studio
+        run: |
+          vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')
+          msvc=$(tr -d '\r\n' <"$(cygpath -u "$vs")/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+          echo "key=deps-windows-$ImageOS-msvc$msvc-${PT_FONTS:-slim}-${{ hashFiles('platform/versions.sh', 'platform/windows/deps.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.key.outputs.key }}
+          # MuPDF builds inside its source tree (src/mupdf-<fonts>), so src holds its build too
+          path: |
+            ${{ runner.temp }}/pdf-tools-windows/dl
+            ${{ runner.temp }}/pdf-tools-windows/src
+            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
+            ${{ runner.temp }}/pdf-tools-windows/openssl-install
+            ${{ runner.temp }}/pdf-tools-windows/raylib-install
+      - name: Build, test and pack PDF-Tools-Windows.zip (platform/windows/build.sh, MSVC)
+        run: PT_WINDOWS_OUT="$(cygpath -u "$RUNNER_TEMP")/pdf-tools-windows" platform/windows/build.sh
+      - name: Attach it to the release
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$(cygpath -w "$RUNNER_TEMP")\\pdf-tools-windows\\out\\PDF-Tools-Windows.zip"

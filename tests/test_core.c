@@ -1,7 +1,7 @@
 /* Core library tests (pt_core.h without the window): page ranges, the save pipeline (blank pages, shapes, stamps,
  * repeated pages, what a redaction takes with it), merging, keeping encryption, the optimized copy, regex search,
- * personal data, the Edits list and settings. Test documents are made here with MuPDF; files go to a temporary
- * folder. */
+ * personal data, the Edits list, settings and reading GitHub releases for updates. Test documents are made here with
+ * MuPDF; files go to a temporary folder. */
 #define _XOPEN_SOURCE 700
 /* macOS hides mkdtemp() under a strict _XOPEN_SOURCE */
 #define _DARWIN_C_SOURCE
@@ -833,6 +833,51 @@ static void test_repeated_page(void)
     free(src);
 }
 
+/* the update check: version order, picking this install's asset and its digest from GitHub's release JSON */
+static void test_release(void)
+{
+    CHECK(pt_version_compare("v0.4.1", "0.4.0") > 0);
+    CHECK(pt_version_compare("0.10.0", "0.9.9") > 0);
+    CHECK(pt_version_compare("1.2", "1.2.0") == 0);
+    CHECK(pt_version_compare("v1.0.0", "1.0.1") < 0);
+    CHECK(pt_version_compare("2", "10") < 0);
+
+    char *a = pt_update_asset(PT_INSTALL_APPIMAGE, "x86_64"), *t = pt_update_asset(PT_INSTALL_TARBALL, "aarch64");
+    CHECK(!strcmp(a, "PDF_Tools-x86_64.AppImage") && !strcmp(t, "PDF-Tools-Linux-aarch64.tar.gz"));
+    CHECK(!pt_update_asset(PT_INSTALL_MACOS, "x86_64") && !pt_update_asset(PT_INSTALL_NONE, "x86_64"));
+    free(a), free(t);
+
+    static const char json[] =
+        "{\"tag_name\": \"v0.5.0\", \"html_url\": \"https://example.org/r\", \"assets\": ["
+        "{\"name\": \"PDF-Tools.dmg\", \"digest\": \"sha256:"
+        "E072982E068888EAFC9F3366EEFCA7737D084A4A97AAE2FB108218C9274760E7\", \"size\": 11282486, "
+        "\"browser_download_url\": \"https://example.org/PDF-Tools.dmg\"},"
+        "{\"name\": \"pdf-tools.apk\", \"browser_download_url\": \"https://example.org/pdf-tools.apk\"},"
+        "{\"name\": \"PDF-Tools-Windows.zip\", \"digest\": \"sha256:1234\", "
+        "\"browser_download_url\": \"https://example.org/w.zip\"}]}";
+    pt_release r;
+    CHECK(!pt_release_read(ctx, json, "PDF-Tools.dmg", &r));
+    CHECK(r.version && !strcmp(r.version, "0.5.0") && r.page && !strcmp(r.page, "https://example.org/r"));
+    CHECK(r.url && !strcmp(r.url, "https://example.org/PDF-Tools.dmg") && r.size == 11282486);
+    CHECK(r.sha256 && !strcmp(r.sha256, "e072982e068888eafc9f3366eefca7737d084a4a97aae2fb108218c9274760e7"));
+    pt_release_free(&r);
+    /* no digest, or one that is not a SHA-256: nothing to check the download against */
+    CHECK(!pt_release_read(ctx, json, "pdf-tools.apk", &r) && r.url && !r.sha256);
+    pt_release_free(&r);
+    CHECK(!pt_release_read(ctx, json, "PDF-Tools-Windows.zip", &r) && r.url && !r.sha256);
+    pt_release_free(&r);
+    CHECK(!pt_release_read(ctx, json, "PDF_Tools-x86_64.AppImage", &r) && r.version && !r.url);
+    pt_release_free(&r);
+    CHECK(pt_release_read(ctx, "{\"message\": \"Not Found\"}", "pdf-tools.apk", &r) && !r.version);
+    CHECK(pt_release_read(ctx, "not json", NULL, &r));
+
+    char *path = tmp_path("abc.txt"), hex[65];
+    pt_write_file(path, "abc", 3);
+    CHECK(!pt_sha256_file(path, hex) &&
+          !strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    free(path);
+}
+
 /* nftw() callback that empties and removes the temporary folder */
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
@@ -865,6 +910,7 @@ int main(void)
     test_cyclic_parent();
     test_keep_encryption();
     test_bad_arguments();
+    test_release();
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;
     if (failures) fprintf(stderr, "%d check(s) failed\n", failures);

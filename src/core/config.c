@@ -42,6 +42,7 @@ const pt_setting_def pt_settings_defs[] = {
     {"ebook_page_size", PT_SET_STR, PT_EBOOK_PAGE_SIZE, 0,
      "Page size e-books and Office documents are laid out at: A5 | A4 | Letter | window"},
     {"ebook_font_size", PT_SET_INT, NULL, PT_EBOOK_FONT_SIZE, "Font size in points e-books are laid out with"},
+    {"check_updates", PT_SET_BOOL, NULL, 1, "Ask GitHub for a newer release at startup, at most once a day"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 

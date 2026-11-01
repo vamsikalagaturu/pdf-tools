@@ -703,4 +703,35 @@ extern const unsigned char pt_asset_logo_svg[];
 extern const int pt_asset_logo_svg_size;
 extern const unsigned char pt_asset_desktop[];
 extern const int pt_asset_desktop_size;
+
+/* ---- release.c: what the window's update check reads from a GitHub release (no network here) ---- */
+/* <0, 0 or >0 as a is older than, the same as or newer than b: dot-separated numbers, a leading v ignored, a
+ * missing part counting as 0 ("1.2" == "1.2.0") */
+int pt_version_compare(const char *a, const char *b);
+
+typedef struct {
+    char *version; /* tag_name without its leading v */
+    char *page;    /* the release's web page; NULL when not given */
+    char *url;     /* the asset's download URL; NULL when the release has no asset of that name */
+    char *sha256;  /* its SHA-256 (64 lowercase hex digits) from the asset's digest; NULL when there is none */
+    double size;   /* its size in bytes, 0 when not given */
+} pt_release;
+
+/* Reads GitHub's releases/latest JSON and picks the asset named `asset` (NULL: none). 0, or -1 when the text is no
+ * release with a version tag. */
+int pt_release_read(fz_context *ctx, const char *json, const char *asset, pt_release *out);
+void pt_release_free(pt_release *r);
+
+typedef enum {
+    PT_INSTALL_NONE,     /* nothing the app can replace itself (a distro package, an install prefix) */
+    PT_INSTALL_APPIMAGE, /* Linux, PDF_Tools-<arch>.AppImage */
+    PT_INSTALL_TARBALL,  /* Linux, the pdf-tools/ folder of PDF-Tools-Linux-<arch>.tar.gz */
+    PT_INSTALL_WINDOWS,  /* the PDF-Tools folder of PDF-Tools-Windows.zip */
+    PT_INSTALL_MACOS,    /* PDF Tools.app from PDF-Tools.dmg */
+    PT_INSTALL_ANDROID   /* pdf-tools.apk */
+} pt_install_kind;
+
+/* the release asset that updates such an install on `arch` ("x86_64", "aarch64"); NULL when releases have none */
+char *pt_update_asset(pt_install_kind kind, const char *arch);
+int pt_sha256_file(const char *path, char hex[65]); /* lowercase hex; 0, or -1 when the file cannot be read */
 #endif
