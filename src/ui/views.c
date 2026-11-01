@@ -789,6 +789,10 @@ static void handle_input(tab *t, Rectangle area)
         }
         t->sel = SEL_NONE;
         t->gesture = selection_mode(t);
+        if (t->gesture == G_FLOW && ui.dclick && on_word(t, scene)) {
+            t->gesture = G_NONE;
+            return;
+        }
         if (t->gesture == G_BAND) t->band = fz_make_rect(scene.x, scene.y, scene.x, scene.y);
         else if (t->gesture == G_STROKE || t->gesture == G_SHAPE) {
             /* ink and shapes start on a page and stay on it; a shape keeps {start, end} */
@@ -1015,9 +1019,86 @@ static void request_landing(tab *t, Rectangle area)
     t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
 }
 
+/* ---- line numbers ----
+ * Numbered through the whole document in reading order, as LaTeX's lineno package does: a column's numbers sit
+ * beside it, in the left margin for a column in the page's left half and in the right margin for one in its right
+ * half. Lines are the words' reading-order lines; a column is a run of lines each overlapping the previous one
+ * horizontally. */
+
+typedef struct {
+    fz_rect r;
+    int n;
+} text_line;
+
+PT_VEC(text_lines, text_line);
+
+static void page_lines(const pt_words *w, text_lines *out)
+{
+    out->n = 0;
+    for (int i = 0; i < w->n; i++) {
+        if (i && w->v[i].line == w->v[i - 1].line) {
+            out->v[out->n - 1].r = fz_union_rect(out->v[out->n - 1].r, w->v[i].rect);
+            continue;
+        }
+        pt_push(*out, ((text_line){w->v[i].rect, 0}));
+    }
+}
+
+static void number_column(tab *t, int p, const text_lines *lines, int from, int to, float page_w)
+{
+    float x0 = lines->v[from].r.x0, x1 = lines->v[from].r.x1;
+    for (int i = from + 1; i < to; i++) x0 = fminf(x0, lines->v[i].r.x0), x1 = fmaxf(x1, lines->v[i].r.x1);
+    int right = x0 > page_w * 0.45f;
+    for (int i = from; i < to; i++) {
+        Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, lines->v[i].r));
+        if (!CheckCollisionRecs(r, t->view)) continue;
+        Rectangle col = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(x0, 0, x1, 1)));
+        float size = fminf(fmaxf(r.height * 0.6f, 6), 16), gap = size * 0.8f;
+        char num[16];
+        snprintf(num, sizeof num, "%d", lines->v[i].n);
+        float w = text_width(num, size, F_REGULAR);
+        float x = right ? col.x + col.width + gap : col.x - gap - w;
+        draw_text(num, x, r.y + (r.height - size) / 2, size, F_REGULAR, GRAY);
+    }
+}
+
+static void draw_line_numbers(tab *t)
+{
+    if (!pt_settings_int(&app.settings, "line_numbers")) return;
+    int first = 1, known = 1;
+    text_lines lines = {0};
+    for (int i = 0; i < t->st.order.n; i++) {
+        int p = t->st.order.v[i];
+        if (!t->line_count[p]) {
+            /* every page before those in view is counted, from its words, extracted in the background */
+            if (!t->words_ok[p]) {
+                words_prefetch(t, p);
+                known = 0;
+                continue;
+            }
+            page_lines(&t->words[p], &lines);
+            t->line_count[p] = lines.n + 1;
+        }
+        Rectangle pr = t->off_y[p] < -1e8f ? (Rectangle){0} : scene_rect_to_screen(t, page_scene_rect(t, p));
+        if (known && pr.width > 0 && CheckCollisionRecs(pr, t->view)) {
+            page_lines(&t->words[p], &lines);
+            for (int k = 0; k < lines.n; k++) lines.v[k].n = first + k;
+            fz_rect b = page_bounds(t, p);
+            for (int a = 0, k = 1; k <= lines.n; k++)
+                if (k == lines.n || lines.v[k].r.x0 > lines.v[k - 1].r.x1 || lines.v[k].r.x1 < lines.v[k - 1].r.x0) {
+                    number_column(t, p, &lines, a, k, b.x1 - b.x0);
+                    a = k;
+                }
+        } else if (pr.width > 0 && pr.y > t->view.y + t->view.height) break;
+        first += t->line_count[p] - 1;
+    }
+    pt_vec_free(lines);
+}
+
 void view_frame(tab *t, Rectangle area)
 {
     t->view = area;
+    t->view_missing = 0;
     DrawRectangleRec(area, pal.page_bg);
     if (!t->doc) return;
     ui_touch_zoom_area(area);
@@ -1120,6 +1201,7 @@ void view_frame(tab *t, Rectangle area)
         if (t->tool != T_VIEW)
             ui_touch_drag_area(GetCollisionRec(area, scene_rect_to_screen(t, page_scene_rect(t, p))));
     }
+    draw_line_numbers(t);
     for (int i = 0; i < t->st.items.n; i++) {
         int p = t->st.items.v[i].page;
         if (t->off_y[p] < -1e8f || (t->tb.active && t->tb.index == i)) continue;

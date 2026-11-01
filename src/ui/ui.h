@@ -330,6 +330,10 @@ int app_new_window(const char *adopt_file); /* 0 when the new window process sta
 void app_set_theme(const char *mode);
 void app_about(void);
 tab *app_current_doc(void);
+/* t's pages were rebuilt (an edit, a save): the window keeps showing its last frame until they are sharp again,
+ * briefly, so the change appears at once instead of through blurred or white pages */
+void app_hold_frames(tab *t);
+int app_holding(void);
 tab *app_doc_by_id(unsigned id);           /* the open document tab with that id, NULL once it is closed */
 void app_handle_message(const char *json); /* a launch message from system.c: open, show, forward, quit */
 void app_quit_request(void);               /* asks once about unsaved edits in this window, then sets app.quit */

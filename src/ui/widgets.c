@@ -2203,6 +2203,7 @@ typedef struct {
 } GLFWimage;
 
 void *glfwCreateCursor(const GLFWimage *image, int xhot, int yhot);
+void *glfwCreateStandardCursor(int shape);
 void glfwSetCursor(void *window, void *cursor);
 void glfwDestroyCursor(void *cursor);
 
@@ -2242,7 +2243,12 @@ static int desktop_cursor_px(void)
     const char *env = getenv("XCURSOR_SIZE");
     if (!env || atoi(env) <= 0) env = getenv("HYPRCURSOR_SIZE");
     int base = env && atoi(env) > 0 ? atoi(env) : 24;
+#ifdef __APPLE__
+    /* GLFW's Cocoa cursor takes the image's pixels as points, so the Retina scale would apply twice */
+    float scale = 1;
+#else
     float scale = GetWindowScaleDPI().x;
+#endif
     return (int)roundf(base * (scale > 0.5f ? scale : 1));
 }
 
@@ -2259,9 +2265,22 @@ static void reset_cursors(void)
     shown = CUR_COUNT;
 }
 
+#ifdef __APPLE__
+/* GLFW's standard shapes are the system's NSCursors there: drawn for Retina and grown with the Accessibility
+ * pointer size, which a custom image is not */
+static const int STANDARD[CUR_COUNT] = {
+    [CUR_ARROW] = 0x36001,      [CUR_IBEAM] = 0x36002,    [CUR_CROSS] = 0x36003,
+    [CUR_HAND] = 0x36004,       [CUR_SIZE_HOR] = 0x36005, [CUR_SIZE_VER] = 0x36006,
+    [CUR_SIZE_FDIAG] = 0x36007, [CUR_MOVE] = 0x36009,     [CUR_FORBIDDEN] = 0x3600A,
+};
+#endif
+
 static void make_cursor(int i)
 {
     cursor_tried[i] = 1;
+#ifdef __APPLE__
+    if (STANDARD[i] && (cursors[i] = glfwCreateStandardCursor(STANDARD[i]))) return;
+#endif
     int size = cursor_px;
     float s = size / 24.0f;
     const cursor_spec *c = &SPECS[i];
