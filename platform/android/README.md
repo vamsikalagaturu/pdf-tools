@@ -35,7 +35,7 @@ which `build.sh` runs first; `build.sh check` stops after compiling `libpdf-tool
 
 1. Downloads MuPDF's source and builds `libmupdf.a` and `libmupdf-third.a` (with Tesseract) with the NDK clang
    (API 30). A dummy `pkg-config` keeps host libraries out.
-2. Builds static PCRE2 (`libpcre2-8.a`, no JIT) and OpenSSL (`libcrypto.a`) for arm64.
+2. Builds static OpenSSL (`libcrypto.a`) for arm64.
 3. Downloads Tesseract's English data (`eng.traineddata`), packed into the APK as an asset; `android_main.c` copies
    it to `$XDG_DATA_HOME/pdf-tools/tessdata` on first start, where OCR finds it.
 4. Configures `platform/android/CMakeLists.txt` with the NDK toolchain. It pulls in the root `CMakeLists.txt`

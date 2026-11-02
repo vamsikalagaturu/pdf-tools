@@ -44,6 +44,7 @@ int pt_desktop_install(const char *exe, char **entry, char **icon)
              set_value(CLASSES PROG_ID L"\\shell\\open\\command", NULL, wopen) ||
              set_value(CLASSES L".pdf\\OpenWithProgids", PROG_ID, L"");
     for (int i = 1; i < pt_doc_formats_count && !rc; i++) {
+        if (pt_doc_formats[i].commands_only) continue;
         wchar_t *key = open_with_key(i);
         rc = set_value(key, PROG_ID, L"");
         free(key);

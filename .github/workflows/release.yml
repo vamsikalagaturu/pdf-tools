@@ -9,6 +9,8 @@ permissions:
 env:
   TAG: ${{ github.event.release.tag_name }}
   GH_TOKEN: ${{ github.token }}
+  # the plain version number; any other build is marked as a development one (CMakeLists.txt)
+  PT_RELEASE: "1"
 jobs:
   linux:
     # the oldest supported Ubuntu (24.04 and later, Arch): the binary needs the glibc it was built with or newer
@@ -31,7 +33,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-linux/dl
             ${{ runner.temp }}/pdf-tools-linux/src
             ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
             ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
       - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
@@ -90,7 +91,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-android/dl
             ${{ runner.temp }}/pdf-tools-android/src
             ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-android/openssl-install-*
       - name: Build the APK (platform/android/build.sh)
         env:
@@ -122,7 +122,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-macos/dl
             ${{ runner.temp }}/pdf-tools-macos/src
             ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
             ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
       - name: Build, test and pack PDF Tools.app and PDF-Tools.dmg (platform/macos/build.sh)
@@ -157,7 +156,6 @@ jobs:
           path: |
             ${{ runner.temp }}/pdf-tools-windows/dl
             ${{ runner.temp }}/pdf-tools-windows/src
-            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
             ${{ runner.temp }}/pdf-tools-windows/openssl-install
             ${{ runner.temp }}/pdf-tools-windows/raylib-install
       - name: Build, test and pack PDF-Tools-Windows.zip (platform/windows/build.sh, MSVC)

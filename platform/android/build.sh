@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Builds libpdf-tools.so (raylib, core, window) for arm64-v8a against the libraries from deps.sh (MuPDF with
-# Tesseract, PCRE2 and OpenSSL, built from the sources pinned in platform/versions.sh) and packages a debug-signed
+# Tesseract and OpenSSL, built from the sources pinned in platform/versions.sh) and packages a debug-signed
 # APK, without Gradle. `build.sh check` only compiles libpdf-tools.so (no APK).
 # Output: $PT_ANDROID_OUT/out/pdf-tools.apk (default ~/.cache/pdf-tools-native/android, which also keeps the debug
 # signing key: a new key would stop the APK installing over an older one). Re-runs are incremental.
 # With PT_ANDROID_KEYSTORE (a .jks) and PT_ANDROID_KEYSTORE_PASSWORD set, the APK is signed with that keystore's key
-# `pdf-tools` (key password = store password) instead, as releases are (README.md).
+# `pdf-tools` (key password = store password) instead, as releases are.
 # MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from /system/fonts);
 # PT_FONTS=full bundles them.
 set -euo pipefail
@@ -46,7 +46,6 @@ cmake --fresh -S "$HERE" -B "$ROOT/build" -G Ninja \
     -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--gc-sections" \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
-    -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" \
     -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON -DCMAKE_FIND_ROOT_PATH="$OPENSSL_OUT" \
     -DPKG_CONFIG_EXECUTABLE="$ROOT/nopkgconfig/pkg-config" >/dev/null
 cmake --build "$ROOT/build" --target pdf-tools -j"$JOBS"

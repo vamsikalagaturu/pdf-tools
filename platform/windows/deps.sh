@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up the MSVC environment and downloads and builds the third-party libraries pdf-tools.exe links, for 64-bit
 # Windows, from the sources pinned in platform/versions.sh: MuPDF (with Tesseract, through its Visual Studio
-# solution, inside its source tree), PCRE2, OpenSSL and raylib, plus raygui and Tesseract's English data. Runs in
+# solution, inside its source tree), OpenSSL and raylib, plus raygui and Tesseract's English data. Runs in
 # Git Bash; needs Visual Studio 2022 or 2026 with the C++ tools, Strawberry Perl, curl and git (see build.sh).
 # Everything goes under $PT_WINDOWS_OUT (default ~/.cache/pdf-tools/windows), except the raylib and raygui sources
 # (thirdparty/ in the repo); what is already there is reused.
@@ -83,22 +83,6 @@ MUPDF_THIRD=
 for lib in libthirdparty libresources libtesseract libleptonica libharfbuzz libextract libpkcs7 libmubarcode libzxing; do
     [ -f "$MUPDF_OUT/$lib.lib" ] && MUPDF_THIRD="$MUPDF_THIRD${MUPDF_THIRD:+;}$(win "$MUPDF_OUT/$lib.lib")"
 done
-
-step "PCRE2 $PCRE2_VERSION"
-PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
-PCRE2_OUT=$ROOT/pcre2-install
-fetch "$PCRE2_URL" "$ROOT/dl/pcre2.tar.bz2" "$PCRE2_SHA256"
-[ -d "$PCRE2_SRC" ] || tar xjf "$ROOT/dl/pcre2.tar.bz2" -C "$ROOT/src"
-if ! ls "$PCRE2_OUT"/lib/pcre2-8*.lib >/dev/null 2>&1; then
-    cmake -S "$(win "$PCRE2_SRC")" -B "$(win "$ROOT/pcre2-build")" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$(win "$PCRE2_OUT")" -DBUILD_SHARED_LIBS=OFF -DPCRE2_BUILD_PCRE2GREP=OFF \
-        -DPCRE2_BUILD_TESTS=OFF -DPCRE2_SUPPORT_JIT=OFF >"$ROOT/pcre2-build.log" 2>&1 \
-        || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
-    cmake --build "$(win "$ROOT/pcre2-build")" --target install -j"$JOBS" >>"$ROOT/pcre2-build.log" 2>&1 \
-        || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
-fi
-PCRE2_LIB=$(ls "$PCRE2_OUT"/lib/pcre2-8*.lib | head -1)
-ls -l "$PCRE2_LIB"
 
 step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION

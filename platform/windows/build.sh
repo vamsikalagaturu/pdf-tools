@@ -2,7 +2,7 @@
 # Builds pdf-tools.exe for 64-bit Windows with MSVC and packs it as PDF-Tools-Windows.zip. Runs in Git Bash, as on
 # the windows-latest CI runner: needs Visual Studio 2022 or 2026 with the C++ tools (MSBuild, cl, nmake, and the CMake and
 # Ninja it ships), Strawberry Perl (OpenSSL's Configure), curl and git.
-# The MSVC environment and the libraries come from deps.sh (MuPDF with Tesseract, PCRE2, OpenSSL and raylib, built
+# The MSVC environment and the libraries come from deps.sh (MuPDF with Tesseract, OpenSSL and raylib, built
 # from the sources pinned in platform/versions.sh) and are linked statically. The zip holds the program, the English
 # OCR data and the Visual C++ runtime DLLs it needs, so nothing has to be installed. Output: $PT_WINDOWS_OUT/out
 # (default ~/.cache/pdf-tools/windows). Re-runs are incremental. `build.sh check` builds and runs the tests without
@@ -25,7 +25,6 @@ cmake --fresh -S "$(win "$REPO")" -B "$(win "$ROOT/build")" -G Ninja -DCMAKE_BUI
     -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON -DPT_USE_FONTCONFIG=OFF \
     -DMUPDF_INCLUDE_DIR="$(win "$MUPDF_SRC/include")" -DMUPDF_LIBRARY="$(win "$MUPDF_OUT/libmupdf.lib")" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_THIRD" \
-    -DPCRE2_INCLUDE_DIR="$(win "$PCRE2_OUT/include")" -DPCRE2_LIBRARY="$(win "$PCRE2_LIB")" \
     -DOPENSSL_ROOT_DIR="$(win "$OPENSSL_OUT")" -DOPENSSL_USE_STATIC_LIBS=ON \
     -Draylib_DIR="$(win "$RAYLIB_OUT/lib/cmake/raylib")" -DPT_TESSDATA="$(win "$ROOT/dl/eng.traineddata")" >/dev/null
 cmake --build "$(win "$ROOT/build")" -j"$JOBS"

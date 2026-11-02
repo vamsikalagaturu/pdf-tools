@@ -1,8 +1,6 @@
-/* Command-line (no window) interface for scripts and agents, as AGENTS.md documents it. Each command never
- * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. COMMANDS lists those of AGENTS.md's
- * "Commands" first (up to "synctex"), then its "More commands" and a few undocumented ones (prepare-signature,
- * edit-annotation, redact-text). main.c sends argv here when argv[1] names a command; the window's app.c shares only
- * the usage text and the guide. */
+/* Command-line (no window) interface for scripts and agents. Each command never
+ * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. main.c sends argv here when argv[1]
+ * names a command; the window's app.c shares only the usage text and the guide. */
 #include "pt_cli.h"
 #include "pt_core.h"
 #include <ctype.h>
@@ -585,39 +583,35 @@ static void matches_free(matches *m)
     pt_vec_free(*m);
 }
 
+static int search_flags(const args *a)
+{
+    return (given(a, "--case-sensitive") ? PT_MATCH_CASE : 0) | (given(a, "--ignore-accents") ? PT_IGNORE_ACCENTS : 0);
+}
+
 /* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`, each with the text under it,
  * appended to out. */
-static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
+static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int flags,
+                         matches *out)
 {
     fz_page *page = fz_load_page(ctx, doc, p);
     fz_stext_page *st = pt_stext(ctx, page);
     pt_rects rects = {0};
     for (int t = 0; t < texts->n; t++) {
         pt_rects hits = {0};
-        pt_search(ctx, st, texts->v[t], &hits);
-        for (int i = 0; i < hits.n; i++) {
-            fz_rect r = hits.v[i];
-            if (cs) {
-                /* the search ignores case */
-                char *box = pt_textbox(ctx, st, fz_make_rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1));
-                int keep = strstr(box, texts->v[t]) != NULL;
-                free(box);
-                if (!keep) continue;
-            }
-            pt_push(rects, r);
-        }
+        pt_search(ctx, st, texts->v[t], flags, &hits);
+        for (int i = 0; i < hits.n; i++) pt_push(rects, hits.v[i]);
         pt_vec_free(hits);
     }
     for (int i = 0; i < patterns->n; i++) {
-        fz_try(ctx) pt_regex_rects(ctx, st, patterns->v[i], cs, &rects);
+        fz_try(ctx) pt_regex_rects(ctx, st, patterns->v[i], flags, &rects);
         fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     }
 
     /* text that is not drawn (comments, authors, hidden field values) is matched too: redacting it deletes the
      * annotation that holds it */
-    for (int t = 0; t < texts->n; t++) pt_annot_matches(ctx, page, texts->v[t], NULL, cs, &rects);
+    for (int t = 0; t < texts->n; t++) pt_annot_matches(ctx, page, texts->v[t], NULL, flags, &rects);
     for (int i = 0; i < patterns->n; i++) {
-        fz_try(ctx) pt_annot_matches(ctx, page, NULL, patterns->v[i], cs, &rects);
+        fz_try(ctx) pt_annot_matches(ctx, page, NULL, patterns->v[i], flags, &rects);
         fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     }
 
@@ -649,7 +643,7 @@ static int cmd_redact(args *a)
     page_list(get(a, "--pages"), n, &pages);
     matches found = {0};
     for (int i = 0; i < pages.n; i++)
-        find_matches((fz_document *)doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
+        find_matches((fz_document *)doc, pages.v[i], texts, patterns, search_flags(a), &found);
     for (int i = 0; i < areas->n; i++) {
         const char *box;
         int p = page_and_value(areas->v[i], "--rect", &box);
@@ -1287,8 +1281,7 @@ static int cmd_search(args *a)
     pt_strs none = {0};
     page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
     pt_push(texts, pt_strdup(get(a, "--text")));
-    for (int i = 0; i < pages.n; i++)
-        find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
+    for (int i = 0; i < pages.n; i++) find_matches(doc, pages.v[i], &texts, &none, search_flags(a), &found);
     static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "matches");
@@ -1800,6 +1793,123 @@ static int cmd_inspect(args *a)
     return emit_end(&j, OK);
 }
 
+static void json_string_or_null(pt_json *j, const char *key, const char *s)
+{
+    pt_json_key(j, key);
+    if (s) pt_json_string(j, s);
+    else pt_json_null(j);
+}
+
+static void json_comment(pt_json *j, const pt_comment *c, int reply)
+{
+    pt_json_begin_object(j);
+    if (!reply) {
+        pt_json_key(j, "page");
+        pt_json_int(j, c->page + 1);
+        pt_json_key(j, "lines");
+        if (c->line0) {
+            pt_json_begin_array(j);
+            pt_json_int(j, c->line0);
+            pt_json_int(j, c->line1);
+            pt_json_end_array(j);
+        } else pt_json_null(j);
+    }
+    json_string_or_null(j, "type", c->type);
+    json_string_or_null(j, "author", c->author);
+    json_string_or_null(j, "date", c->date);
+    if (!reply) json_string_or_null(j, "quote", c->quote);
+    json_string_or_null(j, "comment", c->text);
+    pt_json_key(j, "replies");
+    pt_json_begin_array(j);
+    for (int i = 0; i < c->replies.n; i++) json_comment(j, &c->replies.v[i], 1);
+    pt_json_end_array(j);
+    pt_json_end_object(j);
+}
+
+static void json_comments(pt_json *j, const char *file, const char *numbering, const pt_comments *found)
+{
+    pt_json_key(j, "file");
+    pt_json_string(j, file);
+    pt_json_key(j, "numbering");
+    pt_json_string(j, numbering);
+    pt_json_key(j, "comments");
+    pt_json_begin_array(j);
+    for (int i = 0; i < found->n; i++) json_comment(j, &found->v[i], 0);
+    pt_json_end_array(j);
+    pt_json_key(j, "count");
+    pt_json_int(j, found->n);
+}
+
+static int cmd_comments(args *a)
+{
+    const char *path = input(a), *out = get(a, "--output"), *format = get(a, "--format");
+    const char *numbering = get(a, "--numbering");
+    if (strcmp(numbering, "document") && strcmp(numbering, "page"))
+        usage_error(a->c, "argument --numbering: document or page, got '%s'", numbering);
+    int markdown;
+    if (!format) {
+        size_t n = out ? strlen(out) : 0;
+        markdown = n >= 3 && !strcasecmp(out + n - 3, ".md");
+    } else if (!strcmp(format, "md") || !strcmp(format, "json")) markdown = !strcmp(format, "md");
+    else usage_error(a->c, "argument --format: md or json, got '%s'", format);
+    /* stdout carries the one JSON object */
+    if (markdown && !out) usage_error(a->c, "argument --format: md needs -o FILE");
+    if (out) refuse_overwrite(out, path);
+
+    fz_document *doc = opened_any(path, get(a, "--password"));
+    /* static: a MuPDF error unwinds past the frees (fail), and the process ends with them still reachable */
+    static pt_ints pages;
+    static pt_comments found;
+    static fz_buffer *data;
+    static char *title;
+    if (get(a, "--pages")) page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
+    pt_collect_comments(ctx, doc, pt_numbering_from(numbering), get(a, "--pages") ? &pages : NULL, &found);
+    fz_drop_document(ctx, doc);
+
+    static pt_json j;
+    if (!out) {
+        emit_begin(&j);
+        json_comments(&j, path, numbering, &found);
+    } else if (found.n) {
+        if (markdown) {
+            title = pt_format("Comments on %s", pt_basename(path));
+            data = pt_comments_markdown(ctx, &found, title);
+        } else {
+            FILE *f = tmpfile();
+            if (!f) fail("cannot make a temporary file");
+            pt_json fj;
+            pt_json_init(&fj, f);
+            pt_json_begin_object(&fj);
+            json_comments(&fj, path, numbering, &found);
+            pt_json_end_object(&fj);
+            pt_json_finish(&fj);
+            data = fz_new_buffer(ctx, 4096);
+            rewind(f);
+            char chunk[4096];
+            for (size_t n; (n = fread(chunk, 1, sizeof chunk, f)) > 0;) fz_append_data(ctx, data, chunk, n);
+            int bad = ferror(f);
+            fclose(f);
+            if (bad) fail("cannot read back the JSON");
+        }
+        char *written = write_out(out, data, path);
+        emit_begin(&j);
+        pt_json_key(&j, "output");
+        pt_json_string(&j, written);
+        free(written);
+    } else emit_begin(&j);
+    if (out) {
+        pt_json_key(&j, "count");
+        pt_json_int(&j, found.n);
+    }
+    int code = found.n ? OK : NO_MATCH;
+    fz_drop_buffer(ctx, data);
+    data = NULL;
+    free(title);
+    pt_comments_free(&found);
+    pt_vec_free(pages);
+    return emit_end(&j, code);
+}
+
 static int cmd_convert(args *a)
 {
     const char *path = input(a), *size = get(a, "--page-size"), *font = get(a, "--font-size");
@@ -1915,9 +2025,9 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
-      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)",
-       NULL}},
+      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
      {0}},
     {"fill",
      "Fill form fields",
@@ -2008,7 +2118,6 @@ static const cmd COMMANDS[] = {
       {"--source", NULL, VALUE, 0, "SOURCE", "TeX file, with --line: prints the page and boxes", NULL},
       {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}},
      {0}},
-    /* AGENTS.md's "More commands", and a few it does not list */
     {"search",
      "Find text: pages and boxes of each match",
      INPUT,
@@ -2017,7 +2126,8 @@ static const cmd COMMANDS[] = {
      {PASSWORD,
       {"--text", NULL, VALUE, 1, "TEXT", "text to find (case is ignored unless --case-sensitive)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
-      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL}},
+      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL}},
      {0}},
     {"render",
      "Render one page to PNG",
@@ -2173,6 +2283,18 @@ static const cmd COMMANDS[] = {
      {OUTPUT, PASSWORD},
      {0}},
     {"inspect", "Annotations (with their per-page index) and form fields", INPUT, 0, cmd_inspect, {PASSWORD}, {0}},
+    {"comments",
+     "Export the comments (marked text, notes, replies) with their page and line numbers",
+     INPUT,
+     0,
+     cmd_comments,
+     {PASSWORD,
+      {"--output", "-o", VALUE, 0, "OUTPUT", "write them to this file (.md: Markdown) instead of stdout", NULL},
+      {"--format", NULL, VALUE, 0, "FORMAT", "md | json (default: md for an .md output, else json)", NULL},
+      {"--numbering", NULL, VALUE, 0, "NUMBERING",
+       "document | page: where line numbers restart, as in the window (default document)", "document"},
+      {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL}},
+     {0}},
     {"edit-annotation",
      "Change the comment of an annotation, or remove it",
      INPUT,
@@ -2196,6 +2318,7 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
       {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
      {0}},
@@ -2223,8 +2346,8 @@ void pt_cli_usage(FILE *out)
           "  pdf-tools --version\n"
           "  pdf-tools COMMAND ...                          without the window, JSON output:\n"
           "      info redact fill pages merge split protect unprotect flatten convert synctex\n"
-          "      search inspect render export-images annotate draw insert-text insert-image sign\n"
-          "      prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
+          "      search inspect comments render export-images annotate draw insert-text insert-image\n"
+          "      sign prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
           "  pdf-tools help                                 the guide for scripts and agents (AGENTS.md)\n",
           out);

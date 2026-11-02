@@ -33,7 +33,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-linux/dl
             ${{ runner.temp }}/pdf-tools-linux/src
             ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
             ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
       - name: Compilers, pkg-config, fontconfig, raylib's X11/Wayland/GL headers
@@ -57,7 +56,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-linux/dl
             ${{ runner.temp }}/pdf-tools-linux/src
             ${{ runner.temp }}/pdf-tools-linux/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-linux/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-linux/openssl-install-*
             ${{ runner.temp }}/pdf-tools-linux/raylib-install-*
       - name: Build and test (platform/linux/build.sh check)
@@ -81,7 +79,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-android/dl
             ${{ runner.temp }}/pdf-tools-android/src
             ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-android/openssl-install-*
       - name: Ninja, Android build-tools, platform and NDK
         if: steps.restore.outputs.cache-hit != 'true' || github.event_name != 'push'
@@ -106,7 +103,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-android/dl
             ${{ runner.temp }}/pdf-tools-android/src
             ${{ runner.temp }}/pdf-tools-android/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-android/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-android/openssl-install-*
       - name: Compile libpdf-tools.so (platform/android/build.sh check)
         if: github.event_name != 'push'
@@ -131,7 +127,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-macos/dl
             ${{ runner.temp }}/pdf-tools-macos/src
             ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
             ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
       - name: Build the libraries (platform/macos/deps.sh)
@@ -145,7 +140,6 @@ jobs:
             ${{ runner.temp }}/pdf-tools-macos/dl
             ${{ runner.temp }}/pdf-tools-macos/src
             ${{ runner.temp }}/pdf-tools-macos/mupdf-build-*
-            ${{ runner.temp }}/pdf-tools-macos/pcre2-install-*
             ${{ runner.temp }}/pdf-tools-macos/openssl-install-*
             ${{ runner.temp }}/pdf-tools-macos/raylib-install-*
       - name: Build and test (platform/macos/build.sh check)
@@ -176,7 +170,6 @@ jobs:
           path: |
             ${{ runner.temp }}/pdf-tools-windows/dl
             ${{ runner.temp }}/pdf-tools-windows/src
-            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
             ${{ runner.temp }}/pdf-tools-windows/openssl-install
             ${{ runner.temp }}/pdf-tools-windows/raylib-install
       - name: Build the libraries (platform/windows/deps.sh, MSVC)
@@ -189,7 +182,6 @@ jobs:
           path: |
             ${{ runner.temp }}/pdf-tools-windows/dl
             ${{ runner.temp }}/pdf-tools-windows/src
-            ${{ runner.temp }}/pdf-tools-windows/pcre2-install
             ${{ runner.temp }}/pdf-tools-windows/openssl-install
             ${{ runner.temp }}/pdf-tools-windows/raylib-install
       - name: Build and test (platform/windows/build.sh check, MSVC)

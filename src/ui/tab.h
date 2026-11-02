@@ -15,6 +15,7 @@
  * just above the zoom, drawn slightly smaller), so nearby zooms share them. Texture memory is capped by bytes. */
 #define BASE_MAX_PX 1100.0f
 #define TILE_PX 512
+#define NAV_MAX 64
 #define TILE_LEVELS 4
 #define TILE_CACHE 128
 #define TILE_FADE_S 0.08
@@ -25,9 +26,12 @@
 #define PIX_CACHE 12
 #define TILE_BUDGET (96 << 20)
 #endif
+#define ZOOM_MIN 0.3f
+#define ZOOM_MAX 10.0f
 #define ZOOM_SETTLE_S 0.08
 #define ZOOM_GLIDE_S 0.18
 #define WHEEL_GLIDE_S 0.12
+#define ARROW_STEP 40.0f /* what Up and Down (and vim's j and k) scroll the view by */
 #define THUMB_W 150.0f
 #define THUMB_H 196.0f
 #define NOTE_SIZE 18.0f
@@ -60,7 +64,7 @@ typedef enum {
 
 typedef struct {
     const char *key, *label, *icon;
-    int shortcut;
+    const char *action; /* its keymap action, for the keys that pick it */
     const char *tip;
 } tool_def;
 
@@ -96,6 +100,83 @@ typedef struct {
     int page;
     fz_rect rect;
 } hit;
+
+typedef struct {
+    int page;
+    float top; /* the view's top below the page's, in points */
+} nav_spot;
+
+/* a bookmark of the user's (bookmarks.tsv), not part of the PDF */
+typedef struct {
+    nav_spot at;
+    char *name;
+    int has_char;
+    fz_point ch; /* a vim mark's character: its middle on the page (display space, points) */
+} user_mark;
+
+PT_VEC(user_marks, user_mark);
+
+typedef enum { SPLIT_NONE, SPLIT_SIDE, SPLIT_STACKED } split_mode;
+
+/* CARET_BLOCK: a rectangle from `anchor` to the caret; the modes from CARET_VISUAL on select text */
+typedef enum { CARET_OFF, CARET_ON, CARET_BLOCK, CARET_VISUAL, CARET_VISUAL_LINE } caret_mode;
+
+typedef struct {
+    int page, word, ch; /* a display page, a word of page_words() and a character of it */
+} caret_spot;
+
+/* the sidebar's tabs: Pages, Annotations, Edits, Outline, and Results while the find bar searches */
+enum { SIDE_PAGES, SIDE_ANNOTATIONS, SIDE_EDITS, SIDE_OUTLINE, SIDE_RESULTS, SIDE_TAB_COUNT };
+
+/* one pane's place in the document: the tab's own fields hold the active pane's, this the other's (views.c) */
+#define PANE_FIELDS          \
+    X(int, pno)              \
+    X(float, zoom)           \
+    X(fit_mode, fit)         \
+    X(float, fit_w)          \
+    X(float, fit_h)          \
+    X(double, zoom_t)        \
+    X(float, zanim_from)     \
+    X(float, zanim_to)       \
+    X(fit_mode, zanim_fit)   \
+    X(double, zanim_t0)      \
+    X(float, zanim_cy0)      \
+    X(float, zanim_cy1)      \
+    X(float, zanim_e)        \
+    X(float, last_view_h)    \
+    X(int, restore_pending)  \
+    X(float, restore_top)    \
+    X(Rectangle, view)       \
+    X(float, scroll_x)       \
+    X(float, scroll_y)       \
+    X(double, wheel_t0)      \
+    X(Vector2, wheel_total)  \
+    X(Vector2, wheel_done)   \
+    X(Vector2, wheel_v0)     \
+    X(int, want_scroll_page) \
+    X(float, want_center_x)  \
+    X(float, want_center_y)  \
+    X(int, want_center)      \
+    X(fit_mode, fit_pending) \
+    X(gesture_kind, gesture) \
+    X(Vector2, press_screen) \
+    X(fz_point, press_scene) \
+    X(caret_mode, caret)     \
+    X(caret_spot, at)        \
+    X(caret_spot, anchor)    \
+    X(float, caret_x)        \
+    X(fz_point, block_nudge)
+
+/* line_numbers_restart's value for numbers counted from the vim caret's line (vim's relativenumber); the caret's line
+ * shows its number through the document, as that counts with vim keys off */
+#define LINE_NUMBERS_RELATIVE "relative"
+
+/* line numbering past a page, once its words are known: as the margins number them (views.c), and through the document
+ * for the caret's line number, whatever the margins do (doc_) */
+typedef struct {
+    int ok, doc_ok;
+    pt_numbering_state after, doc_after;
+} page_lines_info;
 
 PT_VEC(hits, hit);
 
@@ -167,6 +248,12 @@ typedef enum { SEL_NONE, SEL_ITEM, SEL_ANNOT, SEL_CROP } sel_kind;
 
 /* G_FIELD: a press on an object that does not move (annotation, mark); G_CLICK: a click tool waits for release */
 typedef enum { G_NONE, G_BAND, G_FLOW, G_STROKE, G_SHAPE, G_MOVE, G_RESIZE, G_FIELD, G_CLICK } gesture_kind;
+
+typedef struct {
+#define X(type, name) type name;
+    PANE_FIELDS
+#undef X
+} pane_view;
 
 /* the comment popover of a note or mark */
 typedef enum { POP_NONE, POP_NEW_NOTE, POP_NOTE, POP_MARK, POP_ANNOT } pop_kind;
@@ -252,7 +339,17 @@ struct tab {
     int want_scroll_page; /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
     int want_center;
+    /* Back and Forward: where a link or outline jump left from, and where Back came from */
+    nav_spot nav_back[NAV_MAX], nav_fwd[NAV_MAX];
+    caret_spot nav_back_at[NAV_MAX], nav_fwd_at[NAV_MAX]; /* the vim caret there; page -1 without one */
+    int nav_nback, nav_nfwd;
+    user_marks marks;
     fit_mode fit_pending;
+    /* split view: the other pane (pane 1 - split_active), left of or above the divider for pane 0 */
+    split_mode split;
+    int split_active;
+    float split_at; /* the divider's place, a share of the width or height */
+    pane_view other;
     int two_pages, cover_alone;      /* pages side by side in pairs; the first page on its own */
     char *cert_path, *cert_password; /* a certificate chosen to sign with; the password only in memory */
     int cert_placing;
@@ -274,8 +371,12 @@ struct tab {
     Texture2D *thumbs;
     char *thumb_ok;
     pt_words *words;
+    pt_captions *captions; /* per display page, found with its words (words_ok) */
     char *words_ok;
-    int *line_count;     /* text lines per page once its words are known, plus 1 (0: not counted yet) */
+    page_lines_info *line_info; /* per display page, once its words are known (line numbers) */
+    pt_text_lines *caret_lines; /* per display page, the lines the caret moves through, once built (caret_lines_ok) */
+    char *caret_lines_ok;
+    unsigned text_gen;   /* counts tab_invalidate_pages: what was worked out from the text before it is stale */
     field_infos *fields; /* per display page */
     char *fields_ok;
     annot_infos *annots;
@@ -301,29 +402,50 @@ struct tab {
     int hover_handle;
     pt_rects flow_preview;
     int flow_page;
+    int flow_lines; /* the drag started with Shift: it selects whole numbered lines, as vim's V */
     int text_sel_page;
     pt_rects text_sel;
     char *text_sel_text;
+    /* vim caret mode (edit.c): the caret and the visual selection's other end on reading-order characters */
+    caret_mode caret;
+    caret_spot at, anchor;
+    float caret_x;        /* the display-space x that j and k keep */
+    int caret_follow;     /* scroll the caret into view once its page is laid out */
+    fz_point block_nudge; /* CARET_BLOCK: the caret's corner moved this far (display space, H/J/K/L) */
+    int select_placed;    /* select what the vim keys place next (a note, a text box, an image, a signature) */
+    int sel_kept;         /* this frame's Escape ended a text box that selected its item: it stays selected */
+    int close_after_save; /* :wq: close the tab once the save went through */
+    int caret_click;      /* a press on the page: the vim caret moves to the word there */
+    /* the sidebar's keys (vim.sidebar): rows numbered in drawing order, the focused one, Enter for it */
+    int side_focus, side_row, side_rows, side_enter;
 
     popover pop;
     text_box tb;
 
     /* find bar */
     int find_open, find_case, find_first;
+    int find_accents;         /* the find bar's "ignore accents" */
     int find_regex, find_bad; /* the query is a regular expression; it did not compile */
     ui_text find;
     hits matches;
+    /* per match: its line cut around it, and where the match sits in that (start, length; -1 when not found) */
+    pt_strs match_lines;
+    pt_ints match_at;
     int match_idx;
     double find_due;
 
     /* pages panel */
     char *ticked; /* per display page */
     int side_tab; /* 0 Pages, 1 Annotations, 2 Edits, 3 Outline */
-    float side_scroll[4];
+    float side_scroll[SIDE_TAB_COUNT];
+    int side_before_results;   /* the sidebar tab Results took over from */
+    int thumbs_pno;            /* the current page the Pages list last scrolled to */
     pt_bookmarks file_outline; /* the file's bookmarks (source space), loaded once per document */
     int outline_ok;
-    int outline_sel;  /* selected entry of the Outline tab, -1 none */
-    int outline_drag; /* entry being dragged, -1 none */
+    int outline_sel;       /* selected entry of the Outline tab, -1 none */
+    int mark_sel;          /* selected bookmark, -1 none */
+    int outline_folded[3]; /* the Outline tab's sections folded: bookmarks, contents, figures and tables */
+    int outline_drag;      /* entry being dragged, -1 none */
     float outline_drag_y;
     float side_w, side_shown_w;
     double side_anim_t0;
@@ -396,6 +518,19 @@ void tab_redo(tab *t);
 int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
 void tab_step_page(tab *t, int delta);
+void nav_mark(tab *t);              /* before a jump (link, outline): Back returns here */
+void nav_go(tab *t, int back);      /* Back (1) or Forward (0) */
+void nav_jump(tab *t, nav_spot to); /* there, Back returning here */
+/* bookmarks of the user's, per file in bookmarks.tsv; each change is written at once */
+void marks_add(tab *t, const char *name); /* at the current place */
+/* vim's marks: the bookmark called `name` set at `at` (NULL: the current place) on character `ch` (NULL: none),
+ * replacing one of that name; `unique` (capital letters) also removes it from every other file */
+void marks_set(tab *t, const char *name, const nav_spot *at, const fz_point *ch, int unique);
+/* the file and the mark of the first bookmark called `name` in any file; 0 when there is none (*path malloc'd) */
+int marks_find(const char *name, char **path, user_mark *out);
+void marks_lines(pt_strs *out); /* every file's bookmarks as stored: "path\tpage\ttop\tname" */
+void marks_rename(tab *t, int i, const char *name);
+void marks_remove(tab *t, int i);
 void set_zoom(tab *t, float z);
 /* zoom buttons and keys: glides to `target` around the middle of the view; with a fit mode the target is ignored and
  * the tab lands in that mode (nothing happens while the fitting zoom is not known yet) */
@@ -429,6 +564,8 @@ annot_infos *page_annots(tab *t, int page);
 link_infos *page_links(tab *t, int page);
 const link_info *link_at(tab *t, fz_point scene); /* the link under a scene point, or NULL */
 void follow_link(tab *t, const link_info *l);     /* http, https and mailto open; any other scheme asks first */
+/* with vim keys, the caret to the start of the line at a link's target p (display space) on `page` */
+void caret_to_link_target(tab *t, int page, fz_point p);
 const char *annot_comment(tab *t, int page, const annot_info *a); /* with unsaved edits applied; never NULL */
 /* median colour of a thin ring just outside `src`, so a redaction blends into the page; white when it cannot be drawn
  */
@@ -437,6 +574,7 @@ void sample_background(tab *t, int page, fz_rect src, unsigned char rgb[3]);
  * <stem>.pdf beside the original instead and shows it */
 void tab_save(tab *t);
 void tab_save_as(tab *t);
+void tab_save_copy(tab *t, const char *path); /* the edited document to `path`, as Save As writes it; no chooser */
 void tab_save_optimized(tab *t);
 void tab_export(tab *t);
 void tab_protect(tab *t);
@@ -476,8 +614,12 @@ void set_pen_style(tab *t, pt_pen pen);
 /* ---- views.c: the page canvas ---- */
 /* sets t->view; applies pending fits, position restores and scroll requests before handling input and drawing */
 void view_frame(tab *t, Rectangle area);
-float wheel_step(float extent); /* what one wheel unit scrolls in a view `extent` long */
-void layout_scene(tab *t);      /* a page not laid out (one page at a time) gets off_y below -1e8 */
+void split_set(tab *t, split_mode m); /* View > Split view */
+float wheel_step(float extent);       /* what one wheel unit scrolls in a view `extent` long */
+void layout_scene(tab *t);            /* a page not laid out (one page at a time) gets off_y below -1e8 */
+int item_movable(const pt_item *it);
+int item_resizable(const pt_item *it); /* lines and arrows move by their ends, so they do not resize */
+void dashed_rect(Rectangle r, Color c);
 /* rows of pages, as positions in page order: the first of the row holding position i (pairs, or the cover alone then
  * pairs; i itself without two pages) */
 int spread_start(tab *t, int i);
@@ -536,6 +678,13 @@ void redact_current_match(tab *t);
 void redact_all_matches(tab *t);
 void show_find(tab *t);
 void hide_find(tab *t);
+void caret_draw(tab *t); /* the vim caret, its selection and the mode badge, over the pages in t->view */
+/* the number through the document of the vim caret's line, as pt_number_lines counts; 0 without a caret or while the
+ * words of a page before it are still being read */
+int caret_line_number(tab *t);
+/* a command of the vim command line about the document (:w, :q, :wq, :N, :zoom, :bookmark, :colour, :split, :find); 0
+ * when it is not one of those */
+int tab_ex(tab *t, const pt_ex *ex);
 void edit_text_item(tab *t, int index);
 int item_index_on_page(const tab *t, int index); /* index among the items of its page */
 fz_rect ink_bounds(const pt_item *it);

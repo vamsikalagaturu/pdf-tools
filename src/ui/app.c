@@ -44,6 +44,14 @@ app_state app;
 #define HEADER_H 44.0f
 #define TABS_H 34.0f
 #define STATUS_H 26.0f
+#define MENU_BUTTON ((Rectangle){6, 6, 32, 32})
+#define KEEP_RENDERS_TABS 2 /* documents shown before the current one that keep their page renders */
+#define TAB_CLOSE 22.0f     /* a tab's close button */
+#define TAB_CROSS 7.0f      /* the cross in it, its strokes, and how strong it shows until hovered */
+#define TAB_CROSS_W 1.25f
+#define TAB_CROSS_ALPHA 190
+#define TAB_CLOSE_ROUND 0.3f
+#define TAB_CLOSE_SEGMENTS 6
 
 /* ---- the window's tabs ---- */
 
@@ -444,6 +452,12 @@ static void m_action(void *ctx, intptr_t a)
     case 12: pick_accent(); break;
     case 13: reset_accent(); break;
     case 14: ebook_layout_dialog(); break;
+    case 15: palette_open(); break;
+    case 16: keymap_dialog(); break;
+    case 17: pt_settings_set_int(&app.settings, "vim_keys", !vim_keys_on()); break;
+    case 18:
+        pt_settings_set_int(&app.settings, "vim_key_hints", !pt_settings_int(&app.settings, "vim_key_hints"));
+        break;
     }
 }
 
@@ -462,20 +476,20 @@ ui_menu *app_build_menu(tab *t)
 {
     ui_menu *m = menu_new();
     ui_menu *f = menu_sub(m, "File", "file");
-    menu_item(f, "New window", "window", "Ctrl+N", m_action, NULL, 0, 1, 0);
-    menu_item(f, "Home", "home", NULL, m_action, NULL, 1, 1, 0);
-    menu_item(f, "Open...", "open", "Ctrl+O", m_action, NULL, 2, 1, 0);
+    menu_item(f, "New window", "window", keymap_label("new_window"), m_action, NULL, 0, 1, 0);
+    menu_item(f, "Home", "home", keymap_label("home"), m_action, NULL, 1, 1, 0);
+    menu_item(f, "Open...", "open", keymap_label("open"), m_action, NULL, 2, 1, 0);
     ui_menu *r = menu_sub(f, "Open recent", "recent");
     const pt_strs *recent = pt_settings_list(&app.settings, "recent_files");
     for (int i = 0; recent && i < recent->n; i++)
         if (pt_exists(recent->v[i])) menu_item(r, pt_basename(recent->v[i]), "file", NULL, m_recent, NULL, i, 1, 0);
     if (menu_empty(r)) menu_item(r, "No recent files", "file", NULL, NULL, NULL, 0, 0, 0);
-    menu_item(f, "Close tab", "close", "Ctrl+W", m_action, NULL, 3, 1, 0);
-    menu_item(f, "Close window", "close", "Ctrl+Shift+W", m_action, NULL, 4, 1, 0);
+    menu_item(f, "Close tab", "close", keymap_label("close_tab"), m_action, NULL, 3, 1, 0);
+    menu_item(f, "Close window", "close", keymap_label("close_window"), m_action, NULL, 4, 1, 0);
     ui_menu *e = NULL, *tools = NULL, *pages = NULL;
     if (t) tab_menu_items(t, f, NULL, NULL, NULL, NULL);
     menu_sep(f);
-    menu_item(f, "Combine & split PDFs...", "merge", "Ctrl+M", m_action, NULL, 5, 1, 0);
+    menu_item(f, "Combine & split PDFs...", "merge", keymap_label("combine"), m_action, NULL, 5, 1, 0);
     if (t) {
         e = menu_sub(m, "Edit", "edit");
         tools = menu_sub(m, "Tools", "tools");
@@ -483,12 +497,15 @@ ui_menu *app_build_menu(tab *t)
         tab_menu_items(t, NULL, e, tools, pages, NULL);
     }
     menu_sep(f);
-    menu_item(f, "Quit", "quit", "Ctrl+Q", m_action, NULL, 6, 1, 0);
+    menu_item(f, "Quit", "quit", keymap_label("quit"), m_action, NULL, 6, 1, 0);
     ui_menu *v = menu_sub(m, "View", "eye");
     if (t) tab_menu_items(t, NULL, NULL, NULL, NULL, v);
-    menu_item(v, "Next tab", "next", "Ctrl+Tab", m_action, NULL, 7, 1, 0);
-    menu_item(v, "Previous tab", "prev", "Ctrl+Shift+Tab", m_action, NULL, 8, 1, 0);
+    menu_item(v, "Next tab", "next", keymap_label("tab.next"), m_action, NULL, 7, 1, 0);
+    menu_item(v, "Previous tab", "prev", keymap_label("tab.prev"), m_action, NULL, 8, 1, 0);
     menu_sep(v);
+    menu_item(v, "Vim keys", "keyboard", keymap_label("vim_keys"), m_action, NULL, 17, 1, vim_keys_on());
+    menu_item(v, "Vim key hints", "keyboard", NULL, m_action, NULL, 18, vim_keys_on(),
+              pt_settings_int(&app.settings, "vim_key_hints"));
     menu_item(v, "E-book layout...", "two-pages", NULL, m_action, NULL, 14, 1, 0);
     ui_menu *a = menu_sub(v, "Appearance", "appearance");
     int dark = strcmp(pt_settings_str(&app.settings, "theme"), "light");
@@ -497,7 +514,7 @@ ui_menu *app_build_menu(tab *t)
     menu_sep(a);
 #ifndef __ANDROID__
     ui_menu *size = menu_sub(a, "Interface size", "interface-size");
-    menu_item(size, "Auto", "interface-size", "Ctrl+Alt+0", m_size, NULL, 0, 1, ui.scale_choice == 0);
+    menu_item(size, "Auto", "interface-size", keymap_label("ui.auto"), m_size, NULL, 0, 1, ui.scale_choice == 0);
     static const int PERCENT[] = {75, 100, 125, 150, 175, 200};
     for (int i = 0; i < (int)(sizeof PERCENT / sizeof *PERCENT); i++) {
         char label[8];
@@ -511,6 +528,8 @@ ui_menu *app_build_menu(tab *t)
     menu_item(a, "Reset accent colour", "undo", NULL, m_action, NULL, 13, *pt_settings_str(&app.settings, accent_key()),
               0);
     menu_sep(m);
+    menu_item(m, "Command palette...", "search", keymap_label("palette"), m_action, NULL, 15, 1, 0);
+    menu_item(m, "Keyboard shortcuts...", "keyboard", keymap_label("shortcuts"), m_action, NULL, 16, 1, 0);
     update_menu_items(m);
     menu_item(m, "About " APP_NAME, "about", NULL, m_action, NULL, 11, 1, 0);
     return m;
@@ -707,10 +726,25 @@ static void tab_strip(Rectangle r)
         char *el = elide_middle(title, tr.x + tr.width - 28 - tx, TAB_FS, fk);
         draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, TAB_FS, fk, fg, -1);
         free(el);
-        Rectangle close = {tr.x + tr.width - 26, tr.y + (tr.height - 20) / 2, 20, 20};
+        /* on whole pixels, so the cross's thin strokes stay sharp */
+        Rectangle close = {floorf(tr.x + tr.width - TAB_CLOSE - 4), floorf(tr.y + (tr.height - TAB_CLOSE) / 2),
+                           TAB_CLOSE, TAB_CLOSE};
         int on_close = ui_hover(close);
         void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
-        if (ui_button(ui_id(owner, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY, "Close (Ctrl+W)")) {
+        /* a bold cross in the title's colour (white on the current tab), on red under the pointer */
+        if (on_close) DrawRectangleRounded(close, TAB_CLOSE_ROUND, TAB_CLOSE_SEGMENTS, pal.danger);
+        Color cross = on_close ? pal.on_danger : with_alpha(fg, (unsigned char)(fg.a * TAB_CROSS_ALPHA / 255));
+        float cx = close.x + TAB_CLOSE / 2, cy2 = close.y + TAB_CLOSE / 2, arm = TAB_CROSS / 2;
+        DrawLineEx((Vector2){cx - arm, cy2 - arm}, (Vector2){cx + arm, cy2 + arm}, TAB_CROSS_W, cross);
+        DrawLineEx((Vector2){cx - arm, cy2 + arm}, (Vector2){cx + arm, cy2 - arm}, TAB_CROSS_W, cross);
+        unsigned close_id = ui_id(owner, 500 + (int)w->kind);
+        ui_tooltip(close_id, close, keymap_tip("Close", "close_tab"));
+        /* pressed and released on this cross: a drag (text, a tab) ending over it does not close the tab */
+        static unsigned pressed_close;
+        if (on_close && ui.pressed) pressed_close = close_id;
+        int closed = on_close && ui.released && pressed_close == close_id;
+        if (ui.released && pressed_close == close_id) pressed_close = 0;
+        if (closed) {
             ui_scissor_end();
             app_close_tab(i);
             return;
@@ -774,20 +808,27 @@ static void tab_strip(Rectangle r)
 static void global_shortcuts(void)
 {
     if (dialogs_open() || menu_is_open()) return;
-    if (ui_shortcut(1, 0, KEY_O)) app_open_dialog();
-    if (ui_shortcut(1, 0, KEY_W)) app_close_tab(app.current);
-    if (ui_shortcut(1, 0, KEY_M)) app_open_workspace(NULL);
-    if (ui_shortcut(1, 0, KEY_Q)) ipc_quit_all(), app_quit_request();
-    if (ui_shortcut(1, 0, KEY_N)) app_new_window(NULL);
-    if (ui_shortcut(1, 1, KEY_W)) app_quit_request();
-    if (ui_shortcut(1, 0, KEY_TAB) && app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
-    if (ui_shortcut(1, 1, KEY_TAB) && app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
+    if (keymap_pressed("open")) app_open_dialog();
+    if (keymap_pressed("close_tab")) app_close_tab(app.current);
+    if (keymap_pressed("combine")) app_open_workspace(NULL);
+    if (keymap_pressed("quit")) ipc_quit_all(), app_quit_request();
+    if (keymap_pressed("new_window")) app_new_window(NULL);
+    if (keymap_pressed("palette")) palette_open();
+    if (keymap_pressed("close_window")) app_quit_request();
+    if (keymap_pressed("tab.next") && app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
+    if (keymap_pressed("tab.prev") && app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
+    if (keymap_pressed("home")) app_go_home();
+    if (keymap_pressed("shortcuts")) keymap_dialog();
+    if (keymap_pressed("vim_keys")) m_action(NULL, 17);
+    if (keymap_pressed("vim.command")) cmdline_open();
+    if (keymap_pressed("app_menu")) {
+        menu_open_below(app_build_menu(app_current_doc()), MENU_BUTTON);
+        menu_keyboard();
+    }
 #ifndef __ANDROID__
-    if (ui_shortcut_alt(1, 0, 1, KEY_EQUAL) || ui_shortcut_alt(1, 1, 1, KEY_EQUAL) ||
-        ui_shortcut_alt(1, 0, 1, KEY_KP_ADD))
-        step_interface_size(1);
-    if (ui_shortcut_alt(1, 0, 1, KEY_MINUS) || ui_shortcut_alt(1, 0, 1, KEY_KP_SUBTRACT)) step_interface_size(-1);
-    if (ui_shortcut_alt(1, 0, 1, KEY_ZERO) || ui_shortcut_alt(1, 0, 1, KEY_KP_0)) set_interface_size(0);
+    if (keymap_pressed("ui.bigger")) step_interface_size(1);
+    if (keymap_pressed("ui.smaller")) step_interface_size(-1);
+    if (keymap_pressed("ui.auto")) set_interface_size(0);
 #endif
 }
 
@@ -833,8 +874,8 @@ static void frame(void)
     /* header */
     Rectangle header = {0, 0, ui.w, HEADER_H};
     DrawRectangleRec(header, pal.window);
-    Rectangle menu_b = {6, 6, 32, 32};
-    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, "Menu"))
+    Rectangle menu_b = MENU_BUTTON;
+    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, keymap_tip("Menu", "app_menu")))
         menu_open_below(app_build_menu(t), menu_b);
     /* every header button: 32x32 on a 34 px step, glyphs (and the logo) 18 px, as in the toolbars */
     Rectangle logo = {40, 6, 32, 32};
@@ -861,10 +902,10 @@ static void frame(void)
     Rectangle bar = {0, ui.h - STATUS_H, ui.w, STATUS_H};
     DrawRectangleRec(bar, pal.window);
     ui_separator_h(0, ui.w, bar.y);
-    if (t) tab_status(t, bar);
+    float msg_x = t ? tab_status(t, bar) : bar.x;
     if (*app.status && ui.now < app.status_until) {
         float w = text_width(app.status, FS_NORMAL, F_REGULAR) + 16;
-        Rectangle s = {bar.x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) : ui.w),
+        Rectangle s = {msg_x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) - msg_x : ui.w),
                        bar.height - 1};
         DrawRectangleRec(s, pal.window);
         char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
@@ -878,17 +919,30 @@ static void frame(void)
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_shortcuts(app.ws);
     else if (cur && cur->kind == TAB_COMPARE) compare_shortcuts(cur->cmp);
     global_shortcuts();
+    palette_frame();
+    cmdline_frame(bar);
     ui_end_frame();
     cursor_commit();
 
     /* a shortcut may have closed or switched the tab: look again */
     t = app_current_doc();
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
-    /* other tabs keep watching their files, and give their page renders back */
+    /* other tabs keep watching their files; those not among the last shown give their page renders back, so going
+     * back and forth between a few documents shows them at once while many open ones don't add up */
+    static tab *recent[KEEP_RENDERS_TABS + 1];
+    if (t && recent[0] != t) {
+        int k = 0;
+        while (k < KEEP_RENDERS_TABS && recent[k] != t) k++;
+        memmove(recent + 1, recent, sizeof *recent * (size_t)k);
+        recent[0] = t;
+    }
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) {
-            tab_poll(app.tabs.v[i].doc);
-            tab_release_renders(app.tabs.v[i].doc);
+            tab *o = app.tabs.v[i].doc;
+            tab_poll(o);
+            int keep = 0;
+            for (int k = 0; k <= KEEP_RENDERS_TABS && !keep; k++) keep = recent[k] == o;
+            if (!keep) tab_release_renders(o);
         }
 
     char title[600];
@@ -929,6 +983,72 @@ static const char *exe_path(const char *argv0)
     }
 #endif
     return argv0;
+}
+
+/* ---- the last session (setting reopen_tabs) ----
+ * The window that quits last writes its document tabs, one path per line after the current one's path; a launch
+ * without files, with no window running, opens them again, each where it was left (positions.tsv). Android keeps no
+ * paths: its documents come through the system picker and are not readable after a restart. */
+
+static char *session_file(void)
+{
+    char *base = pt_data_dir(), *path = pt_format("%s/pdf-tools/session.txt", base);
+    free(base);
+    return path;
+}
+
+static void session_save(void)
+{
+#ifndef __ANDROID__
+    if (!pt_settings_int(&app.settings, "reopen_tabs")) return;
+    tab *shown = app_current_doc();
+    char *text = pt_format("%s\n", shown && shown->path && !strchr(shown->path, '\n') ? shown->path : ""),
+         *path = session_file();
+    for (int i = 0; i < app.tabs.n; i++) {
+        tab *t = app.tabs.v[i].kind == TAB_DOC ? app.tabs.v[i].doc : NULL;
+        if (!t || !t->path || strchr(t->path, '\n')) continue;
+        char *more = pt_format("%s%s\n", text, t->path);
+        free(text);
+        text = more;
+    }
+    char *dir = pt_dirname(path);
+    pt_mkdirs(dir);
+    pt_write_file(path, text, strlen(text));
+    free(dir);
+    free(path);
+    free(text);
+#endif
+}
+
+static void session_reopen(void)
+{
+#ifndef __ANDROID__
+    if (!pt_settings_int(&app.settings, "reopen_tabs")) return;
+    char *path = session_file();
+    pt_bytes b = {0};
+    int ok = !pt_read_file(path, &b);
+    free(path);
+    if (!ok) return;
+    char *text = calloc(b.len + 1, 1);
+    if (!text) abort();
+    memcpy(text, b.data, b.len);
+    free(b.data);
+    pt_strs paths = {0};
+    char *line = strchr(text, '\n');
+    if (line) *line = 0;
+    while (line && line[1]) {
+        char *p = line + 1, *end = strchr(p, '\n');
+        if (end) *end = 0;
+        if (pt_exists(p)) pt_push(paths, pt_strdup(p));
+        line = end;
+    }
+    app_open_paths(&paths);
+    for (int k = 0; k < app.tabs.n && *text; k++)
+        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->path && !strcmp(app.tabs.v[k].doc->path, text))
+            app.current = k;
+    pt_strs_free(&paths);
+    free(text);
+#endif
 }
 
 static char *build_message(int argc, char **argv, int *new_window)
@@ -1035,6 +1155,7 @@ int pt_app_main(int argc, char **argv)
     pt_install_system_fonts(app.ctx);
     pt_migrate_legacy();
     pt_settings_load(&app.settings, NULL);
+    keymap_load();
     theme_apply(pt_settings_str(&app.settings, "theme"));
 #ifndef __ANDROID__
     ui.scale_choice = interface_size_setting();
@@ -1077,6 +1198,7 @@ int pt_app_main(int argc, char **argv)
 #endif
     glfwSetWindowCloseCallback(glfwGetCurrentContext(), on_close);
     ui_input_init();
+    gestures_init();
 #ifdef __APPLE__
     mac_install_open_handler();
 #endif
@@ -1103,6 +1225,7 @@ int pt_app_main(int argc, char **argv)
         unlink(adopt);
         if (t) app_add_doc(t);
     } else if (message) app_handle_message(message);
+    if (argc == 1) session_reopen();
     free(message);
     update_start();
 
@@ -1113,6 +1236,7 @@ int pt_app_main(int argc, char **argv)
             app_quit_request();
         }
         ipc_poll();
+        gestures_poll();
         update_poll();
         file_dialogs_poll();
         handle_drops();
@@ -1153,6 +1277,8 @@ int pt_app_main(int argc, char **argv)
             rlDrawRenderBatchActive();
             PollInputEvents();
             if (held_new) held_new = 0, ui.dirty = 1;
+            /* renders already waiting to be taken get the next frame at once */
+            else if (render_ready(held)) ui.dirty = 1;
             else idle_wait(), timer_wake = 1;
             continue;
         }
@@ -1165,6 +1291,7 @@ int pt_app_main(int argc, char **argv)
         }
     }
 
+    session_save();
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
         else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);
@@ -1173,6 +1300,7 @@ int pt_app_main(int argc, char **argv)
     ipc_stop();
     update_stop();
     CloseWindow();
+    keymap_free();
     pt_settings_free(&app.settings);
     fz_drop_context(app.ctx);
     return 0;

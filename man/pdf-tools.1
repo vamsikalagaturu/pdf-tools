@@ -30,9 +30,13 @@ Edits stay in the window until you save, and every edit can be undone.
 .PP
 It also opens XPS and OXPS, comic books (CBZ, CBT), images (PNG, JPEG, GIF,
 BMP, TIFF with all its pages, JPEG 2000, JPEG XR, PSD, PNM), SVG, e-books
-(EPUB, MOBI, FB2) and Office documents (DOCX, XLSX, PPTX) to read, search,
+(EPUB, MOBI, FB2) to read, search,
 copy, print, recognize and export like a PDF.
-E-books and Office documents are laid out at the page and font size of
+Office documents (DOCX, XLSX, PPTX) only come out as their text without their
+layout, so the window leaves them to the commands; make a PDF with LibreOffice
+.RB ( "soffice \-\-headless \-\-convert\-to pdf" )
+to view one.
+E-books are laid out at the page and font size of
 .BR "View > E-book layout" .
 The first edit of such a document turns it into a PDF in memory;
 .B Save
@@ -69,7 +73,8 @@ The same operations are also available as commands that run without the window
 .SS Tools
 .TP
 .BR View " (V)"
-Read the document, fill form fields, drag to select text (Alt+drag selects a
+Read the document, fill form fields, drag to select text (Shift+drag selects whole lines,
+a table's rows across their cells; Alt+drag selects a
 rectangle) and right-click the selection to copy, mark or redact it.
 .TP
 .BR Redact " (R)"
@@ -232,6 +237,42 @@ Ctrl+Shift+W	close the window
 Ctrl+Q	quit (all windows)
 Ctrl+click	open the TeX source line
 .TE
+Shift+drag selects whole lines (a table's rows across their cells). Every
+shortcut can be changed in
+.BR "Menu > Keyboard shortcuts" ,
+kept in
+.IR ~/.config/pdf-tools/keys.toml .
+.SS Vim keys
+.B View > Vim keys
+puts a caret on the text and lets the keyboard do what the window does. The
+tools move behind the leader (Space): Space h is Highlight, Space n a note.
+After a prefix (Space, g, z, ], [, m, \(aq) a box lists the keys that can
+follow
+.RB ( "View > Vim key hints" ).
+The status line shows the mode and the caret's line : column.
+.TS
+l l.
+h j k l, w b e, 0 $	move the caret (j and k by numbered lines)
+gg, G, 12G	first page, last page, page 12
+Ctrl+d, Ctrl+u, Ctrl+e, Ctrl+y	half a view, or the view alone, down and up
+zz, zt, zb	the caret's line to the middle, top or bottom of the view
+v, V, Ctrl+v	select characters, lines (a table's rows), a block
+iw, ip	in a selection: the word, the paragraph
+y	copy the selection
+Space h u x w c r	highlight, underline, strike, squiggly, colour, redact it
+/, n, N	find, next and previous match
+*, #	find the word under the caret, onwards or backwards
+Enter, Ctrl+]	follow the link under the caret
+Ctrl+o, Ctrl+i	back and forward (across files after \(aqA)
+ma, \(aqa, \(gaa	set a mark, go to its line, to its character
+mA, \(aqA	the same across files
+]a, [a, dd, i	select the next or previous annotation, delete, edit it
+gt, gT	next and previous tab
+:	run any command or action (Tab completes)
+g?	list every key
+.TE
+A mouse selection becomes a visual one. Marks are bookmarks named by their
+letter, so they also show in the sidebar.
 .SH LATEX
 An open PDF reloads by itself whenever the file changes on disk, keeping the
 page, zoom and scroll position, so a running
@@ -294,8 +335,11 @@ Redact every match of
 .BI \-\-text " string"
 and
 .BI \-\-regex " pattern"
-(both repeatable; text matches ignore case unless
-.BR \-\-case\-sensitive ).
+(both repeatable; both ignore case unless
+.BR \-\-case\-sensitive ,
+and accents with
+.BR \-\-ignore\-accents ;
+patterns are MuPDF's regular expressions, written as in JavaScript, matched line by line).
 .BI \-\-pages " ranges"
 limits the pages,
 .BI \-\-fill " #rrggbb"
@@ -368,6 +412,7 @@ default A5) and
 .BR info ,
 .BR search ,
 .BR inspect ,
+.BR comments ,
 .BR render ,
 .BR export\-images ,
 .B compare
@@ -385,10 +430,26 @@ Print the page and boxes where that source line is typeset.
 .BI "search " input.pdf " \-\-text " string
 Print the pages and boxes of each match
 .RB ( \-\-pages ,
-.BR \-\-case\-sensitive ).
+.BR \-\-case\-sensitive ,
+.BR \-\-ignore\-accents ).
 .TP
 .BI "inspect " input.pdf
 List annotations, with their index on each page, and form fields.
+.TP
+.BI "comments " input.pdf
+Export the comments: marked text with the text under it, notes, text boxes,
+stamps and other annotations with a comment, with their replies, author, date,
+page and line numbers as the window numbers lines
+.RB ( \-\-numbering " document|page,"
+.BR \-\-pages ).
+JSON on standard output, or with
+.BI \-o " file"
+written to that file: Markdown for a
+.I .md
+file or
+.BR "\-\-format md" ,
+else JSON.
+Exits with 3 when there are none.
 .TP
 .BI "render " "input.pdf " \-o " page.png"
 Render one page
@@ -519,6 +580,21 @@ Settings, with a comment for each; edit while the program is closed.
 .BR true )
 lets the window ask GitHub for a newer release at startup, at most once a day,
 and offer to install it; the commands never use the network.
+An install into a prefix you can write (e.g.
+.IR ~/.local )
+is updated file by file from the release tarball, and nothing else in the prefix is touched;
+a distro package or a prefix you cannot write gets the release page instead.
+.TP
+.I ~/.config/pdf-tools/keys.toml
+The window's keyboard shortcuts changed from the defaults, written by Menu > Keyboard shortcuts...:
+.B action = """Ctrl+Shift+X"""
+or a list
+.BR "[""Ctrl+F"", ""F3""]" ;
+.B """"""
+or
+.B []
+removes the shortcut.
+Unknown actions and keys are ignored with a warning.
 .TP
 .I ~/.local/share/pdf-tools/update-check
 When the window last checked for updates, and the version it found.

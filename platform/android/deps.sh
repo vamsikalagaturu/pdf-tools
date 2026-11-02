@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Downloads and builds the third-party libraries libpdf-tools.so links, for arm64-v8a with the NDK, from the
-# sources pinned in platform/versions.sh: MuPDF (with Tesseract), PCRE2 and OpenSSL, plus the raylib and raygui
+# sources pinned in platform/versions.sh: MuPDF (with Tesseract) and OpenSSL, plus the raylib and raygui
 # sources (thirdparty/ in the repo; build.sh compiles raylib for Android) and Tesseract's English data. Everything
 # else goes under $PT_ANDROID_OUT (default ~/.cache/pdf-tools-native/android); what is already there is reused.
 # build.sh sources this file first and uses the paths it sets; run it alone (platform/android/deps.sh) to only build
@@ -19,8 +19,6 @@ JOBS=$(nproc)
 
 MUPDF_SRC=$ROOT/src/mupdf-$MUPDF_VERSION-source
 MUPDF_OUT=$ROOT/mupdf-build-$BUILD_TAG-$FONTS_TAG
-PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
-PCRE2_OUT=$ROOT/pcre2-install-$BUILD_TAG
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
 OPENSSL_OUT=$ROOT/openssl-install-$BUILD_TAG
 TESSDATA=$ROOT/dl/eng.traineddata
@@ -49,22 +47,6 @@ PATH="$ROOT/nopkgconfig:$PATH" make -C "$MUPDF_SRC" -j"$JOBS" libs \
     XCFLAGS="-fPIC -Wno-unused-but-set-variable $SIZE_CFLAGS $MUPDF_FONT_CFLAGS" >"$ROOT/mupdf-build.log" 2>&1 \
     || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"
-
-step "PCRE2 $PCRE2_VERSION"
-fetch "$PCRE2_URL" "$ROOT/dl/pcre2-$PCRE2_VERSION.tar.bz2" "$PCRE2_SHA256"
-[ -d "$PCRE2_SRC" ] || tar xjf "$ROOT/dl/pcre2-$PCRE2_VERSION.tar.bz2" -C "$ROOT/src"
-if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
-    cmake -S "$PCRE2_SRC" -B "$ROOT/pcre2-build-$BUILD_TAG" -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-        -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-$MIN_API -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS_RELEASE="$SIZE_CFLAGS -DNDEBUG" \
-        -DCMAKE_INSTALL_PREFIX="$PCRE2_OUT" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
-        -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2GREP=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_SUPPORT_JIT=OFF \
-        >"$ROOT/pcre2-build.log" 2>&1 || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
-    cmake --build "$ROOT/pcre2-build-$BUILD_TAG" --target install -j"$JOBS" >>"$ROOT/pcre2-build.log" 2>&1 \
-        || { tail -40 "$ROOT/pcre2-build.log" >&2; exit 1; }
-fi
-ls -l "$PCRE2_OUT/lib/libpcre2-8.a"
 
 step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
 fetch "$OPENSSL_URL" "$ROOT/dl/openssl-$OPENSSL_VERSION.tar.gz" "$OPENSSL_SHA256"

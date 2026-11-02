@@ -359,29 +359,29 @@ pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size
 
 /* MIME types as shared-mime-info names them, which desktop entries and Android intent filters match */
 const pt_doc_format pt_doc_formats[] = {
-    {"pdf", "application/pdf", 0},
-    {"xps", "application/vnd.ms-xpsdocument", 0},
-    {"oxps", "application/oxps", 0},
-    {"epub", "application/epub+zip", 0},
-    {"mobi", "application/x-mobipocket-ebook", 0},
-    {"fb2", "application/x-fictionbook+xml", 0},
-    {"cbz", "application/vnd.comicbook+zip", 0},
-    {"cbt", "application/x-cbt", 0},
-    {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 0},
-    {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 0},
-    {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", 0},
-    {"svg", "image/svg+xml", 0},
-    {"png", "image/png", 1},
-    {"jpg", "image/jpeg", 1},
-    {"jpeg", "image/jpeg", 1},
-    {"gif", "image/gif", 1},
-    {"bmp", "image/bmp", 1},
-    {"tif", "image/tiff", 1},
-    {"tiff", "image/tiff", 1},
-    {"jp2", "image/jp2", 1},
-    {"jxr", "image/jxr", 1},
-    {"psd", "image/vnd.adobe.photoshop", 1},
-    {"pnm", "image/x-portable-anymap", 1},
+    {"pdf", "application/pdf", 0, 0},
+    {"xps", "application/vnd.ms-xpsdocument", 0, 0},
+    {"oxps", "application/oxps", 0, 0},
+    {"epub", "application/epub+zip", 0, 0},
+    {"mobi", "application/x-mobipocket-ebook", 0, 0},
+    {"fb2", "application/x-fictionbook+xml", 0, 0},
+    {"cbz", "application/vnd.comicbook+zip", 0, 0},
+    {"cbt", "application/x-cbt", 0, 0},
+    {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 0, 1},
+    {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 0, 1},
+    {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", 0, 1},
+    {"svg", "image/svg+xml", 0, 0},
+    {"png", "image/png", 1, 0},
+    {"jpg", "image/jpeg", 1, 0},
+    {"jpeg", "image/jpeg", 1, 0},
+    {"gif", "image/gif", 1, 0},
+    {"bmp", "image/bmp", 1, 0},
+    {"tif", "image/tiff", 1, 0},
+    {"tiff", "image/tiff", 1, 0},
+    {"jp2", "image/jp2", 1, 0},
+    {"jxr", "image/jxr", 1, 0},
+    {"psd", "image/vnd.adobe.photoshop", 1, 0},
+    {"pnm", "image/x-portable-anymap", 1, 0},
 };
 const int pt_doc_formats_count = sizeof pt_doc_formats / sizeof *pt_doc_formats;
 
@@ -405,7 +405,8 @@ char *pt_doc_patterns(void)
     for (int i = 0; i < pt_doc_formats_count; i++) len += strlen(pt_doc_formats[i].ext) + 3;
     char *s = calloc(len, 1);
     for (int i = 0; i < pt_doc_formats_count; i++) {
-        if (i) strcat(s, " ");
+        if (pt_doc_formats[i].commands_only) continue;
+        if (*s) strcat(s, " ");
         strcat(s, "*.");
         strcat(s, pt_doc_formats[i].ext);
     }

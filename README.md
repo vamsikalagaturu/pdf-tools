@@ -4,6 +4,19 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 
 ![Viewer](assets/screenshots/viewer.png)
 
+## Dependencies
+
+| Library | Version | Used for | License |
+| --- | --- | --- | --- |
+| [MuPDF](https://mupdf.com) | 1.28 | reading, rendering, editing, search, OCR (with its bundled [Tesseract](https://github.com/tesseract-ocr/tesseract) and Leptonica) | AGPL-3.0 (or commercial) |
+| [OpenSSL](https://www.openssl.org) (`libcrypto`) | 3.5 | certificate signatures | Apache-2.0 |
+| [raylib](https://www.raylib.com) | 6.2 | the window (optional: without it only the commands are built) | zlib |
+| [raygui](https://github.com/raysan5/raygui) | 5.0 | widgets | zlib |
+| [fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/) | system | system fonts on Linux | MIT-style |
+
+The program's license follows MuPDF's: raylib's and raygui's zlib license, OpenSSL's and Tesseract's Apache-2.0, Leptonica's
+BSD-style and fontconfig's MIT-style licenses are permissive and impose nothing on it.
+
 ## Features
 
 - **Redact**: the text, images and drawings under each mark are removed, not covered. Find personal data
@@ -13,10 +26,32 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
   insert and remove pages, Bates numbers, watermarks, document properties, outline.
 - **Sign**: a picture of your signature, or a digital certificate signature (.p12).
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
-  password, print. Undo and redo, find with regular expressions, two pages side by side, presentation mode (F5).
+  password, print. Undo and redo, find with regular expressions (JavaScript syntax) or ignoring accents, in one tab or all, two pages
+  side by side, presentation mode (F5).
+- **Read**: line numbers in the margins as LaTeX's lineno sets them (through the document, per page, or relative to
+  the vim caret); a preview of where a link leads when resting on it; Back and Forward (Alt+Left/Right, mouse side
+  buttons) after following links; pinch to zoom on touchpads; the last session's tabs reopen at startup
+  (`reopen_tabs`). Shift+drag selects whole lines (a table's rows across their cells). Margin notes, list and
+  reference labels and slanted table headers are handled when numbering and selecting.
+- **Keys**: every shortcut can be changed in Menu > Keyboard shortcuts... (searchable, warns about clashes),
+  kept in `~/.config/pdf-tools/keys.toml`.
+- **Vim keys** (View > Vim keys): a caret on the text, always there, moved by h/j/k/l, w/b/e, 0/$, gg/G, 12G and
+  Ctrl+d/u (the view follows; Ctrl+e/y scroll it alone; on pages without text the keys scroll); / and n/N; `v`/`V`
+  select by character or line to copy (`y`) or mark; the tools move behind the leader (Space h = Highlight).
+  Everything the window does works from the keyboard: `:` runs any action or command (`:w`, `:q`, `:42`,
+  `:zoom 150`, `:set relativenumber`, `:colour #c62828`, with completion), `gt`/`gT` switch tabs, Space e moves
+  into the sidebar, Space Shift+N/T/I/S put notes, text, images and signatures at the caret, Ctrl+V draws a box
+  for shapes, crops and redactions, `]a`/`[a` select annotations to move (h/j/k/l), resize (H/J/K/L), edit (`i`) or delete (`dd`);
+  Enter or Ctrl+] follows the link at the caret, Ctrl+o/Ctrl+i go back and forward (across files too); `ma` sets a
+  mark (a bookmark called `a`; capitals work across files), `'a` and `` `a `` jump to its line or character; `*`/`#`
+  find the word under the caret, `zz`/`zt`/`zb` place its line in the view, `viw`/`vip` select a word or paragraph. A mouse selection
+  becomes a visual one. After a prefix (Space, `g`, `]`, `m`, `'`) a box lists the keys that can follow
+  (`vim_key_hints`); the status line shows the mode and the caret's line : column.
+  `g?` lists every key. Dialogs and menus work with Tab, arrows, Enter and Esc (F10 opens the menu).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
-- **Other documents**: XPS, comics (CBZ), images, SVG, e-books (EPUB, MOBI, FB2) and Office files (DOCX, XLSX,
-  PPTX) open like PDFs; editing one makes a PDF copy, saved next to the original.
+- **Other documents**: XPS, comics (CBZ), images, SVG and e-books (EPUB, MOBI, FB2) open like PDFs; editing one
+  makes a PDF copy, saved next to the original. Office files (DOCX, XLSX, PPTX) are for the commands only: MuPDF
+  reads their text but not their layout (make a PDF with LibreOffice to view one).
 
 ## Install
 
@@ -108,15 +143,15 @@ platform/linux/build.sh install ~/.local
 ```
 
 The scripts download and build the pinned dependencies ([MuPDF](https://mupdf.com) with
-[Tesseract](https://github.com/tesseract-ocr/tesseract), [PCRE2](https://github.com/PCRE2Project/pcre2),
-[OpenSSL](https://www.openssl.org), [raylib](https://www.raylib.com) and [raygui](https://github.com/raysan5/raygui))
+[Tesseract](https://github.com/tesseract-ocr/tesseract), [OpenSSL](https://www.openssl.org), [raylib](https://www.raylib.com) and [raygui](https://github.com/raysan5/raygui))
 and run the tests. On Debian/Ubuntu the Linux script needs `build-essential cmake pkg-config curl git libfontconfig-dev
 libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev libegl-dev libxkbcommon-dev
 libwayland-dev wayland-protocols`.
 
-With your own dependencies (found through pkg-config: `mupdf` 1.28, `libpcre2-8`,
-[`fontconfig`](https://www.freedesktop.org/wiki/Software/fontconfig/), `libcrypto`; raylib 6.2 through
-`CMAKE_PREFIX_PATH`):
+**Building against installed libraries.** If MuPDF 1.28, OpenSSL (`libcrypto`) and
+[fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/) are already installed where pkg-config finds
+them, and raylib 6.2 is installed where `CMAKE_PREFIX_PATH` can point, you can skip the scripts and build with CMake
+directly:
 
 ```sh
 cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/raylib && cmake --build build && ctest --test-dir build
@@ -136,9 +171,10 @@ pdf-tools COMMAND --help
 pdf-tools --version
 ```
 
-Commands print one JSON object and exit with a meaningful code; `AGENTS.md` documents them. Others: `search`,
+Commands print one JSON object and exit with a meaningful code; `pdf-tools --help` lists them,
+`AGENTS.md` (`pdf-tools help`) explains their conventions and exit codes. Others: `search`,
 `render`, `annotate`, `draw`, `insert-text`, `insert-image`, `sign`, `bates`, `watermark`, `ocr`, `compare`,
-`export-images`, `scrub`, `inspect`.
+`export-images`, `scrub`, `inspect`, `comments` (annotations with page and line numbers, as Markdown or JSON).
 
 - Settings: `~/.config/pdf-tools/settings.toml`, on Windows `%APPDATA%\pdf-tools\settings.toml` (e.g.
   `editor_command = "code -g %f:%l"` for SyncTeX).
@@ -156,9 +192,11 @@ At startup, at most once a day, the window asks GitHub for the latest release
 (`https://api.github.com/repos/vamsikalagaturu/pdf-tools/releases/latest`, with a `pdf-tools/VERSION` user agent
 and nothing else). When it is newer, a bar offers **Update**: it downloads that release's package for this install,
 checks it against the SHA-256 digest GitHub lists for it, and replaces the AppImage, the tarball's folder, the macOS
-app or (after the app closes) the Windows folder; on Android the system installer takes the APK. Installs the app
-cannot replace itself (a distro package, `build.sh install`, a folder it may not write) get the release page
-instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
+app or (after the app closes) the Windows folder; on Android the system installer takes the APK. A
+`build.sh install PREFIX` that you can write (e.g. `~/.local`) gets the tarball's files put over its own one by one
+(the program, `share/pdf-tools`, the man page, the launcher entry and icon; nothing else in the prefix is touched,
+and a launcher entry keeps its `Exec=` line). Installs the app cannot replace itself (a distro package, a prefix
+such as `/usr/local` you may not write, a folder it may not write) get the release page instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
 settings) turns the check off. Desktop downloads go through the system's `curl`. The commands never use the
 network.
 
@@ -167,4 +205,4 @@ network.
 Check redacted files before sharing them. A picture signature is not a cryptographic one; use a certificate for
 that. Passwords given on the command line can show in process listings.
 
-**License:** AGPL-3.0-or-later, as [MuPDF](https://mupdf.com/licensing).
+**License:** AGPL-3.0-or-later, as [MuPDF](https://mupdf.com/licensing) (see [Dependencies](#dependencies)).

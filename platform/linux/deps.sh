@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Downloads and builds the third-party libraries pdf-tools links on Linux, from the sources pinned in
-# platform/versions.sh: MuPDF (with Tesseract), PCRE2, OpenSSL and raylib (GLFW with both Wayland and X11), plus
+# platform/versions.sh: MuPDF (with Tesseract), OpenSSL and raylib (GLFW with both Wayland and X11), plus
 # raygui and Tesseract's English data. Everything goes under $PT_LINUX_OUT (default ~/.cache/pdf-tools/linux),
 # except the raylib and raygui sources (thirdparty/ in the repo); what is already there is reused.
 # build.sh sources this file first and uses the paths it sets; run it alone (platform/linux/deps.sh) to only build
@@ -42,19 +42,6 @@ Version: $MUPDF_VERSION
 Cflags: -I$MUPDF_SRC/include
 Libs: -L$MUPDF_OUT -lmupdf -lmupdf-third -lstdc++ -lpthread -lm
 EOF
-
-step "PCRE2 $PCRE2_VERSION"
-PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
-PCRE2_OUT=$ROOT/pcre2-install-$BUILD_TAG
-fetch "$PCRE2_URL" "$ROOT/dl/pcre2.tar.bz2" "$PCRE2_SHA256"
-[ -d "$PCRE2_SRC" ] || tar xjf "$ROOT/dl/pcre2.tar.bz2" -C "$ROOT/src"
-if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
-    cmake -S "$PCRE2_SRC" -B "$ROOT/pcre2-build-$BUILD_TAG" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PCRE2_OUT" \
-        -DCMAKE_C_FLAGS_RELEASE="$SIZE_CFLAGS -DNDEBUG" \
-        -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
-        -DPCRE2_BUILD_PCRE2GREP=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_SUPPORT_JIT=OFF >/dev/null
-    cmake --build "$ROOT/pcre2-build-$BUILD_TAG" --target install -j"$JOBS" >/dev/null
-fi
 
 step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION
