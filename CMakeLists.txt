@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pdf_tools VERSION 0.5.1 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
+project(pdf_tools VERSION 0.5.2 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -120,8 +120,8 @@ if(PT_USE_OPENSSL)
 endif()
 
 # A release (release.yml sets PT_RELEASE=1) is the plain version; any other build is a development one, as semver
-# pre-release + build metadata: 0.5.1-dev+1b42e42, .dirty when the tree has uncommitted changes. The update check
-# reads both as 0.5.1. Fixed when configured: the build scripts configure afresh each time.
+# pre-release + build metadata: 0.5.2-dev+1b42e42, .dirty when the tree has uncommitted changes. The update check
+# reads both as 0.5.2. Fixed when configured: the build scripts configure afresh each time.
 set(PT_VERSION_STRING "${PROJECT_VERSION}")
 if(NOT "$ENV{PT_RELEASE}" STREQUAL "1")
   set(PT_VERSION_STRING "${PROJECT_VERSION}-dev")
