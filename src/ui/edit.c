@@ -3005,7 +3005,12 @@ float tab_status(tab *t, Rectangle area)
 {
     if (!t->doc) {
         char hint[128];
+#ifdef __ANDROID__
+        /* nothing can be dropped onto a phone's window */
+        snprintf(hint, sizeof hint, "%s", keymap_tip("Open a PDF", "open"));
+#else
         snprintf(hint, sizeof hint, "%s or drop one on the window", keymap_tip("Open a PDF", "open"));
+#endif
         draw_text_in(hint, (Rectangle){area.x + 8, area.y, area.width, area.height}, FS_NORMAL, F_REGULAR,
                      pal.window_text, -1);
         return area.x;
