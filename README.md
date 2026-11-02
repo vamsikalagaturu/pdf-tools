@@ -4,6 +4,19 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
 
 ![Viewer](assets/screenshots/viewer.png)
 
+## Dependencies
+
+| Library | Version | Used for | License |
+| --- | --- | --- | --- |
+| [MuPDF](https://mupdf.com) | 1.28 | reading, rendering, editing, search, OCR (with its bundled [Tesseract](https://github.com/tesseract-ocr/tesseract) and Leptonica) | AGPL-3.0 (or commercial) |
+| [OpenSSL](https://www.openssl.org) (`libcrypto`) | 3.5 | certificate signatures | Apache-2.0 |
+| [raylib](https://www.raylib.com) | 6.2 | the window (optional: without it only the commands are built) | zlib |
+| [raygui](https://github.com/raysan5/raygui) | 5.0 | widgets | zlib |
+| [fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/) | system | system fonts on Linux | MIT-style |
+
+The program's license follows MuPDF's: raylib's and raygui's zlib license, OpenSSL's and Tesseract's Apache-2.0, Leptonica's
+BSD-style and fontconfig's MIT-style licenses are permissive and impose nothing on it.
+
 ## Features
 
 - **Redact**: the text, images and drawings under each mark are removed, not covered. Find personal data
@@ -36,8 +49,9 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
   (`vim_key_hints`); the status line shows the mode and the caret's line : column.
   `g?` lists every key. Dialogs and menus work with Tab, arrows, Enter and Esc (F10 opens the menu).
 - **LaTeX**: open PDFs reload when they change on disk; SyncTeX jumps between the PDF and the source.
-- **Other documents**: XPS, comics (CBZ), images, SVG, e-books (EPUB, MOBI, FB2) and Office files (DOCX, XLSX,
-  PPTX) open like PDFs; editing one makes a PDF copy, saved next to the original.
+- **Other documents**: XPS, comics (CBZ), images, SVG and e-books (EPUB, MOBI, FB2) open like PDFs; editing one
+  makes a PDF copy, saved next to the original. Office files (DOCX, XLSX, PPTX) are for the commands only: MuPDF
+  reads their text but not their layout (make a PDF with LibreOffice to view one).
 
 ## Install
 
@@ -157,7 +171,8 @@ pdf-tools COMMAND --help
 pdf-tools --version
 ```
 
-Commands print one JSON object and exit with a meaningful code; `AGENTS.md` documents them. Others: `search`,
+Commands print one JSON object and exit with a meaningful code; `pdf-tools --help` lists them,
+`AGENTS.md` (`pdf-tools help`) explains their conventions and exit codes. Others: `search`,
 `render`, `annotate`, `draw`, `insert-text`, `insert-image`, `sign`, `bates`, `watermark`, `ocr`, `compare`,
 `export-images`, `scrub`, `inspect`, `comments` (annotations with page and line numbers, as Markdown or JSON).
 
@@ -190,4 +205,4 @@ network.
 Check redacted files before sharing them. A picture signature is not a cryptographic one; use a certificate for
 that. Passwords given on the command line can show in process listings.
 
-**License:** AGPL-3.0-or-later, as [MuPDF](https://mupdf.com/licensing).
+**License:** AGPL-3.0-or-later, as [MuPDF](https://mupdf.com/licensing) (see [Dependencies](#dependencies)).

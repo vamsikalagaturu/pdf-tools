@@ -149,7 +149,9 @@ static void test_other_formats(void)
     CHECK(pt_is_other_format("/a.b/Book.EPUB") && !pt_is_other_format("x.pdf") && !pt_is_other_format("notes.txt"));
     CHECK(!pt_is_other_format("/a.epub/plain") && pt_doc_format_of("scan.tiff")->image);
     char *patterns = pt_doc_patterns();
-    CHECK(!strncmp(patterns, "*.pdf *.xps ", 12) && strstr(patterns, " *.docx "));
+    /* Office files are for the commands only: the window's file choosers leave them out */
+    CHECK(!strncmp(patterns, "*.pdf *.xps ", 12) && strstr(patterns, " *.epub ") && !strstr(patterns, "docx"));
+    CHECK(pt_doc_format_of("deck.pptx")->commands_only && !pt_doc_format_of("book.epub")->commands_only);
     free(patterns);
 
     static const char svg[] =

@@ -501,7 +501,7 @@ static void cmd_error(const char *fmt, const char *what)
 }
 
 /* the line numbers kept for the pages before each view were counted the old way */
-static void line_numbers_changed(void)
+void line_numbers_changed(void)
 {
     for (int i = 0; i < app.tabs.n; i++) {
         tab *t = app.tabs.v[i].kind == TAB_DOC ? app.tabs.v[i].doc : NULL;

@@ -465,6 +465,7 @@ void palette_close(void); /* without running anything */
 int palette_is_open(void);
 /* after the window's widgets, before ui_end_frame; a chosen action runs at the start of the next call, as a menu's */
 void palette_frame(void);
+void line_numbers_changed(void); /* after the numbering setting changed: every tab counts its pages again */
 /* the vim command line (palette.c): `:` opens it over the status line `bar`; a command runs at the start of the next
  * cmdline_frame, as the palette's choice does */
 void cmdline_open(void);

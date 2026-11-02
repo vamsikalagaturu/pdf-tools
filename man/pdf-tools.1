@@ -30,9 +30,13 @@ Edits stay in the window until you save, and every edit can be undone.
 .PP
 It also opens XPS and OXPS, comic books (CBZ, CBT), images (PNG, JPEG, GIF,
 BMP, TIFF with all its pages, JPEG 2000, JPEG XR, PSD, PNM), SVG, e-books
-(EPUB, MOBI, FB2) and Office documents (DOCX, XLSX, PPTX) to read, search,
+(EPUB, MOBI, FB2) to read, search,
 copy, print, recognize and export like a PDF.
-E-books and Office documents are laid out at the page and font size of
+Office documents (DOCX, XLSX, PPTX) only come out as their text without their
+layout, so the window leaves them to the commands; make a PDF with LibreOffice
+.RB ( "soffice \-\-headless \-\-convert\-to pdf" )
+to view one.
+E-books are laid out at the page and font size of
 .BR "View > E-book layout" .
 The first edit of such a document turns it into a PDF in memory;
 .B Save

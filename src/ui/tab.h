@@ -171,10 +171,11 @@ enum { SIDE_PAGES, SIDE_ANNOTATIONS, SIDE_EDITS, SIDE_OUTLINE, SIDE_RESULTS, SID
  * shows its number through the document, as that counts with vim keys off */
 #define LINE_NUMBERS_RELATIVE "relative"
 
-/* line numbering past a page, once its words are known (views.c) */
+/* line numbering past a page, once its words are known: as the margins number them (views.c), and through the document
+ * for the caret's line number, whatever the margins do (doc_) */
 typedef struct {
-    int ok;
-    pt_numbering_state after;
+    int ok, doc_ok;
+    pt_numbering_state after, doc_after;
 } page_lines_info;
 
 PT_VEC(hits, hit);

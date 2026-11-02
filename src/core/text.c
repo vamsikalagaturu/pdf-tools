@@ -174,39 +174,66 @@ int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int 
     return match_page(ctx, st, pattern, search_options(flags) | lines, out);
 }
 
+/* Latin letters with accents (U+00C0 to U+017F) as their base letter; '.' keeps the character. MuPDF folds accents
+ * only inside its page search, so an annotation's text is folded here for PT_IGNORE_ACCENTS. */
+#define FOLD_FROM 0xc0
+static const char FOLD[] = "AAAAAA.CEEEEIIIIDNOOOOO.OUUUUY..aaaaaa.ceeeeiiiidnooooo.ouuuuy.y"
+                           "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi..JjKk.LlLlLlLlLlNnNnNn...OoOoOo.."
+                           "RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZz.";
+
+static char *fold_accents(const char *s)
+{
+    pt_ints runes = {0};
+    pt_utf8_decode(s, &runes);
+    for (int i = 0; i < runes.n; i++) {
+        int c = runes.v[i];
+        if (c >= FOLD_FROM && c < FOLD_FROM + (int)sizeof FOLD - 1 && FOLD[c - FOLD_FROM] != '.')
+            runes.v[i] = FOLD[c - FOLD_FROM];
+    }
+    char *out = pt_utf8(runes.v, runes.n);
+    pt_vec_free(runes);
+    return out;
+}
+
 /* an annotation's or field's text has `needle` in it or matches `pattern`, as the page's text is searched */
-static int text_matches(fz_context *ctx, const char *s, const char *needle, const char *pattern, int case_sensitive)
+static int text_matches(fz_context *ctx, const char *s, const char *needle, const char *pattern, int flags)
 {
     if (!s || !*s) return 0;
     const char *find = needle && *needle ? needle : pattern;
     if (!find) return 0;
-    int flags = REG_NEWLINE | (case_sensitive ? 0 : REG_ICASE), rc = 1;
+    int accents = (flags & PT_IGNORE_ACCENTS) != 0, rc = 1;
+    char *text = accents ? fold_accents(s) : pt_strdup(s), *what = accents ? fold_accents(find) : pt_strdup(find);
     /* a literal needle as a pattern: its characters escaped */
-    char *literal = NULL;
     if (find == needle) {
-        literal = calloc(2 * strlen(needle) + 1, 1);
+        char *literal = calloc(2 * strlen(what) + 1, 1), *o = literal;
         if (!literal) abort();
-        char *o = literal;
-        for (const char *c = needle; *c; c++) {
+        for (const char *c = what; *c; c++) {
             if (strchr("\\^$.|?*+()[]{}", *c)) *o++ = '\\';
             *o++ = *c;
         }
+        free(what);
+        what = literal;
     }
-    fz_regex *re = fz_regcomp(ctx, literal ? literal : pattern, flags);
-    struct fz_regmatch m;
-    fz_try(ctx) rc = fz_regexec(ctx, re, s, &m, REG_RUNAWAY);
+    fz_regex *re = NULL;
+    fz_var(re);
+    fz_try(ctx)
+    {
+        re = fz_regcomp(ctx, what, REG_NEWLINE | (flags & PT_MATCH_CASE ? 0 : REG_ICASE));
+        struct fz_regmatch m;
+        rc = fz_regexec(ctx, re, text, &m, REG_RUNAWAY);
+    }
     fz_always(ctx)
     {
         fz_regfree(ctx, re);
-        free(literal);
+        free(text);
+        free(what);
     }
     fz_catch(ctx) fz_rethrow(ctx);
-    if (rc < 0) fz_throw(ctx, FZ_ERROR_LIMIT, "--regex %s ran too long", pattern);
+    if (rc < 0) fz_throw(ctx, FZ_ERROR_LIMIT, "matching %s ran too long", find);
     return rc == 0;
 }
 
-void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const char *pattern, int case_sensitive,
-                      pt_rects *out)
+void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const char *pattern, int flags, pt_rects *out)
 {
     pdf_page *pp = pdf_page_from_fz_page(ctx, page);
     if (!pp) return;
@@ -222,7 +249,7 @@ void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const 
                 pdf_dict_get_text_string(ctx, obj, PDF_NAME(Subj)),
             };
             int hit = 0;
-            for (int i = 0; i < 4 && !hit; i++) hit = text_matches(ctx, texts[i], needle, pattern, case_sensitive);
+            for (int i = 0; i < 4 && !hit; i++) hit = text_matches(ctx, texts[i], needle, pattern, flags);
             if (!hit) continue;
             fz_rect r = pdf_bound_annot(ctx, a);
             for (int i = 0; i < had && hit; i++) hit = !centred_in(out->v[i], r);

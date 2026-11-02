@@ -142,7 +142,7 @@ int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int 
 /* Bounds of the annotations and form fields whose text that need not be drawn (comment, author, subject, rich
  * text, field value) contains `needle` or matches `pattern` (either may be NULL); one whose bounds already hold the
  * centre of a rect in `out` is not added again. Redacting such a rect deletes the annotation. */
-void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const char *pattern, int case_sensitive,
+void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const char *pattern, int flags,
                       pt_rects *out);
 /* Appends `boxes`, joining each box that continues the previous one on the same line (top within 2 pt, not further
  * left) into it. */
@@ -419,10 +419,11 @@ pdf_document *pt_open_pdf_buffer(fz_context *ctx, fz_buffer *file, const char *n
 pdf_document *pt_open_pdf_bytes(fz_context *ctx, const unsigned char *data, size_t len, const char *password);
 
 /* ---- edits.c: other document formats ---- */
-/* A format that opens besides PDF, by file extension; `image`: a picture (merge takes these as pages). */
+/* A format that opens besides PDF, by file extension; `image`: a picture (merge takes these as pages); `commands_only`:
+ * the commands read it, the window does not open it (Office files: MuPDF has their text, not their layout). */
 typedef struct {
     const char *ext, *mime;
-    int image;
+    int image, commands_only;
 } pt_doc_format;
 
 extern const pt_doc_format pt_doc_formats[]; /* PDF first */

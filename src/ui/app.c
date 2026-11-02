@@ -737,8 +737,13 @@ static void tab_strip(Rectangle r)
         float cx = close.x + TAB_CLOSE / 2, cy2 = close.y + TAB_CLOSE / 2, arm = TAB_CROSS / 2;
         DrawLineEx((Vector2){cx - arm, cy2 - arm}, (Vector2){cx + arm, cy2 + arm}, TAB_CROSS_W, cross);
         DrawLineEx((Vector2){cx - arm, cy2 + arm}, (Vector2){cx + arm, cy2 - arm}, TAB_CROSS_W, cross);
-        ui_tooltip(ui_id(owner, 500 + (int)w->kind), close, keymap_tip("Close", "close_tab"));
-        int closed = ui_clicked(close);
+        unsigned close_id = ui_id(owner, 500 + (int)w->kind);
+        ui_tooltip(close_id, close, keymap_tip("Close", "close_tab"));
+        /* pressed and released on this cross: a drag (text, a tab) ending over it does not close the tab */
+        static unsigned pressed_close;
+        if (on_close && ui.pressed) pressed_close = close_id;
+        int closed = on_close && ui.released && pressed_close == close_id;
+        if (ui.released && pressed_close == close_id) pressed_close = 0;
         if (closed) {
             ui_scissor_end();
             app_close_tab(i);

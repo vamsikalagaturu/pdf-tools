@@ -1,6 +1,6 @@
 /* Command-line (no window) interface for scripts and agents, as AGENTS.md documents it. Each command never
- * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. COMMANDS lists those of AGENTS.md's
- * "Commands" first (up to "synctex"), then its "More commands" and a few undocumented ones (prepare-signature,
+ * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. COMMANDS lists the editing and
+ * converting ones first (up to "synctex"), then the rest and a few AGENTS.md does not cover (prepare-signature,
  * edit-annotation, redact-text). main.c sends argv here when argv[1] names a command; the window's app.c shares only
  * the usage text and the guide. */
 #include "pt_cli.h"
@@ -595,7 +595,6 @@ static int search_flags(const args *a)
 static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int flags,
                          matches *out)
 {
-    int cs = (flags & PT_MATCH_CASE) != 0;
     fz_page *page = fz_load_page(ctx, doc, p);
     fz_stext_page *st = pt_stext(ctx, page);
     pt_rects rects = {0};
@@ -612,9 +611,9 @@ static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt
 
     /* text that is not drawn (comments, authors, hidden field values) is matched too: redacting it deletes the
      * annotation that holds it */
-    for (int t = 0; t < texts->n; t++) pt_annot_matches(ctx, page, texts->v[t], NULL, cs, &rects);
+    for (int t = 0; t < texts->n; t++) pt_annot_matches(ctx, page, texts->v[t], NULL, flags, &rects);
     for (int i = 0; i < patterns->n; i++) {
-        fz_try(ctx) pt_annot_matches(ctx, page, NULL, patterns->v[i], cs, &rects);
+        fz_try(ctx) pt_annot_matches(ctx, page, NULL, patterns->v[i], flags, &rects);
         fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     }
 
@@ -2122,7 +2121,7 @@ static const cmd COMMANDS[] = {
       {"--source", NULL, VALUE, 0, "SOURCE", "TeX file, with --line: prints the page and boxes", NULL},
       {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}},
      {0}},
-    /* AGENTS.md's "More commands", and a few it does not list */
+    /* the rest, and a few AGENTS.md does not cover */
     {"search",
      "Find text: pages and boxes of each match",
      INPUT,

@@ -548,6 +548,11 @@ static void ebook_layout(tab *t, float *w, float *h, float *em)
 static fz_document *open_file(tab *t, fz_buffer *file, const char *path, int converted, float layout[3])
 {
     float w = 0, h = 0, em = 0;
+    const pt_doc_format *format = pt_doc_format_of(path);
+    if (!converted && format && format->commands_only)
+        fz_throw(CTX, FZ_ERROR_FORMAT,
+                 "Office files show here only as their text, without their layout. Make a PDF of it (LibreOffice: "
+                 "soffice --headless --convert-to pdf FILE) and open that.");
     if (!converted && pt_is_other_format(path)) ebook_layout(t, &w, &h, &em);
     fz_document *doc = pt_open_document(CTX, file, converted ? "converted.pdf" : path, w, h, em);
     if (!fz_is_document_reflowable(CTX, doc)) w = h = em = 0;
@@ -1844,16 +1849,28 @@ void words_prefetch(tab *t, int page)
 pt_words *page_words(tab *t, int page)
 {
     if (!t->words_ok[page]) {
+        fz_page *p = NULL;
+        fz_stext_page *st = NULL;
+        fz_var(p);
+        fz_var(st);
         fz_try(CTX)
         {
-            fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
-            fz_stext_page *st = pt_stext(CTX, p);
+            p = fz_load_page(CTX, (fz_document *)t->doc, page);
+            st = pt_stext(CTX, p);
             pt_reading_order_words(st, &t->words[page]);
             pt_page_captions(CTX, st, &t->captions[page]);
+        }
+        fz_always(CTX)
+        {
             fz_drop_stext_page(CTX, st);
             fz_drop_page(CTX, p);
         }
-        fz_catch(CTX) fz_ignore_error(CTX);
+        fz_catch(CTX)
+        {
+            fz_ignore_error(CTX);
+            pt_words_free(&t->words[page]);
+            pt_captions_free(&t->captions[page]);
+        }
         t->words_ok[page] = 1;
     }
     return &t->words[page];

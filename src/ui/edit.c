@@ -280,8 +280,7 @@ static void run(void *ctx, intptr_t a)
         pt_settings_set_int(&app.settings, "line_numbers", a != A_LINE_NUMBERS);
         if (a != A_LINE_NUMBERS)
             pt_settings_set_str(&app.settings, "line_numbers_restart", RESTART[a - A_LINE_NUMBERS - 1]);
-        /* the counts kept for the pages before the view were made the old way */
-        memset(t->line_info, 0, sizeof(page_lines_info) * (size_t)t->npages);
+        line_numbers_changed();
         break;
     }
     case A_PRESENT: present_start(t); break;
@@ -1008,7 +1007,7 @@ int caret_line_number(tab *t)
     pt_text_lines lines = {0};
     for (int o = 0; o < t->st.order.n && t->st.order.v[o] != t->at.page; o++) {
         int p = t->st.order.v[o];
-        if (t->line_info[p].ok) state = t->line_info[p].after;
+        if (t->line_info[p].doc_ok) state = t->line_info[p].doc_after;
         else if (!t->words_ok[p]) {
             words_prefetch(t, p);
             pt_vec_free(lines);
@@ -1016,7 +1015,7 @@ int caret_line_number(tab *t)
         } else {
             fz_rect b = page_bounds(t, p);
             pt_number_lines(&t->words[p], b.x1 - b.x0, PT_NUMBER_DOCUMENT, &state, &lines);
-            t->line_info[p].ok = 1, t->line_info[p].after = state;
+            t->line_info[p].doc_ok = 1, t->line_info[p].doc_after = state;
         }
     }
     caret_lines(t, t->at.page, &lines);
@@ -1926,8 +1925,9 @@ static caret_spot line_start_at(tab *t, int page, fz_point p)
  * the target's Back count on arrival. */
 #define CROSS_JUMPS_MAX 32
 
+/* tabs by id: a closed tab's memory may hold a new one */
 typedef struct {
-    tab *from, *to;
+    unsigned from, to;
     int depth;
 } cross_entry;
 
@@ -1944,15 +1944,15 @@ static void cross_push(cross_entry *list, int *n, cross_entry e)
 
 static void cross_jump(tab *from, tab *to)
 {
-    cross_push(cross.back, &cross.nback, (cross_entry){from, to, to->nav_nback});
+    cross_push(cross.back, &cross.nback, (cross_entry){from->id, to->id, to->nav_nback});
     cross.nfwd = 0;
 }
 
-/* the window's tab showing document t, -1 when it was closed */
-static int open_tab_of(const tab *t)
+/* the window's tab showing the document with that id, -1 when it was closed */
+static int open_tab_of(unsigned id)
 {
     for (int k = 0; k < app.tabs.n; k++)
-        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc == t) return k;
+        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc->id == id) return k;
     return -1;
 }
 
@@ -1963,11 +1963,11 @@ static void vim_jump(tab *t, int back)
     int *n = back ? &cross.nback : &cross.nfwd;
     while (*n && open_tab_of(back ? list[*n - 1].from : list[*n - 1].to) < 0) (*n)--;
     cross_entry e = *n ? list[*n - 1] : (cross_entry){0};
-    if (*n && back && e.to == t && t->nav_nback == e.depth) {
+    if (*n && back && e.to == t->id && t->nav_nback == e.depth) {
         (*n)--;
         cross_push(cross.fwd, &cross.nfwd, e);
         app.current = open_tab_of(e.from);
-    } else if (*n && !back && e.from == t && !t->nav_nfwd) {
+    } else if (*n && !back && e.from == t->id && !t->nav_nfwd) {
         (*n)--;
         cross_push(cross.back, &cross.nback, e);
         app.current = open_tab_of(e.to);
@@ -4959,11 +4959,16 @@ static void search_tab(tab *t, int show)
 
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
+        fz_page *page = NULL;
+        fz_stext_page *st = NULL;
+        pt_rects rects = {0};
+        fz_var(page);
+        fz_var(st);
+        fz_var(rects);
         fz_try(CTX)
         {
-            fz_page *page = fz_load_page(CTX, (fz_document *)t->doc, p);
-            fz_stext_page *st = pt_stext(CTX, page);
-            pt_rects rects = {0};
+            page = fz_load_page(CTX, (fz_document *)t->doc, p);
+            st = pt_stext(CTX, page);
             int regex = t->find_regex;
             int flags = (t->find_case ? PT_MATCH_CASE : 0) | (t->find_accents ? PT_IGNORE_ACCENTS : 0);
             fz_try(CTX)
@@ -4986,6 +4991,9 @@ static void search_tab(tab *t, int show)
                 pt_push(t->match_at, at[1]);
                 t->matches.v[k].rect = rect_disp_to_src(t, p, t->matches.v[k].rect);
             }
+        }
+        fz_always(CTX)
+        {
             pt_vec_free(rects);
             fz_drop_stext_page(CTX, st);
             fz_drop_page(CTX, page);
