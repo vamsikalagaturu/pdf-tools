@@ -12,23 +12,30 @@
 #define PAGE_GAP 12.0f
 /* whole-page textures stop at this many device pixels on the long side; zoomed further, tiles of TILE_PX draw over
  * them, so no single upload stalls a frame. Tiles render at fixed zoom levels TILE_LEVELS per octave apart (the level
- * just above the zoom, drawn slightly smaller), so nearby zooms share them. Texture memory is capped by bytes. */
+ * just above the zoom, drawn slightly smaller), so nearby zooms share them. All of a tab's page textures together
+ * stay within RENDER_BUDGET bytes. */
 #define BASE_MAX_PX 1100.0f
 #define TILE_PX 512
 #define NAV_MAX 64
 #define TILE_LEVELS 4
-#define TILE_CACHE 128
 #define TILE_FADE_S 0.08
+#define RENDER_CACHE 256
 #ifdef __ANDROID__
-#define PIX_CACHE 8
-#define TILE_BUDGET (40 << 20)
+#define RENDER_BUDGET (72 << 20)
 #else
-#define PIX_CACHE 12
-#define TILE_BUDGET (96 << 20)
+#define RENDER_BUDGET (144 << 20)
 #endif
 #define ZOOM_MIN 0.3f
 #define ZOOM_MAX 10.0f
-#define ZOOM_SETTLE_S 0.08
+#define ZOOM_STEP 1.25f /* what the zoom buttons and keys zoom by */
+#define PAGE_RENDER_MAX_PX 8000.0f
+#define ZOOM_SETTLE_S 0.05   /* a zoom changed more recently than this is still moving (pinch, wheel) */
+#define RERENDER_MAX 2.0f    /* renders under way for a moving zoom are dropped once it is this far past them */
+#define STAGE_MAX_S 0.5      /* renders for a new zoom replace the shown ones after this long even with some missing */
+#define PAGE_SHARP_MAX_S 0.1 /* a page coming into view waits this long at most for all its tiles in view */
+#define MIPMAP_BELOW 0.75f   /* a render drawn smaller than this share of its size is sampled from mipmaps */
+#define PAGE_FLIP_S 0.3      /* page steps closer than this apart flip through: whole renders are made ahead */
+#define FLIP_AHEAD 8         /* while flipping, the pages ahead whose whole renders are made in advance */
 #define ZOOM_GLIDE_S 0.18
 #define WHEEL_GLIDE_S 0.12
 #define ARROW_STEP 40.0f /* what Up and Down (and vim's j and k) scroll the view by */
@@ -89,12 +96,18 @@ extern const char *PEN_ICONS[PT_PEN_COUNT];
 
 typedef enum { FIT_NONE, FIT_WIDTH, FIT_HEIGHT } fit_mode;
 
+/* how much the view needs a render: on screen now, next (where a page step, a scroll or a zoom step lands), later */
+typedef enum { NEED_NOW, NEED_NEXT, NEED_LATER } need_class;
+
+/* a page's whole render or one of its tiles, as a texture (render.c) */
 typedef struct {
-    int page;
+    int ok, tile, page, tx, ty;
     float scale;
     Texture2D tex;
-    int ok;
-} page_tex;
+    double born;     /* when it arrived, for fading in */
+    unsigned needed; /* the last frame that drew it or asked for it */
+    float rank;      /* how much that frame needed it (0: drawn); the least needed goes first */
+} render_entry;
 
 typedef struct {
     int page;
@@ -136,6 +149,9 @@ enum { SIDE_PAGES, SIDE_ANNOTATIONS, SIDE_EDITS, SIDE_OUTLINE, SIDE_RESULTS, SID
     X(float, fit_w)          \
     X(float, fit_h)          \
     X(double, zoom_t)        \
+    X(float, shown_zoom)     \
+    X(float, stage_zoom)     \
+    X(double, stage_t0)      \
     X(float, zanim_from)     \
     X(float, zanim_to)       \
     X(fit_mode, zanim_fit)   \
@@ -165,7 +181,10 @@ enum { SIDE_PAGES, SIDE_ANNOTATIONS, SIDE_EDITS, SIDE_OUTLINE, SIDE_RESULTS, SID
     X(caret_spot, at)        \
     X(caret_spot, anchor)    \
     X(float, caret_x)        \
-    X(fz_point, block_nudge)
+    X(fz_point, block_nudge) \
+    X(double, step_t)        \
+    X(int, step_dir)         \
+    X(int, flipping)
 
 /* line_numbers_restart's value for numbers counted from the vim caret's line (vim's relativenumber); the caret's line
  * shows its number through the document, as that counts with vim keys off */
@@ -300,7 +319,15 @@ struct tab {
     float zoom;
     fit_mode fit; /* the zoom fits the pages to a view fit_w x fit_h */
     float fit_w, fit_h;
-    double zoom_t;              /* when the zoom last changed */
+    double zoom_t; /* when the zoom last changed */
+    /* the render zoom the pages show with, scaled to the zoom (0: none yet), and the one renders are made for, which
+     * replaces it once they are all there (since stage_t0) */
+    float shown_zoom, stage_zoom;
+    double stage_t0;
+    /* page steps (Left, Right, ...): when the last one was and its direction; `flipping` while they come faster than
+     * PAGE_FLIP_S apart */
+    double step_t;
+    int step_dir, flipping;
     float zanim_from, zanim_to; /* a zoom gliding from one value to another since zanim_t0 (0: none) */
     fit_mode zanim_fit;
     double zanim_t0;
@@ -335,6 +362,10 @@ struct tab {
     float *off_x, *off_y; /* per display page; off_y < -1e8 when not laid out */
     fz_rect *bounds;      /* per display page, once known (bounds_ok) */
     char *bounds_ok;
+    /* per display page in view: the tile level it shows tiles of (0: only its whole render), and since when it has
+     * waited for all of a level's tiles in view */
+    float *tiles_on;
+    double *tiles_wait;
     float scene_w, scene_h;
     int want_scroll_page; /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
@@ -354,16 +385,8 @@ struct tab {
     char *cert_path, *cert_password; /* a certificate chosen to sign with; the password only in memory */
     int cert_placing;
 
-    page_tex pix[PIX_CACHE];
-
-    struct {
-        int page, tx, ty, ok;
-        float scale;
-        Texture2D tex;
-        double used, born;
-    } tiles[TILE_CACHE];
-
-    size_t tile_bytes;
+    render_entry cache[RENDER_CACHE];
+    size_t cache_bytes;
     unsigned render_gen; /* tags this tab's background renders; a new one drops those of the old pages */
     fz_buffer *file;     /* the file's bytes as read (converted: their PDF): everything opens these, never the file */
     fz_buffer *render_bytes; /* the rebuilt document as render workers open it, written when it first renders */
@@ -372,6 +395,7 @@ struct tab {
     char *thumb_ok;
     pt_words *words;
     pt_captions *captions; /* per display page, found with its words (words_ok) */
+    pt_rects *figures;     /* per display page, found with its words (pt_page_figures) */
     char *words_ok;
     page_lines_info *line_info; /* per display page, once its words are known (line numbers) */
     pt_text_lines *caret_lines; /* per display page, the lines the caret moves through, once built (caret_lines_ok) */
@@ -517,6 +541,7 @@ void tab_undo(tab *t);
 void tab_redo(tab *t);
 int page_edits(tab *t, int page);
 void tab_goto(tab *t, int page);
+int tab_step_target(tab *t, int delta); /* the page a page step goes to, -1 when there is none */
 void tab_step_page(tab *t, int delta);
 void nav_mark(tab *t);              /* before a jump (link, outline): Back returns here */
 void nav_go(tab *t, int back);      /* Back (1) or Forward (0) */
@@ -537,24 +562,39 @@ void set_zoom(tab *t, float z);
 void zoom_to(tab *t, float target, fit_mode fit);
 void tab_fit(tab *t, fit_mode fit);
 void zoom_by(tab *t, float factor);
-float render_zoom(const tab *t); /* the zoom pages are rendered for: where a glide lands, else the zoom */
 /* the scale page `page` is rendered at whole at `zoom`; above it, tiles draw over that render */
 float base_scale(tab *t, int page, float zoom);
 int continuous(void);
 void toggle_continuous(tab *t);
-/* `prio`: the distance from the middle of the view in device pixels; the nearest requests render first. Prefetching
- * (`visible` 0; page_tile: `born`, the tile's arrival time for fading in, NULL) only fills free cache room, so it
- * never pushes out what it prefetched. Both ask a render worker for what is missing: page_texture returns the render
- * at `scale`, else one at another scale, else the thumbnail, else NULL; page_tile returns the tile or NULL. */
-Texture2D *page_texture(tab *t, int page, float scale, float prio, int visible);
-Texture2D *page_tile(tab *t, int page, float scale, int tx, int ty, float prio, double *born);
+/* ---- render.c ----
+ * render_need_page and render_need_tile tell the renderer the view needs the page's render at `scale` (or its tile tx,
+ * ty) in this frame, as much as `c` says; `distance`: from the middle of the view in device pixels, the nearest first
+ * within a class. They ask a render worker for it unless it is there, and say whether it is; what is not needed now
+ * is only asked for when the cache has room for it. page_render returns the render at `scale`, else the one nearest
+ * it, else the thumbnail, else NULL; tile_shown the tile and its arrival time for fading in, or NULL; both count what
+ * they return as drawn, and neither asks for anything. page_texture is render_need_page and page_render. */
+int render_need_page(tab *t, int page, float scale, need_class c, float distance);
+int render_need_tile(tab *t, int page, float scale, int tx, int ty, need_class c, float distance);
+Texture2D *page_render(tab *t, int page, float scale);
+Texture2D *tile_shown(tab *t, int page, float scale, int tx, int ty, double *born);
+Texture2D *page_texture(tab *t, int page, float scale, float distance, int visible);
+void render_drawn(tab *t, render_entry *e);        /* e, a cache entry, is drawn in this frame */
+void render_reveal(tab *t, int page, float level); /* page's tiles of `level` (page -1: every page's) show at once */
+/* draws a render of t's pages (or a tile) into `d`; shrunk well below its size it is sampled from mipmaps, so it does
+ * not shimmer while zooming out */
+void draw_render(tab *t, Texture2D *tex, Rectangle d, Color tint);
+/* before each frame: what the last frame did not need stops being rendered */
+void render_frame_begin(void);
+/* frees the tab's page textures and renders queued or in progress, and starts a new render generation, so results
+ * of the old one are dropped when they arrive */
+void render_release(tab *t);
 fz_irect page_pixels(tab *t, int page, float scale);
 float tile_level(float scale);              /* the next of TILE_LEVELS zoom steps per octave at or above `scale` */
 fz_locks_context *render_locks(void);       /* for app.ctx, whose clones the render workers use */
 void render_stop(void);                     /* joins the render workers; before app.ctx is dropped */
 Texture2D *thumb_texture(tab *t, int page); /* NULL until a render worker has made it */
 void draw_page_items_in(tab *t, int page, Rectangle box); /* our unsaved items of `page`, scaled into `box` */
-/* a finished render of `t` that is wanted on screen is waiting to be taken by a frame */
+/* a finished render of `t` (on screen or ahead of need) is waiting to be taken by a frame */
 int render_ready(const tab *t);
 /* words_prefetch asks a render worker for a page's words; page_words makes them on the main thread if they have not
  * arrived yet */

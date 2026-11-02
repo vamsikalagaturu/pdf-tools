@@ -182,6 +182,7 @@ void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, c
     fz_stext_page *st = NULL;
     pt_words words = {0};
     pt_text_lines lines = {0};
+    pt_rects figures = {0};
     if (!want) abort();
     fz_var(page), fz_var(st), fz_var(taken);
     fz_try(ctx)
@@ -212,7 +213,8 @@ void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, c
             fz_rect bounds = fz_bound_page(ctx, page);
             st = pt_stext(ctx, page);
             pt_reading_order_words(st, &words);
-            pt_number_lines(&words, bounds.x1 - bounds.x0, mode, &state, &lines);
+            pt_page_figures(st, &figures);
+            pt_number_lines(&words, &figures, bounds.x1 - bounds.x0, mode, &state, &lines);
             for (; t < tops.n && raw.v[tops.v[t]].c.page == p; t++) {
                 raw_annot *r = &raw.v[tops.v[t]];
                 if (lines.n) {
@@ -236,6 +238,7 @@ void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, c
     {
         pt_words_free(&words);
         pt_vec_free(lines);
+        pt_vec_free(figures);
         fz_drop_stext_page(ctx, st);
         fz_drop_page(ctx, page);
         pt_vec_free(tops);

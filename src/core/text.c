@@ -505,6 +505,77 @@ typedef struct {
 
 PT_VEC(rules, rule);
 
+/* ---- figures ----
+ * A figure is a drawing or an image: shapes close together, at least FIGURE_MIN_PT both ways, with something in them
+ * no straight rule draws (a curve, a slanted line, a picture). A ruled table and a fraction's bar are all axis-aligned
+ * rectangles, so they are none. */
+
+/* a shape that is not an axis-aligned rectangle and spans this much both ways is a curve or a slanted line */
+#define FIGURE_SHAPE_PT 3.0f
+/* shapes this close to one another are one drawing */
+#define FIGURE_JOIN_PT 6.0f
+#define FIGURE_MIN_PT 30.0f
+
+typedef struct {
+    fz_rect r;
+    int drawn; /* has a curve, a slanted line or a picture */
+} drawing;
+
+PT_VEC(drawings, drawing);
+
+static int near_rect(fz_rect a, fz_rect b, float d)
+{
+    return a.x0 - d <= b.x1 && b.x0 - d <= a.x1 && a.y0 - d <= b.y1 && b.y0 - d <= a.y1;
+}
+
+static void add_shape(drawings *ds, fz_rect r, int drawn)
+{
+    for (int i = 0; i < ds->n; i++)
+        if (near_rect(ds->v[i].r, r, FIGURE_JOIN_PT)) {
+            ds->v[i].r = fz_union_rect(ds->v[i].r, r);
+            ds->v[i].drawn |= drawn;
+            return;
+        }
+    pt_push(*ds, ((drawing){r, drawn}));
+}
+
+static void collect_shapes(fz_stext_block *b, drawings *ds)
+{
+    for (; b; b = b->next) {
+        fz_rect r = b->bbox;
+        float w = r.x1 - r.x0, h = r.y1 - r.y0;
+        if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) collect_shapes(b->u.s.down->first_block, ds);
+        else if (b->type == FZ_STEXT_BLOCK_IMAGE) add_shape(ds, r, 1);
+        else if (b->type == FZ_STEXT_BLOCK_VECTOR)
+            add_shape(ds, r,
+                      !(b->u.v.flags & FZ_STEXT_VECTOR_IS_RECTANGLE) && w > FIGURE_SHAPE_PT && h > FIGURE_SHAPE_PT);
+    }
+}
+
+void pt_page_figures(fz_stext_page *st, pt_rects *out)
+{
+    drawings ds = {0};
+    collect_shapes(st->first_block, &ds);
+    /* drawings that grew into one another are one */
+    for (int merged = 1; merged;) {
+        merged = 0;
+        for (int i = 0; i < ds.n; i++)
+            for (int j = i + 1; j < ds.n; j++)
+                if (near_rect(ds.v[i].r, ds.v[j].r, FIGURE_JOIN_PT)) {
+                    ds.v[i].r = fz_union_rect(ds.v[i].r, ds.v[j].r);
+                    ds.v[i].drawn |= ds.v[j].drawn;
+                    ds.v[j] = ds.v[--ds.n];
+                    merged = 1, j--;
+                }
+    }
+    out->n = 0;
+    for (int i = 0; i < ds.n; i++) {
+        fz_rect r = ds.v[i].r;
+        if (ds.v[i].drawn && r.x1 - r.x0 >= FIGURE_MIN_PT && r.y1 - r.y0 >= FIGURE_MIN_PT) pt_push(*out, r);
+    }
+    pt_vec_free(ds);
+}
+
 /* Tables bounded by their rules (booktabs and \hline tables): from a rule to the next one as wide and as thick, the
  * thinner rules between them (\midrule) inside. Each word within one gets its index in `table`. */
 static void mark_ruled_tables(fz_stext_page *st, pt_words *words)
@@ -566,7 +637,8 @@ static void notes_last(fz_stext_page *st, pt_words *out)
 {
     pt_numbering_state state = {1};
     pt_text_lines lines = {0};
-    pt_number_lines(out, st->mediabox.x1 - st->mediabox.x0, PT_NUMBER_PAGE, &state, &lines);
+    /* without figures: their labels stay where reading order has them */
+    pt_number_lines(out, NULL, st->mediabox.x1 - st->mediabox.x0, PT_NUMBER_PAGE, &state, &lines);
     char *note = calloc((size_t)out->n + 1, 1);
     if (!note) abort();
     int notes = 0;
@@ -756,21 +828,25 @@ static int line_set(int *set, int i)
 /* Lines a..z-1 (narrow, aligned, one under the other) as a column of cells: the lines on their baselines beside them,
  * each with the run of lines aligned with it in reading order (a reference's further lines, a column's other cells),
  * join them in one table when that column lies beside them and shares enough baselines. */
-static void cells_beside(const pt_text_lines *l, int a, int z, int *set)
+static void cells_beside(const pt_text_lines *l, int a, int z, int *set, const int *column)
 {
     fz_rect p = lines_extent(l, a, z);
     float lh = l->v[a].r.y1 - l->v[a].r.y0;
     char *in = calloc((size_t)l->n, 1);
     int shared = 0;
     fz_rect q = fz_empty_rect;
+    /* a table is within one text column: an equation's numbers at the right of one column are no cells of a table
+     * with the column beside it */
     for (int i = a; i < z; i++) {
         int found = 0;
         for (int m = 0; m < l->n; m++) {
-            if ((m >= a && m < z) || !clear_of(l, a, z, l->v[m].r) || !on_baseline_of(l->v[m].r, l->v[i].r)) continue;
+            if ((m >= a && m < z) || column[m] != column[a] || !clear_of(l, a, z, l->v[m].r) ||
+                !on_baseline_of(l->v[m].r, l->v[i].r))
+                continue;
             found = 1;
             for (int dir = -1; dir <= 1; dir += 2)
-                for (int k = m; k >= 0 && k < l->n && (k < a || k >= z) && clear_of(l, a, z, l->v[k].r) &&
-                                (k == m || aligned(l->v[k].r, l->v[k - dir].r));
+                for (int k = m; k >= 0 && k < l->n && (k < a || k >= z) && column[k] == column[a] &&
+                                clear_of(l, a, z, l->v[k].r) && (k == m || aligned(l->v[k].r, l->v[k - dir].r));
                      k += dir)
                     in[k] = 1, q = fz_union_rect(q, l->v[k].r);
         }
@@ -882,6 +958,155 @@ static int hung_label(const pt_text_lines *lines, const char *outside, fz_rect r
     return 0;
 }
 
+/* a display's pieces (a fraction's numerator and denominator, limits, scripts, a matrix's rows) overlap the line they
+ * are on by more than this share of the shorter one's height; lines of text one under the other do not overlap */
+#define ROW_OVERLAP_SHARE 0.15f
+/* pieces overlapping by more than this share of the shorter one's height are on one baseline */
+#define SAME_LINE_SHARE 0.8f
+#define COLUMNS_MAX 8
+
+/* lines running this far past a line start cross it: it is no gutter (a table's column, an indent) */
+#define COLUMN_CROSS_PT 12.0f
+
+static int crossing(const pt_text_lines *lines, float x)
+{
+    int n = 0;
+    for (int k = 0; k < lines->n; k++)
+        n += lines->v[k].r.x0 < x - EDGE_BIN_PT && lines->v[k].r.x1 > x + COLUMN_CROSS_PT;
+    return n;
+}
+
+/* the starts of the main text's columns, left to right: line starts shared by at least MAIN_EDGE_SHARE of the lines
+ * the most shared start has, with a gutter left of them that fewer lines cross than half as many as start there */
+static int column_starts(const pt_text_lines *lines, float *starts)
+{
+    int most = 0, n = 0;
+    for (int i = 0; i < lines->n; i++) {
+        int k = sharing_edge(lines, 0, lines->v[i].r.x0);
+        if (k > most) most = k;
+    }
+    for (int i = 0; i < lines->n && n < COLUMNS_MAX; i++) {
+        float x = lines->v[i].r.x0;
+        int known = 0, share = sharing_edge(lines, 0, x);
+        for (int k = 0; k < n && !known; k++) known = fabsf(starts[k] - x) <= EDGE_BIN_PT;
+        if (known || share < MAIN_EDGE_SHARE * most || 2 * crossing(lines, x) >= share) continue;
+        int at = n++;
+        for (; at > 0 && starts[at - 1] > x; at--) starts[at] = starts[at - 1];
+        starts[at] = x;
+    }
+    return n;
+}
+
+/* the column a line starting at x is in: the last column starting at or left of it */
+static int column_of(const float *starts, int n, float x)
+{
+    int c = 0;
+    for (int k = 0; k < n; k++)
+        if (x >= starts[k] - EDGE_BIN_PT) c = k;
+    return c;
+}
+
+/* b set partly above or below a, as a display's pieces are; pieces on one baseline (columns side by side, a table's
+ * cells) overlap almost wholly and are left to the baseline join, which follows reading order */
+static int rows_overlap(fz_rect a, fz_rect b)
+{
+    float shared = fminf(a.y1, b.y1) - fmaxf(a.y0, b.y0), h = fminf(a.y1 - a.y0, b.y1 - b.y0);
+    return h > 0 && shared > ROW_OVERLAP_SHARE * h && shared < SAME_LINE_SHARE * h;
+}
+
+static int row_root(int *root, int i)
+{
+    while (root[i] != i) i = root[i] = root[root[i]];
+    return i;
+}
+
+/* A line of a display is one line, as lineno's [mathlines] numbers it: pieces in one column set partly above or below
+ * one another, directly or through other pieces, are joined where the first of them is. */
+static void join_display_rows(pt_text_lines *lines, const float *starts, int ncols)
+{
+    int *root = malloc(sizeof(int) * (size_t)(lines->n + 1)), *col = malloc(sizeof(int) * (size_t)(lines->n + 1));
+    if (!root || !col) abort();
+    for (int i = 0; i < lines->n; i++) root[i] = i, col[i] = column_of(starts, ncols, lines->v[i].r.x0);
+    for (int i = 0; i < lines->n; i++)
+        for (int j = i + 1; j < lines->n; j++) {
+            if (col[i] != col[j] || !rows_overlap(lines->v[i].r, lines->v[j].r)) continue;
+            int a = row_root(root, i), b = row_root(root, j);
+            if (a < b) root[b] = a;
+            else if (b < a) root[a] = b;
+        }
+    int *pieces = calloc((size_t)lines->n + 1, sizeof(int));
+    if (!pieces) abort();
+    for (int i = 0; i < lines->n; i++) {
+        int r = row_root(root, i);
+        pieces[r]++;
+        if (r != i) lines->v[r].r = fz_union_rect(lines->v[r].r, lines->v[i].r);
+    }
+    /* a piece on the display line's baseline only (punctuation after a matrix) and within its width is on it too */
+    for (int i = 0; i < lines->n; i++) {
+        if (row_root(root, i) != i || pieces[i] > 1) continue;
+        fz_rect p = lines->v[i].r;
+        for (int r = 0; r < lines->n; r++) {
+            fz_rect d = lines->v[r].r;
+            if (r == i || root[r] != r || pieces[r] < 2 || col[r] != col[i]) continue;
+            float shared = fminf(p.y1, d.y1) - fmaxf(p.y0, d.y0);
+            if (p.x0 < d.x0 - EDGE_BIN_PT || p.x1 > d.x1 + EDGE_BIN_PT || shared <= ROW_OVERLAP_SHARE * (p.y1 - p.y0))
+                continue;
+            int first = i < r ? i : r, other = i < r ? r : i;
+            lines->v[first].r = fz_union_rect(p, d);
+            root[other] = first;
+            pieces[first] = pieces[i] + pieces[r];
+            break;
+        }
+    }
+    free(pieces);
+    int n = 0;
+    for (int i = 0; i < lines->n; i++)
+        if (row_root(root, i) == i) lines->v[n++] = lines->v[i];
+    lines->n = n;
+    free(root);
+    free(col);
+}
+
+/* a line reaching this share of a column's width into the next column spans the columns (a title, a wide figure) */
+#define SPAN_SHARE 0.25f
+
+typedef struct {
+    int band, column; /* column -1: a line spanning the columns, first in its band */
+    float mid;
+    pt_text_line line;
+} column_place;
+
+static int by_column_place(const void *a, const void *b)
+{
+    const column_place *x = a, *y = b;
+    if (x->band != y->band) return x->band - y->band;
+    if (x->column != y->column) return x->column - y->column;
+    return x->mid < y->mid ? -1 : x->mid > y->mid;
+}
+
+/* On a page of columns, lineno numbers each column from top to bottom, the left one first; reading order can stray
+ * from that around displays and figures. A line spanning the columns starts a new band of them below it. */
+static void number_by_columns(pt_text_lines *out, const float *starts, int ncols)
+{
+    if (ncols < 2) return;
+    column_place *p = malloc(sizeof *p * (size_t)(out->n + 1));
+    if (!p) abort();
+    for (int i = 0; i < out->n; i++) {
+        fz_rect r = out->v[i].r;
+        int c = column_of(starts, ncols, r.x0);
+        int spans = c + 1 < ncols && r.x1 > starts[c + 1] + SPAN_SHARE * (starts[c + 1] - starts[c]);
+        p[i] = (column_place){0, spans ? -1 : c, (r.y0 + r.y1) / 2, out->v[i]};
+    }
+    for (int i = 0; i < out->n; i++)
+        for (int k = 0; k < out->n; k++)
+            if (p[k].column < 0 && p[k].mid < p[i].mid) p[i].band++;
+    for (int i = 0; i < out->n; i++)
+        if (p[i].column < 0) p[i].band++;
+    qsort(p, (size_t)out->n, sizeof *p, by_column_place);
+    for (int i = 0; i < out->n; i++) out->v[i] = p[i].line;
+    free(p);
+}
+
 /* Margin notes (todonotes, marginpars, review comments set beside the text) are not numbered, as lineno leaves them:
  * a line wholly left of the main text or wholly right of it. The main text reaches as far as any line running over its
  * most shared edge, so a table's first columns are not notes when that edge is the start of the table's text column;
@@ -908,8 +1133,27 @@ static void drop_margin_notes(pt_text_lines *lines)
     free(outside);
 }
 
-void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
-                     pt_text_lines *out)
+/* a figure's labels (ticks, an axis's name) are within this far below it or beside it, narrower than a column */
+#define FIGURE_LABEL_PT 20.0f
+
+static int in_figure(fz_rect r, const pt_rects *figures, float narrow_w)
+{
+    fz_point m = {(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2};
+    for (int i = 0; figures && i < figures->n; i++) {
+        fz_rect f = figures->v[i];
+        if (fz_is_point_inside_rect(m, f)) return 1;
+        if (r.x1 - r.x0 >= narrow_w) continue;
+        int below = r.y0 >= f.y1 && r.y0 - f.y1 <= FIGURE_LABEL_PT && r.x1 > f.x0 && r.x0 < f.x1;
+        int beside =
+            m.y > f.y0 && m.y < f.y1 &&
+            ((r.x1 <= f.x0 && f.x0 - r.x1 <= FIGURE_LABEL_PT) || (r.x0 >= f.x1 && r.x0 - f.x1 <= FIGURE_LABEL_PT));
+        if (below || beside) return 1;
+    }
+    return 0;
+}
+
+void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_w, pt_numbering mode,
+                     pt_numbering_state *state, pt_text_lines *out)
 {
     pt_text_lines lines = {0};
     /* MuPDF's own text lines are the pieces, in the order reading order reaches them: a note set beside the text is a
@@ -932,15 +1176,24 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
         }
     }
     free(piece_of);
+    /* lineno numbers the text, not what a figure shows */
+    int kept = 0;
+    for (int i = 0; i < lines.n; i++)
+        if (!in_figure(lines.v[i].r, figures, CELL_COLUMN_W * page_w)) lines.v[kept++] = lines.v[i];
+    lines.n = kept;
     /* before joining pieces on one baseline, so a note beside a line of text is not joined to it */
     drop_margin_notes(&lines);
+    float starts[COLUMNS_MAX];
+    int ncols = column_starts(&lines, starts);
+    join_display_rows(&lines, starts, ncols);
     /* a section number and its title, or a label and its text, set apart on one baseline */
     int joined = 0;
     for (int i = 0; i < lines.n; i++) {
         fz_rect r = lines.v[i].r;
         if (joined) {
             fz_rect *last = &lines.v[joined - 1].r;
-            if (on_baseline_of(r, *last) && r.x0 >= last->x1 - BASELINE_JOIN_OVERLAP) {
+            if (on_baseline_of(r, *last) && r.x0 >= last->x1 - BASELINE_JOIN_OVERLAP &&
+                column_of(starts, ncols, r.x0) == column_of(starts, ncols, last->x0)) {
                 *last = fz_union_rect(*last, r);
                 continue;
             }
@@ -952,6 +1205,9 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
     int *block_of = calloc((size_t)lines.n + 1, sizeof *block_of), *set = calloc((size_t)lines.n + 1, sizeof *set);
     for (int a = 0, k = 1; k <= lines.n; k++) {
         if (k < lines.n && overlap_x(lines.v[k].r, lines.v[k - 1].r)) continue;
+        /* lineno numbers a column from top to bottom; reading order can stray from that around a display or a
+         * figure's labels */
+        qsort(&lines.v[a], (size_t)(k - a), sizeof *lines.v, by_middle);
         for (int i = a; i < k; i++) block_of[i] = blocks.n;
         pt_push(blocks, ((line_block){a, k, lines_extent(&lines, a, k)}));
         a = k;
@@ -960,7 +1216,9 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
      * column beside them are a column of cells, and those lines are the table's other column. A table is numbered by
      * its rows, at its left edge. */
     float narrow_w = CELL_COLUMN_W * page_w;
-    for (int i = 0; i < lines.n; i++) set[i] = i;
+    int *column = malloc(sizeof(int) * (size_t)(lines.n + 1));
+    if (!column) abort();
+    for (int i = 0; i < lines.n; i++) set[i] = i, column[i] = column_of(starts, ncols, lines.v[i].r.x0);
     for (int a = 0; a < lines.n;) {
         int z = a + 1;
         if (lines.v[a].r.x1 - lines.v[a].r.x0 >= narrow_w) {
@@ -970,11 +1228,18 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
         while (z < lines.n && lines.v[z].r.x1 - lines.v[z].r.x0 < narrow_w &&
                overlap_x(lines.v[z].r, lines.v[z - 1].r) && aligned(lines.v[z].r, lines.v[z - 1].r))
             z++;
-        cells_beside(&lines, a, z, set);
+        cells_beside(&lines, a, z, set, column);
         a = z;
     }
+    free(column);
     join_ruled_tables(words, &lines, set);
     table_takes_its_lines(&lines, set);
+    fz_rect extent[COLUMNS_MAX];
+    for (int k = 0; k < COLUMNS_MAX; k++) extent[k] = fz_empty_rect;
+    for (int i = 0; i < lines.n; i++) {
+        fz_rect *e = &extent[column_of(starts, ncols, lines.v[i].r.x0)];
+        *e = fz_union_rect(*e, lines.v[i].r);
+    }
     out->n = 0;
     pt_text_lines rows = {0};
     for (int i = 0; i < lines.n; i++) {
@@ -983,7 +1248,12 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
         if (alone) {
             const line_block *b = &blocks.v[block_of[i]];
             pt_text_line l = lines.v[i];
-            l.col_x0 = b->r.x0, l.col_x1 = b->r.x1;
+            /* on a page of columns a line is numbered beside its column; elsewhere beside its block, or for a block of
+             * one line (an equation's number on a line of its own) beside the text */
+            fz_rect c = extent[column_of(starts, ncols, l.r.x0)];
+            if (ncols > 1) l.col_x0 = c.x0, l.col_x1 = c.x1;
+            else if (b->z - b->a == 1) l.col_x0 = fminf(b->r.x0, c.x0), l.col_x1 = fmaxf(b->r.x1, c.x1);
+            else l.col_x0 = b->r.x0, l.col_x1 = b->r.x1;
             pt_push(*out, l);
             continue;
         }
@@ -1005,6 +1275,7 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
             pt_push(*out, ((pt_text_line){rows.v[k].r, table.x0, table.x1, 0}));
         }
     }
+    number_by_columns(out, starts, ncols);
     pt_vec_free(rows);
     pt_vec_free(blocks);
     pt_vec_free(lines);

@@ -1268,6 +1268,7 @@ int pt_app_main(int argc, char **argv)
         timer_wake = 0;
         ui.dirty = 0;
         ui.redraw_at = 0;
+        render_frame_begin();
         BeginDrawing();
         frame();
         tab *shown = app_current_doc();
