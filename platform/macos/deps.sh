@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Downloads and builds the third-party libraries pdf-tools links on macOS (this Mac's architecture, macOS 11+), from
-# the sources pinned in platform/versions.sh: MuPDF (with Tesseract, and mutool to draw the app icon), PCRE2,
+# the sources pinned in platform/versions.sh: MuPDF (with Tesseract, and mutool to draw the app icon),
 # OpenSSL and raylib, plus raygui and Tesseract's English data. Everything goes under $PT_MACOS_OUT (default
 # ~/Library/Caches/pdf-tools/macos), except the raylib and raygui sources (thirdparty/ in the repo); what is
 # already there is reused. Needs the Xcode command line tools and CMake.
@@ -33,18 +33,6 @@ make -C "$MUPDF_SRC" -j"$JOBS" libs apps build=release tesseract=yes OUT="$MUPDF
     XLDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" \
     >"$ROOT/mupdf-build.log" 2>&1 || { tail -40 "$ROOT/mupdf-build.log" >&2; exit 1; }
 ls -l "$MUPDF_OUT/libmupdf.a" "$MUPDF_OUT/libmupdf-third.a"
-
-step "PCRE2 $PCRE2_VERSION"
-PCRE2_SRC=$ROOT/src/pcre2-$PCRE2_VERSION
-PCRE2_OUT=$ROOT/pcre2-install-$BUILD_TAG
-fetch "$PCRE2_URL" "$ROOT/dl/pcre2.tar.bz2" "$PCRE2_SHA256"
-[ -d "$PCRE2_SRC" ] || tar xjf "$ROOT/dl/pcre2.tar.bz2" -C "$ROOT/src"
-if [ ! -f "$PCRE2_OUT/lib/libpcre2-8.a" ]; then
-    cmake -S "$PCRE2_SRC" -B "$ROOT/pcre2-build-$BUILD_TAG" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PCRE2_OUT" \
-        -DCMAKE_C_FLAGS_RELEASE="$SIZE_CFLAGS -DNDEBUG" \
-        -DBUILD_SHARED_LIBS=OFF -DPCRE2_BUILD_PCRE2GREP=OFF -DPCRE2_BUILD_TESTS=OFF -DPCRE2_SUPPORT_JIT=OFF >/dev/null
-    cmake --build "$ROOT/pcre2-build-$BUILD_TAG" --target install -j"$JOBS" >/dev/null
-fi
 
 step "OpenSSL $OPENSSL_VERSION (libcrypto, certificate signatures)"
 OPENSSL_SRC=$ROOT/src/openssl-$OPENSSL_VERSION

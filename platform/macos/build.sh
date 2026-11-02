@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds "PDF Tools.app" and PDF-Tools.dmg on a Mac, for that Mac's architecture (Apple Silicon or Intel), macOS 11+.
-# The libraries come from deps.sh (MuPDF with Tesseract, PCRE2, OpenSSL and raylib, built from the sources pinned in
+# The libraries come from deps.sh (MuPDF with Tesseract, OpenSSL and raylib, built from the sources pinned in
 # platform/versions.sh) and are linked statically: the app needs nothing installed. Needs the Xcode command line
 # tools (xcode-select --install) and CMake. Output: $PT_MACOS_OUT/out (default ~/Library/Caches/pdf-tools/macos/out).
 # Re-runs are incremental. `build.sh check` builds and runs the tests without packing.
@@ -30,7 +30,6 @@ cmake --fresh -S "$REPO" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,-dead_strip" \
     -DMUPDF_INCLUDE_DIR="$MUPDF_SRC/include" -DMUPDF_LIBRARY="$MUPDF_OUT/libmupdf.a" \
     -DMUPDF_THIRD_LIBRARY="$MUPDF_OUT/libmupdf-third.a" \
-    -DPCRE2_INCLUDE_DIR="$PCRE2_OUT/include" -DPCRE2_LIBRARY="$PCRE2_OUT/lib/libpcre2-8.a" \
     -DOPENSSL_ROOT_DIR="$OPENSSL_OUT" -DOPENSSL_USE_STATIC_LIBS=ON \
     -DPT_USE_FONTCONFIG=OFF -Draylib_DIR="$RAYLIB_OUT/lib/cmake/raylib" >/dev/null
 cmake --build "$ROOT/build" -j"$JOBS"

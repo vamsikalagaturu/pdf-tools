@@ -395,6 +395,17 @@ static int library_frame(dialog *d, Rectangle b)
     ui_panel(grid, pal.base, pal.border, 4);
     float cw = 256, ch = 112, cols = fmaxf(1, floorf((grid.width - 8) / cw));
     int rows = (int)ceilf(l->list.n / cols);
+    if (!ui.focus && l->list.n) {
+        int step =
+            key_pressed(KEY_RIGHT) - key_pressed(KEY_LEFT) + (int)cols * (key_pressed(KEY_DOWN) - key_pressed(KEY_UP));
+        if (step) {
+            l->current = l->current < 0 ? 0 : l->current + step;
+            l->current = l->current < 0 ? 0 : l->current >= l->list.n ? l->list.n - 1 : l->current;
+            float top = (float)(l->current / (int)cols) * ch;
+            if (top < l->scroll) l->scroll = top;
+            if (top + ch + 8 > l->scroll + grid.height) l->scroll = top + ch + 8 - grid.height;
+        }
+    }
     if (ui_hover(grid) && ui.wheel) l->scroll -= ui.wheel * 60;
     l->scroll = fminf(fmaxf(l->scroll, 0), fmaxf(0, rows * ch + 8 - grid.height));
     ui_scissor_begin(grid);
@@ -443,7 +454,8 @@ static int library_frame(dialog *d, Rectangle b)
         free(path);
         return 1;
     }
-    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL)) {
+    if (ui_button(ui_id(d, 5), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) ||
+        (key_pressed(KEY_ESCAPE) && !ui.focus && !menu_is_open())) {
         l->done(l->ctx, NULL);
         return 1;
     }
@@ -644,10 +656,6 @@ static int pii_frame(dialog *d, Rectangle b)
 void pii_dialog(tab *t)
 {
     if (!t->doc) return;
-    if (!pt_have_regex()) {
-        message_box(MSG_INFO, "Find personal data", "This build has no regular expressions (PCRE2).", NULL, NULL);
-        return;
-    }
     dialog *d = calloc(1, sizeof *d);
     pii_data *p = calloc(1, sizeof *p);
     p->t = t;
@@ -1447,6 +1455,17 @@ static int browser_frame(dialog *d, Rectangle r)
     Rectangle list = {r.x, r.y + 38, r.width, r.height - 38 - 80};
     ui_panel(list, pal.base, pal.border, 4);
     float row = 26;
+    /* Up and Down pick a row into the name field, where Enter opens it (a folder: goes into it) */
+    int step = ui_key(KEY_DOWN) - ui_key(KEY_UP);
+    if (step && b->entries.n) {
+        int at = b->picked.n ? b->picked.v[b->picked.n - 1] + step : step > 0 ? 0 : b->entries.n - 1;
+        at = at < 0 ? 0 : at >= b->entries.n ? b->entries.n - 1 : at;
+        b->picked.n = 0;
+        pt_push(b->picked, at);
+        text_set(&b->path, b->entries.v[at]);
+        if (at * row < b->scroll) b->scroll = at * row;
+        if ((at + 1) * row + 8 > b->scroll + list.height) b->scroll = (at + 1) * row + 8 - list.height;
+    }
     if (ui_hover(list) && ui.wheel) b->scroll -= ui.wheel * row * 3;
     b->scroll = fminf(fmaxf(b->scroll, 0), fmaxf(0, b->entries.n * row - list.height + 8));
     ui_scissor_begin(list);

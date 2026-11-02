@@ -149,9 +149,51 @@ int ui_key(int key); /* pressed (or repeating), unless a text field took it */
 /* modifiers must match exactly; 0 while a focused text field takes the key or a dialog or menu is open */
 int ui_shortcut(int ctrl, int shift, int key);
 int ui_shortcut_alt(int ctrl, int shift, int alt, int key);
+int ui_shortcut_mods(int key, int mods); /* the same with PT_MOD_* bits, Super included */
+/* this frame's key presses in the order they came (modifier keys too) with their PT_MOD_* bits; 0 past the last */
+int ui_frame_key(int i, int *key, int *mods);
+
+/* ---- keyboard shortcuts (keymap.c): every action's keys, the defaults changed by keys.toml ---- */
+void keymap_load(void);             /* at startup, after the settings */
+void keymap_free(void);             /* at exit */
+int keymap_pressed(const char *id); /* one of the action's keys this frame, as ui_shortcut_mods checks it */
+int keymap_is(const char *id, int key, int mods); /* (key, mods) is one of the action's keys */
+/* the action's first key for menus and tooltips ("Ctrl+F"); a tool's follows the leader while vim_keys is on;
+ * "" without one */
+const char *keymap_label(const char *id);
+/* "text (Ctrl+F)", or text alone when the action has no key; valid until the next few calls */
+const char *keymap_tip(const char *text, const char *id);
+void keymap_dialog(void);     /* Menu > Keyboard shortcuts... */
+void keymap_cheatsheet(void); /* g? and :help: the vim keys as bound now, and the commands */
+
+typedef enum { VIM_AFTER_LEADER, VIM_AFTER_G, VIM_AFTER_BRACKET, VIM_AFTER_D, VIM_AFTER_M, VIM_AFTER_QUOTE } vim_prefix;
+
+/* The keys that can follow vim prefix p now, as typed, and what each does: after the leader those of the caret (when
+ * there is one), a text selection, or a block rectangle, then the leader's own and the tools'. */
+void keymap_vim_followers(vim_prefix p, int caret, int selection, int block, pt_strs *shown, pt_strs *what);
+int vim_keys_on(void);
+int keymap_count(void);
+const char *keymap_id_at(int i); /* NULL past the last */
+int keymap_exists(const char *id);
+char *keymap_describe(const char *id); /* "View › Zoom in", malloc'd */
+/* The command line runs an action as if one of its keys were pressed in the next frame: keymap_pressed is true for it
+ * then, and a vim action's keys (after the leader or its prefix) come from keymap_injected_keys. -1: no such action */
+int keymap_inject(const char *id);
+void keymap_inject_clear(void);
+int keymap_injected_keys(pt_combo out[3]); /* how many, 0 when the injected action is not a vim one */
 
 /* ---- widgets ---- */
 enum { B_FLAT = 1, B_CHECKED = 2, B_DISABLED = 4, B_PRIMARY = 8, B_ICON_ONLY = 16, B_MENU = 32, B_DANGER = 64 };
+
+/* Keyboard focus over the widgets of a scope: the top dialog (dialogs_frame makes it one) or a view between begin and
+ * end. Tab and Shift+Tab step through its buttons, check boxes, swatches, spin boxes, combos and text fields in the
+ * order they are drawn, with a ring around the focused one; Space or Enter presses it, Up and Down step a combo or a
+ * spin box. In a dialog, Enter with nothing focused presses its primary button. */
+void ui_focus_scope_begin(const void *owner);
+void ui_focus_scope_end(void);
+int ui_focused(unsigned id);    /* the widget has the keyboard focus */
+int ui_focused_any(void);       /* a widget of the scope drawn last has it */
+void ui_focus_keys_taken(void); /* this frame's Tab belongs to the scope (a shortcut being recorded) */
 
 float button_width(const char *label, const char *icon, int flags);
 int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int flags, const char *tip);
@@ -225,9 +267,28 @@ void menu_swatch_item(ui_menu *m, const char *label, const unsigned char rgb[3],
 void menu_sep(ui_menu *m);
 ui_menu *menu_sub(ui_menu *m, const char *label, const char *icon);
 int menu_empty(const ui_menu *m);
+
+/* reading a built menu: menu_count counts separators too, menu_entry_at gives 0 for them; the strings and sub stay
+ * the menu's */
+typedef struct {
+    const char *label, *icon, *shortcut;
+    int enabled, checked, has_swatch;
+    unsigned char rgb[3];
+    ui_action fn;
+    void *ctx;
+    intptr_t arg;
+    const ui_menu *sub;
+} ui_menu_info;
+
+int menu_count(const ui_menu *m);
+int menu_entry_at(const ui_menu *m, int i, ui_menu_info *out);
+void menu_free(ui_menu *m); /* only one that was never opened: an open menu belongs to the menu system */
 void menu_open(ui_menu *m, Vector2 at);
 void menu_open_below(ui_menu *m, Rectangle anchor);
 int menu_is_open(void);
+/* an open menu takes Up/Down (j/k with vim keys), Right/Left into and out of submenus, Enter or Space; after a menu
+ * opened by a key, this selects its first item */
+void menu_keyboard(void);
 /* Draws the open menus over everything else. A chosen item's action runs at the start of the next call, once the
  * menu is closed and outside any widget's drawing, and asks for a frame to show its result. */
 void menus_frame(void);
@@ -248,6 +309,7 @@ struct dialog {
 /* Takes ownership of d (malloc'd): d->free and free() run once frame() returns nonzero, or at once when too many
  * dialogs are open. Closes menus and drops text focus; d->title is not copied. */
 void dialog_push(dialog *d);
+/* the open command palette counts as one: it holds the window's keys and clicks as a dialog does */
 int dialogs_open(void);
 void dialogs_frame(void); /* draws every open dialog; only the top one gets input */
 /* message boxes; `done(ctx, yes)` runs after the user answers (yes = 0 for Cancel / No / closing) */
@@ -352,7 +414,8 @@ int tab_load(tab *t, const char *path, const char *password);
 void tab_free(tab *t);
 void tab_frame(tab *t, Rectangle area);
 void tab_toolbar(tab *t, Rectangle area);
-void tab_status(tab *t, Rectangle area);
+/* draws the tab's status line; returns where a message may start, right of the vim mode */
+float tab_status(tab *t, Rectangle area);
 void tab_shortcuts(tab *t);
 const char *tab_path(const tab *t);
 char *tab_title(const tab *t); /* malloc'd; "* " in front while there are unsaved edits */
@@ -384,6 +447,18 @@ void workspace_add_paths(workspace *w, pt_strs *paths);
 /* copies `pdf`; parts made only from it are protected with `password` (NULL: none) */
 void workspace_add_document(workspace *w, fz_buffer *pdf, const char *name, const char *password);
 void workspace_shortcuts(workspace *w);
+
+/* ---- the command palette (palette.c): every action of app_build_menu, searched by name ---- */
+void palette_open(void);
+void palette_close(void); /* without running anything */
+int palette_is_open(void);
+/* after the window's widgets, before ui_end_frame; a chosen action runs at the start of the next call, as a menu's */
+void palette_frame(void);
+/* the vim command line (palette.c): `:` opens it over the status line `bar`; a command runs at the start of the next
+ * cmdline_frame, as the palette's choice does */
+void cmdline_open(void);
+int cmdline_is_open(void);
+void cmdline_frame(Rectangle bar);
 
 /* ---- updates (update.c): GitHub's latest release, checked in the background ---- */
 void update_start(void); /* at startup: checks when check_updates is on and a day has passed since the last check */

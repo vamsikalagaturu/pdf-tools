@@ -126,10 +126,11 @@ char *pt_textbox(fz_context *ctx, fz_stext_page *st, fz_rect rect); /* chars cen
 char *pt_text_under(fz_context *ctx, fz_page *page, fz_rect rect);  /* stripped */
 char *pt_chars_under(const pt_chars *chars, fz_rect rect);          /* stripped */
 char *pt_page_text(fz_context *ctx, fz_page *page);
-void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, pt_rects *out); /* ignores case */
-/* Matches `pattern` (PCRE2) over the page text, '\n' after each line and a blank line between blocks so that ^, $
- * and \b see the line breaks; each match adds one rect per line to `out`. Returns the number of matches. Throws on
- * a bad pattern, when matching fails (match or depth limit) and in a build without PCRE2. */
+/* MuPDF's search (fz_match_stext_page) for `needle`, across line breaks and hyphenation; one rect per line of a hit */
+void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int case_sensitive, pt_rects *out);
+/* Matches `pattern` (MuPDF's regular expressions, as JavaScript writes them) over the page text line by line, so that
+ * ^, $ and \b see the line breaks; each match adds one rect per line to `out`. Returns the number of matches. Throws
+ * on a bad pattern and when matching runs away. */
 int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int case_sensitive, pt_rects *out);
 /* Bounds of the annotations and form fields whose text that need not be drawn (comment, author, subject, rich
  * text, field value) contains `needle` or matches `pattern` (either may be NULL); one whose bounds already hold the
@@ -139,7 +140,6 @@ void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const 
 /* Appends `boxes`, joining each box that continues the previous one on the same line (top within 2 pt, not further
  * left) into it. */
 void pt_merge_lines(const fz_rect *boxes, int n, pt_rects *out);
-int pt_have_regex(void);
 char *pt_utf8(const int *runes, int n);
 int pt_utf8_decode(const char *s, pt_ints *out); /* appends the code points; returns out->n */
 
@@ -154,7 +154,7 @@ typedef struct {
 
 PT_VEC(pt_piis, pt_pii);
 extern const char *pt_pii_names[PT_PII_COUNT];
-void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out); /* throws without PCRE2 */
+void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out);
 void pt_piis_free(pt_piis *p);
 
 /* ---- stamps.c: form fields ---- */
@@ -571,22 +571,30 @@ typedef struct {
     char *text;
     int line;
     pt_chars chars;
+    int source_line; /* which of MuPDF's text lines it is on, counted through the page */
+    fz_point dir;    /* that line's baseline direction, (1, 0) for level text */
+    float size;      /* its first character's font size */
 } pt_word;
 
 PT_VEC(pt_words, pt_word);
-void pt_page_words(fz_stext_page *st, pt_words *out); /* content order, split at spaces and line ends; line 0 */
-/* The words in reading order from the page geometry (recursive XY-cut into columns and blocks, then lines), not
- * the PDF's content order; `line` numbers the lines. */
+/* st's words in its blocks' order (into structure blocks too), split at spaces and line ends; line 0 */
+void pt_page_words(fz_stext_page *st, pt_words *out);
+/* The words in reading order: MuPDF's text lines XY-cut into columns and blocks, margin notes last; `line` numbers
+ * the reading lines. */
 void pt_reading_order_words(fz_stext_page *st, pt_words *out);
 void pt_words_free(pt_words *w);
+/* the word's baseline is not level (MuPDF's line direction), as a table's slanted column headers: on no text line */
+int pt_word_slanted(const pt_word *w);
 /* The text from `start` to `end` (page points, either order) through `words` in reading order, lines joined by
  * '\n'; `rects` is reset to one rect per line. Positions between words snap to the nearest word. */
 char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rects *rects);
+/* The same from character `lo` of word `lw` up to, not including, character `ho` of word `hw` (lw <= hw). */
+char *pt_words_range(const pt_words *words, int lw, int lo, int hw, int ho, pt_rects *rects);
 
 /* Line numbers as LaTeX's lineno package sets them: the text lines in reading order (pieces on one baseline are one
  * line), each in a column (a run of lines each overlapping the previous one horizontally), numbered through the
- * document, per page or per paragraph. */
-typedef enum { PT_NUMBER_DOCUMENT, PT_NUMBER_PAGE, PT_NUMBER_PARAGRAPH } pt_numbering;
+ * document or per page. */
+typedef enum { PT_NUMBER_DOCUMENT, PT_NUMBER_PAGE } pt_numbering;
 
 typedef struct {
     fz_rect r;
@@ -596,19 +604,38 @@ typedef struct {
 
 PT_VEC(pt_text_lines, pt_text_line);
 
-/* what numbering a page depends on from the pages before it; {1, 0, 0, 0} before the first */
+/* what numbering a page depends on from the pages before it; {1} before the first */
 typedef struct {
     int next; /* the next number through the document */
-    int tail; /* lines so far of the paragraph still open */
-    int open; /* the last line ran to its column's edge: the paragraph goes on */
-    float h;  /* the last line's height */
 } pt_numbering_state;
 
 /* the lines of one page `page_w` wide from `words` (pt_reading_order_words), numbered from `state`, which moves past
  * the page; a table's rows are one line each, at the table's left edge */
 void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
                      pt_text_lines *out);
-pt_numbering pt_numbering_from(const char *name); /* "page", "paragraph", else document */
+pt_numbering pt_numbering_from(const char *name); /* "page", else document */
+
+/* ---- captions.c: figures, tables, algorithms, listings and numbered equations ---- */
+typedef enum { PT_CAP_FIGURE, PT_CAP_TABLE, PT_CAP_ALGORITHM, PT_CAP_LISTING, PT_CAP_EQUATION } pt_caption_kind;
+
+typedef struct {
+    pt_caption_kind kind;
+    char *label; /* "Figure 3", "Fig. 2", "Table IV", "Abbildung 1.2", "(4.2)": the document's word, capitalised */
+    char *text; /* the caption's first sentence, from its following lines when it continues there; NULL for equations */
+    fz_rect rect; /* the caption's first line, or the equation's line up to its number */
+} pt_caption;
+
+PT_VEC(pt_captions, pt_caption);
+/* Appends the captions and equation numbers of a page's text (pt_stext or PT_TEXT_FLAGS) in content order. A
+ * caption starts a line with Figure/Fig./Table/Algorithm/Listing (capitalised or all capitals; also German, French,
+ * Spanish, Italian, Portuguese, Dutch and Polish words) and a number (3, 2.1, A.2, S1, IV). A number followed by ':',
+ * '.', '|' or a dash counts when the line starts its block, has free space above or sets the label in another font;
+ * one followed by plain text only in another font, so "Figure 3 shows ..." is a reference. Lines of a list of
+ * figures (dot leaders, a page number at the right) do not count. An equation number is "(n)", "(n.m)", "(A.1)" or
+ * "(2a)" at its column's right edge with a wide gap before it. One whose kind and number `out` already holds is
+ * left out, so pages appended in order keep the first, the caption rather than a later mention. */
+void pt_page_captions(fz_context *ctx, fz_stext_page *st, pt_captions *out);
+void pt_captions_free(pt_captions *c);
 
 /* ---- comments.c: exporting the annotations readers wrote ---- */
 typedef struct pt_comment pt_comment;
@@ -707,6 +734,11 @@ typedef struct {
     const char *comment;
 } pt_setting_def;
 
+/* settings line_numbers_size: the line numbers' size in points, and its bounds */
+#define PT_LINE_NUMBERS_PT 7
+#define PT_LINE_NUMBERS_MIN_PT 4
+#define PT_LINE_NUMBERS_MAX_PT 14
+
 extern const pt_setting_def pt_settings_defs[];
 extern const int pt_settings_count;
 #define PT_RECENT_LIMIT 10
@@ -738,6 +770,100 @@ void pt_settings_set_list(pt_settings *s, const char *key, const pt_strs *value)
 void pt_settings_add_recent(pt_settings *s, const char *path); /* to the front of recent_files, PT_RECENT_LIMIT kept */
 int pt_settings_save(const pt_settings *s); /* nonzero when it cannot be written or keep_file is set */
 void pt_migrate_legacy(void);               /* copies the old pdf-redact folder's signatures when this one has none */
+/* The top-level `key = "string"` and `key = ["string", ...]` lines of a TOML text, the subset settings.toml uses: a
+ * string comes as a list of one, any other value as NULL. Returns the number of the first line it cannot read (and
+ * skips), 0 when there is none. */
+typedef void (*pt_toml_strings_fn)(void *opaque, const char *key, const pt_strs *values);
+int pt_toml_strings(const char *text, pt_toml_strings_fn on, void *opaque);
+
+/* ---- keys.c: key combos and keys.toml, the window's changed keyboard shortcuts ---- */
+/* modifier bits and key codes are GLFW's (raylib's KEY_*); the mouse's side buttons get codes of their own */
+enum { PT_MOD_SHIFT = 1, PT_MOD_CTRL = 2, PT_MOD_ALT = 4, PT_MOD_SUPER = 8, PT_MODS = 15 };
+
+#define PT_KEY_MOUSE4 1003 /* back */
+#define PT_KEY_MOUSE5 1004 /* forward */
+#define PT_COMBO_MAX 64    /* bytes a formatted combo needs at most */
+
+typedef struct {
+    int key, mods;
+} pt_combo;
+
+PT_VEC(pt_combos, pt_combo);
+
+typedef struct {
+    char *id;
+    pt_combos combos; /* empty: the action has no shortcut */
+} pt_binding;
+
+PT_VEC(pt_bindings, pt_binding);
+
+/* "Ctrl+Shift+X": modifiers Ctrl, Alt, Shift, Super (or Cmd), then one key name, any case; 0 ok, -1 not a combo */
+int pt_combo_parse(const char *s, pt_combo *out);
+/* the keys.toml spelling, or (display) the menus' one: "-" for Minus, "Cmd" for Super on macOS; "" for a key without a
+ * name */
+void pt_combo_format(pt_combo c, int display, char *buf, size_t size);
+char *pt_keys_path(void); /* keys.toml in pt_config_dir() */
+/* appends the file's actions with their combos; a combo it cannot read is left out with a warning, an action whose
+ * combos are all unreadable too. -1 when the file cannot be read. */
+int pt_keys_load(const char *path, pt_bindings *out);
+int pt_keys_save(const char *path, const pt_bindings *b); /* 0 when written */
+void pt_bindings_free(pt_bindings *b);
+
+/* The window's vim command line (`:`): a line read as an ex command. A word that names no command is a keymap action
+ * id (PT_EX_ACTION), which the window checks. */
+typedef enum {
+    PT_EX_ACTION,
+    PT_EX_WRITE,      /* arg: a file to write a copy to, NULL: save */
+    PT_EX_QUIT,       /* bang: discard the edits */
+    PT_EX_WRITE_QUIT, /* save when edited, then close */
+    PT_EX_EDIT,       /* arg: the file to open */
+    PT_EX_GOTO,       /* page */
+    PT_EX_ZOOM,       /* zoom, fit */
+    PT_EX_SET,        /* name: the settings key; set; arg: the value */
+    PT_EX_BOOKMARK,   /* arg: the name, NULL: ask */
+    PT_EX_COLOUR,     /* rgb */
+    PT_EX_SPLIT,      /* split */
+    PT_EX_FIND,       /* arg: the text, NULL: open the find bar */
+    PT_EX_HELP
+} pt_ex_kind;
+
+typedef enum { PT_EX_SET_ON, PT_EX_SET_OFF, PT_EX_SET_TOGGLE, PT_EX_SET_VALUE, PT_EX_SET_SHOW } pt_ex_set_mode;
+
+/* :set's name (also rnu) for line numbers relative to the vim caret, not a settings key; number (nu) is line_numbers */
+#define PT_EX_RELATIVE "relativenumber"
+
+typedef struct {
+    pt_ex_kind kind;
+    char *word; /* the command as typed, without ! */
+    char *name; /* PT_EX_ACTION: the action id; PT_EX_SET: the settings key */
+    char *arg;  /* what follows the command, NULL when nothing does */
+    int bang;
+    int page;   /* PT_EX_GOTO: 1-based; 0 the last page */
+    float zoom; /* PT_EX_ZOOM: percent; 0 with a fit */
+    int fit;    /* PT_EX_ZOOM: 0 none, 1 width, 2 height */
+    int split;  /* PT_EX_SPLIT: 0 off, 1 side by side, 2 top and bottom */
+    pt_ex_set_mode set;
+    unsigned char rgb[3];
+    char error[160];
+} pt_ex;
+
+typedef struct {
+    const char *name;
+    int abbrev; /* the shortest prefix that names it */
+    pt_ex_kind kind;
+    const char *action; /* PT_EX_ACTION: the action it runs */
+    const char *usage, *about;
+} pt_ex_command;
+
+extern const pt_ex_command pt_ex_commands[];
+extern const int pt_ex_count;
+/* 0, or -1 with out->error set ("" for a blank line); free with pt_ex_free either way */
+int pt_ex_parse(const char *line, pt_ex *out);
+void pt_ex_free(pt_ex *ex);
+/* a typed file name: ~ is $HOME, a relative one is in base_dir (NULL: as typed); caller frees */
+char *pt_ex_path(const char *base_dir, const char *arg);
+/* "#rrggbb", "rrggbb" or "#rgb"; 0 ok, -1 not a colour */
+int pt_parse_colour(const char *s, unsigned char rgb[3]);
 
 /* ---- signatures.c: the signature image library ---- */
 char *pt_signature_dir(void);

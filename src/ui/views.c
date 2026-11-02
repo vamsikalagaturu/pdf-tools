@@ -36,6 +36,10 @@ static int resizable(const pt_item *it)
            (it->kind == PT_SHAPE && it->shape <= PT_SHAPE_ELLIPSE);
 }
 
+int item_movable(const pt_item *it) { return movable(it->kind); }
+
+int item_resizable(const pt_item *it) { return resizable(it); }
+
 /* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
  * one strip so its joints do not darken; the highlighter multiplies a light tint into the page, as the saved
  * annotation does. */
@@ -345,7 +349,7 @@ static void clamp_scroll(tab *t)
 
 /* ---- drawing ---- */
 
-static void dashed_rect(Rectangle r, Color c)
+void dashed_rect(Rectangle r, Color c)
 {
     float dash = 4, gap = 3;
     Vector2 corners[5] = {
@@ -713,9 +717,9 @@ static void handle_input(tab *t, Rectangle area)
         close_popover(t, 1);
     }
 
-    if (!ui.focus && !dialogs_open()) {
-        if (ui_key(KEY_UP)) t->scroll_y -= 40;
-        if (ui_key(KEY_DOWN)) t->scroll_y += 40;
+    if (!ui.focus && !dialogs_open() && !t->side_focus) {
+        if (ui_key(KEY_UP)) t->scroll_y -= ARROW_STEP;
+        if (ui_key(KEY_DOWN)) t->scroll_y += ARROW_STEP;
     }
 
     /* the scrollbars belong to themselves: no tool cursor, gesture or click on the page under them */
@@ -754,7 +758,7 @@ static void handle_input(tab *t, Rectangle area)
     }
 
     /* a press selects the item, crop or annotation under it (and starts moving it), or starts the tool's gesture */
-    if (over && ui.pressed) t->thumbs_focus = 0;
+    if (over && ui.pressed) t->thumbs_focus = t->side_focus = 0, t->caret_click = 1;
     if (over && ui.pressed && !field) {
         fz_point scene = screen_to_scene(t, ui.mouse);
         close_popover(t, 1);
@@ -791,7 +795,8 @@ static void handle_input(tab *t, Rectangle area)
         }
         t->sel = SEL_NONE;
         t->gesture = selection_mode(t);
-        if (t->gesture == G_FLOW && ui.dclick && on_word(t, scene)) {
+        t->flow_lines = t->gesture == G_FLOW && ui.shift;
+        if (t->gesture == G_FLOW && !t->flow_lines && ui.dclick && on_word(t, scene)) {
             t->gesture = G_NONE;
             return;
         }
@@ -831,7 +836,7 @@ static void handle_input(tab *t, Rectangle area)
         } else if (t->gesture == G_BAND) {
             t->band = fz_make_rect(fminf(t->press_scene.x, now.x), fminf(t->press_scene.y, now.y),
                                    fmaxf(t->press_scene.x, now.x), fmaxf(t->press_scene.y, now.y));
-        } else if (t->gesture == G_FLOW && moved_far(t)) on_flow(t, t->press_scene, now, 0);
+        } else if (t->gesture == G_FLOW && (moved_far(t) || t->flow_lines)) on_flow(t, t->press_scene, now, 0);
         /* autoscroll while dragging past the view's edge */
         if (ui.mouse.y < area.y + 10) t->scroll_y -= 12;
         if (ui.mouse.y > area.y + area.height - 10) t->scroll_y += 12;
@@ -853,7 +858,7 @@ static void handle_input(tab *t, Rectangle area)
         else on_click(t, t->press_scene);
     } else if (g == G_FLOW) {
         t->flow_preview.n = 0;
-        if (far) on_flow(t, t->press_scene, now, 1);
+        if (far || t->flow_lines) on_flow(t, t->press_scene, now, 1);
         else on_click(t, t->press_scene);
     } else if (g == G_MOVE || g == G_RESIZE) {
         fz_rect r = drag_rect_for(t, g);
@@ -1053,6 +1058,8 @@ static void link_preview_hover(tab *t, const link_info *l, Rectangle at)
 static void draw_link_preview(tab *t)
 {
     if (lp.t != t || lp.seen != ui.now || ui.now - lp.since < PREVIEW_DELAY_S || order_index(t, lp.page) < 0) return;
+    /* in a split view, only in the pane the link is in */
+    if (!CheckCollisionRecs(lp.at, t->view)) return;
     fz_rect b = page_bounds(t, lp.page);
     float pw = b.x1 - b.x0, w = fminf(PREVIEW_W, t->view.width - 2 * PREVIEW_MARGIN), s = w / pw,
           h = fminf(PREVIEW_H, (b.y1 - lp.y + PREVIEW_ABOVE_PT) * s);
@@ -1080,33 +1087,51 @@ static void draw_link_preview(tab *t)
 /* ---- line numbers ----
  * Numbered as pt_number_lines counts them; a column's numbers sit beside it, as LaTeX's lineno package sets them in
  * two columns: in the left margin for a column in the page's left half, in the right margin for one in its right
- * half. One small size for all, scaled with the page like its text. */
+ * half. One size for all (line_numbers_size), scaled with the page like its text. */
 
-#define LINE_NUMBER_PT 7.0f
 #define LINE_NUMBER_GAP_PT 7.0f /* between a column and its numbers */
 #define RIGHT_COLUMN_FROM 0.45f /* a column starting past this share of the page width is numbered on its right */
 
-static void number_page(tab *t, int p, const pt_text_lines *lines)
+/* caret_n > 0: relative numbers, the distance to the caret's line (number caret_n through the document), which shows
+ * its own number in the accent colour */
+static void number_page(tab *t, int p, const pt_text_lines *lines, int caret_n)
 {
-    float page_w = page_bounds(t, p).x1 - page_bounds(t, p).x0, size = LINE_NUMBER_PT * t->zoom;
+    int pt = pt_settings_int(&app.settings, "line_numbers_size");
+    if (pt < PT_LINE_NUMBERS_MIN_PT) pt = PT_LINE_NUMBERS_MIN_PT;
+    if (pt > PT_LINE_NUMBERS_MAX_PT) pt = PT_LINE_NUMBERS_MAX_PT;
+    float page_w = page_bounds(t, p).x1 - page_bounds(t, p).x0, size = pt * t->zoom;
+    /* one column of numbers per side, as lineno sets them: at the page's leftmost text edge for the text in its
+     * left half, at the rightmost edge for a right-hand column, not beside each indented block */
+    float left = page_w, right = 0;
+    for (int i = 0; i < lines->n; i++) {
+        const pt_text_line *l = &lines->v[i];
+        if (l->col_x0 > page_w * RIGHT_COLUMN_FROM) right = fmaxf(right, l->col_x1);
+        else left = fminf(left, l->col_x0);
+    }
+    float left_x = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(left, 0, left, 1))).x;
+    float right_x = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(right, 0, right, 1))).x;
     for (int i = 0; i < lines->n; i++) {
         const pt_text_line *l = &lines->v[i];
         Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, l->r));
         if (!CheckCollisionRecs(r, t->view)) continue;
-        Rectangle col = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(l->col_x0, 0, l->col_x1, 1)));
+        int here = caret_n > 0 && l->n == caret_n;
         char num[16];
-        snprintf(num, sizeof num, "%d", l->n);
-        float w = text_width(num, size, F_REGULAR), gap = LINE_NUMBER_GAP_PT * t->zoom;
-        float x = l->col_x0 > page_w * RIGHT_COLUMN_FROM ? col.x + col.width + gap : col.x - gap - w;
-        draw_text(num, x, r.y + (r.height - size) / 2, size, F_REGULAR, GRAY);
+        snprintf(num, sizeof num, "%d", caret_n > 0 && !here ? abs(l->n - caret_n) : l->n);
+        font_kind f = here ? F_BOLD : F_REGULAR;
+        float w = text_width(num, size, f), gap = LINE_NUMBER_GAP_PT * t->zoom;
+        float x = l->col_x0 > page_w * RIGHT_COLUMN_FROM ? right_x + gap : left_x - gap - w;
+        draw_text(num, x, r.y + (r.height - size) / 2, size, f, here ? pal.highlight : GRAY);
     }
 }
 
 static void draw_line_numbers(tab *t)
 {
     if (!pt_settings_int(&app.settings, "line_numbers")) return;
-    pt_numbering mode = pt_numbering_from(pt_settings_str(&app.settings, "line_numbers_restart"));
-    pt_numbering_state state = {1, 0, 0, 0};
+    const char *restart = pt_settings_str(&app.settings, "line_numbers_restart");
+    /* relative numbers count from the caret, which only vim keys have; without them, through the document */
+    int caret_n = !strcmp(restart, LINE_NUMBERS_RELATIVE) && vim_keys_on() ? caret_line_number(t) : 0;
+    pt_numbering mode = pt_numbering_from(restart);
+    pt_numbering_state state = {1};
     pt_text_lines lines = {0};
     int known = 1;
     for (int i = 0; i < t->st.order.n; i++) {
@@ -1126,7 +1151,7 @@ static void draw_line_numbers(tab *t)
             page_lines_info *li = &t->line_info[p];
             pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
             li->ok = 1, li->after = state;
-            number_page(t, p, &lines);
+            number_page(t, p, &lines, caret_n);
         } else if (t->line_info[p].ok && known) state = t->line_info[p].after;
         else if (known && mode != PT_NUMBER_PAGE) {
             pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
@@ -1136,10 +1161,107 @@ static void draw_line_numbers(tab *t)
     pt_vec_free(lines);
 }
 
+static void pane_frame(tab *t, Rectangle area);
+
+/* While the find bar is open: the views at the matches before and after the current one, prefetched, so stepping
+ * to them lands on sharp pages */
+static void request_match_views(tab *t, Rectangle area)
+{
+    int n = t->matches.n;
+    if (!t->find_open || n < 2 || t->match_idx < 0 || !continuous()) return;
+    float sx = t->scroll_x, sy = t->scroll_y;
+    for (int d = -1; d <= 1; d += 2) {
+        hit m = t->matches.v[((t->match_idx + d) % n + n) % n];
+        if (t->off_y[m.page] < -1e8f) continue;
+        center_on(t, to_scene(t, m.page, m.rect));
+        clamp_scroll(t);
+        request_pages(t, area, 0);
+    }
+    t->scroll_x = sx, t->scroll_y = sy;
+}
+
+/* ---- split view ----
+ * Two panes on one document, each with its own page, zoom and scroll. The tab's fields are the active pane's, so
+ * the toolbar, the find bar and the page number act on it; the other pane's are swapped in while it draws, and a
+ * press in it makes it the active one. */
+
+#define SPLIT_BAR 6.0f  /* the divider's thickness */
+#define SPLIT_MIN 0.15f /* the smallest share of the room a pane keeps */
+#define SPLIT_MARK 2.0f /* the accent line along the active pane's edge */
+
+static void pane_swap(tab *t)
+{
+    pane_view keep;
+#define X(type, name) keep.name = t->name, t->name = t->other.name, t->other.name = keep.name;
+    PANE_FIELDS
+#undef X
+}
+
+void split_set(tab *t, split_mode m)
+{
+    if (m != SPLIT_NONE && t->split == SPLIT_NONE) {
+        /* the new pane starts where the view is */
+#define X(type, name) t->other.name = t->name;
+        PANE_FIELDS
+#undef X
+        t->other.gesture = G_NONE;
+        if (t->split_at <= 0) t->split_at = 0.5f;
+    }
+    t->split = m;
+    /* a fitted zoom fits again once the pane's new size is known */
+    t->fit_pending = t->fit;
+    t->other.fit_pending = t->other.fit;
+}
+
 void view_frame(tab *t, Rectangle area)
 {
-    t->view = area;
     t->view_missing = 0;
+    if (t->split == SPLIT_NONE || !t->doc) {
+        pane_frame(t, area);
+        return;
+    }
+    int side = t->split == SPLIT_SIDE;
+    float len = side ? area.width : area.height, at = roundf(len * t->split_at);
+    Rectangle r[2], bar;
+    if (side) {
+        r[0] = (Rectangle){area.x, area.y, at - SPLIT_BAR / 2, area.height};
+        r[1] = (Rectangle){area.x + at + SPLIT_BAR / 2, area.y, area.width - at - SPLIT_BAR / 2, area.height};
+        bar = (Rectangle){area.x + at - SPLIT_BAR / 2, area.y, SPLIT_BAR, area.height};
+    } else {
+        r[0] = (Rectangle){area.x, area.y, area.width, at - SPLIT_BAR / 2};
+        r[1] = (Rectangle){area.x, area.y + at + SPLIT_BAR / 2, area.width, area.height - at - SPLIT_BAR / 2};
+        bar = (Rectangle){area.x, area.y + at - SPLIT_BAR / 2, area.width, SPLIT_BAR};
+    }
+    for (int i = 0; i < 2; i++) {
+        int active = i == t->split_active;
+        if (!active) pane_swap(t);
+        pane_frame(t, r[i]);
+        if (active) continue;
+        if (ui.pressed && ui_hover(r[i])) t->split_active = i;
+        else pane_swap(t);
+    }
+    static int dragging;
+    unsigned id = ui_id(t, 960);
+    if (ui_hover(bar)) set_cursor(side ? CUR_SIZE_HOR : CUR_SIZE_VER);
+    if (ui.pressed && ui_hover(bar)) dragging = (int)id;
+    if (dragging == (int)id) {
+        if (!ui.down) dragging = 0;
+        else {
+            float m = side ? ui.mouse.x - area.x : ui.mouse.y - area.y;
+            t->split_at = fminf(fmaxf(m / len, SPLIT_MIN), 1 - SPLIT_MIN);
+            set_cursor(side ? CUR_SIZE_HOR : CUR_SIZE_VER);
+            ui.dirty = 1;
+        }
+    }
+    DrawRectangleRec(bar, pal.window);
+    Rectangle a = r[t->split_active];
+    DrawRectangleRec(side ? (Rectangle){a.x, a.y, a.width, SPLIT_MARK} : (Rectangle){a.x, a.y, SPLIT_MARK, a.height},
+                     pal.highlight);
+}
+
+static void pane_frame(tab *t, Rectangle area)
+{
+    t->view = area;
     DrawRectangleRec(area, pal.page_bg);
     if (!t->doc) return;
     ui_touch_zoom_area(area);
@@ -1211,9 +1333,12 @@ void view_frame(tab *t, Rectangle area)
 
     handle_input(t, area);
 
-    /* a soft keyboard that just opened (the view got shorter) or a field just focused must not cover the field */
-    if (ui.focus && (area.height < t->last_view_h - 0.5f || ui.focus != t->last_focus)) t->reveal_until = ui.now + 0.5;
-    if (ui.focus && ui.now < t->reveal_until) {
+    /* a soft keyboard that just opened (the view got shorter) or a field just focused must not cover the field; the
+     * command line is below the view, not on the page */
+    int page_field = ui.focus && !cmdline_is_open();
+    if (page_field && (area.height < t->last_view_h - 0.5f || ui.focus != t->last_focus))
+        t->reveal_until = ui.now + 0.5;
+    if (page_field && ui.now < t->reveal_until) {
         ui.dirty = 1;
         Rectangle f = ui.focus_rect;
         float bottom = area.y + area.height - 12;
@@ -1233,6 +1358,7 @@ void view_frame(tab *t, Rectangle area)
 
     if (t->zanim_t0 > 0) request_landing(t, area);
     else request_pages(t, area, 0);
+    request_match_views(t, area);
     ui_scissor_begin(area);
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
@@ -1291,6 +1417,7 @@ void view_frame(tab *t, Rectangle area)
         for (int i = 0; i < t->flow_preview.n; i++)
             DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, t->flow_page, t->flow_preview.v[i])), c);
     }
+    caret_draw(t);
     if (t->sync_marks.n) {
         if (ui.now >= t->sync_until) t->sync_marks.n = 0;
         else ui_redraw_at(t->sync_until);
@@ -2081,6 +2208,9 @@ void ocr_dialog(tab *t)
 #define CARD_THUMB_W 148.0f
 #define CARD_THUMB_H 200.0f
 #define GAP 16.0f
+#define CARD_RING_W 2.0f
+#define CARD_RING_ROUND 0.05f
+#define CARD_RING_SEGMENTS 6
 #define CELL_W (GAP + CARD_THUMB_W + 12)
 #define CELL_H (CARD_THUMB_H + 58)
 #define THUMBS_PER_FRAME 6
@@ -2117,6 +2247,8 @@ struct workspace {
     float scroll;
     char *start_dir;
     int anchor; /* the card a Shift+click selects from, -1 none */
+    int cursor; /* the card the arrow keys are on, -1 none; ringed after a key moved it */
+    int keyed, reveal, cols;
     int drag, drag_from;
     Vector2 drag_at;
     int renaming; /* the part whose name is being edited, -1 none */
@@ -2133,7 +2265,8 @@ workspace *workspace_new(void)
     w->every = 1;
     w->start_dir = pt_strdup(getenv("HOME") ? getenv("HOME") : "/");
     w->renaming = -1;
-    w->anchor = -1;
+    w->anchor = w->cursor = -1;
+    w->cols = 1;
     return w;
 }
 
@@ -2542,6 +2675,8 @@ static void menu_clear(void *ctx, intptr_t all)
 
 void workspace_toolbar(workspace *w, Rectangle area)
 {
+    /* the toolbar, the grid's buttons and Save are one focus scope for Tab */
+    if (!dialogs_open()) ui_focus_scope_begin(w);
     float h = 32, y = area.y + (area.height - h) / 2, x = area.x;
     if (ui.w < NARROW_W) {
         if (ui_button(ui_id(w, 1), (Rectangle){x, y, 32, h}, NULL, "add", B_FLAT, "Add files...")) pick_files(w);
@@ -2560,7 +2695,9 @@ void workspace_toolbar(workspace *w, Rectangle area)
             menu_item(m, "Clear cuts", "remove", NULL, menu_clear, w, 0, 1, 0);
             menu_item(m, "Clear all", "close", NULL, menu_clear, w, 1, 1, 0);
             menu_open_below(m, more);
+            if (ui_focused(ui_id(w, 7))) menu_keyboard();
         }
+        ui_focus_scope_end();
         return;
     }
     float bw = button_width("Add files...", "add", 0);
@@ -2581,14 +2718,54 @@ void workspace_toolbar(workspace *w, Rectangle area)
     x = ui_toolbar_separator(x, y, h);
     bw = button_width("Clear all", "close", 0);
     if (ui_button(ui_id(w, 6), (Rectangle){x, y, bw, h}, "Clear all", "close", B_FLAT, NULL)) clear(w);
+    ui_focus_scope_end();
+}
+
+/* Ctrl+Left / Ctrl+Right: the selected cards one place along, as dragging them there would */
+static void move_selected(workspace *w, int dir)
+{
+    int n = w->cards.n;
+    for (int k = 0; k < n; k++) {
+        int i = dir < 0 ? k : n - 1 - k, j = i + dir;
+        if (!w->cards.v[i].selected || j < 0 || j >= n || w->cards.v[j].selected) continue;
+        card c = w->cards.v[i];
+        w->cards.v[i] = w->cards.v[j];
+        w->cards.v[j] = c;
+        if (w->cursor == i) w->cursor = j;
+    }
 }
 
 void workspace_shortcuts(workspace *w)
 {
     if (dialogs_open() || menu_is_open() || ui.focus) return;
-    if (ui_shortcut(0, 0, KEY_DELETE) || ui_shortcut(0, 0, KEY_BACKSPACE)) remove_selected(w);
-    if (ui_shortcut(1, 0, KEY_A))
+    if (keymap_pressed("workspace.remove")) remove_selected(w);
+    if (keymap_pressed("workspace.select_all"))
         for (int i = 0; i < w->cards.n; i++) w->cards.v[i].selected = 1;
+    if (keymap_pressed("workspace.move_left")) move_selected(w, -1);
+    if (keymap_pressed("workspace.move_right")) move_selected(w, 1);
+    int n = w->cards.n;
+    if (w->cursor >= n) w->cursor = n - 1;
+    if (keymap_pressed("workspace.cut") && w->cursor > 0) w->cards.v[w->cursor].cut = !w->cards.v[w->cursor].cut;
+    /* the arrows move between the cards (Shift: selecting the ones passed), Space ticks one more or one less */
+    int step = 0, shift = 0;
+    for (int s = 0; s < 2; s++) {
+        int d = (ui_shortcut(0, s, KEY_RIGHT) - ui_shortcut(0, s, KEY_LEFT)) +
+                w->cols * (ui_shortcut(0, s, KEY_DOWN) - ui_shortcut(0, s, KEY_UP));
+        if (d) step = d, shift = s;
+    }
+    if (step && n) {
+        int at = w->cursor < 0 ? 0 : w->cursor + step;
+        at = at < 0 ? 0 : at >= n ? n - 1 : at;
+        if (!shift || w->anchor < 0) w->anchor = at;
+        int lo = w->anchor < at ? w->anchor : at, hi = w->anchor < at ? at : w->anchor;
+        for (int i = 0; i < n; i++) w->cards.v[i].selected = i >= lo && i <= hi;
+        w->cursor = at;
+        w->keyed = w->reveal = 1;
+    }
+    if (ui_shortcut(0, 0, KEY_SPACE) && !ui_focused_any() && w->cursor >= 0 && w->cursor < n) {
+        w->cards.v[w->cursor].selected = !w->cards.v[w->cursor].selected;
+        w->keyed = 1;
+    }
 }
 
 static void drop_zone(workspace *w, Rectangle r)
@@ -2624,6 +2801,7 @@ static void drop_zone(workspace *w, Rectangle r)
 
 void workspace_frame(workspace *w, Rectangle area)
 {
+    if (!dialogs_open()) ui_focus_scope_begin(w);
     DrawRectangleRec(area, pal.window);
     draw_thumbs(w);
     Rectangle in = {area.x + 24, area.y + 20, area.width - 48, area.height - 40};
@@ -2646,6 +2824,13 @@ void workspace_frame(workspace *w, Rectangle area)
     else {
         int cols = (int)fmaxf(1, floorf(grid.width / CELL_W));
         int rows = (w->cards.n + cols - 1) / cols;
+        w->cols = cols;
+        if (w->reveal && w->cursor >= 0) {
+            float top = (float)(w->cursor / cols) * CELL_H;
+            if (top < w->scroll) w->scroll = top;
+            if (top + CELL_H > w->scroll + grid.height) w->scroll = top + CELL_H - grid.height;
+        }
+        w->reveal = 0;
         if (ui_hover(grid) && ui.wheel) w->scroll -= ui.wheel * 80;
         w->scroll = fminf(fmaxf(w->scroll, 0), fmaxf(0, rows * CELL_H - grid.height));
         ui_scissor_begin(grid);
@@ -2664,6 +2849,8 @@ void workspace_frame(workspace *w, Rectangle area)
             if (cell.y > grid.y + grid.height || cell.y + cell.height < grid.y) continue;
             int hover_strip = ui_hover(strip) && i > 0, hover_card = ui_hover(cardr);
             if (c->selected) DrawRectangleRounded(cardr, 0.05f, 6, with_alpha(pal.highlight, 60));
+            if (w->keyed && i == w->cursor)
+                DrawRectangleRoundedLinesEx(cardr, CARD_RING_ROUND, CARD_RING_SEGMENTS, CARD_RING_W, pal.highlight);
             DrawRectangleRec((Rectangle){cardr.x + 6, cardr.y + 2, cardr.width - 12, 3}, pal.source[c->src % 6]);
             Rectangle thumb = {cardr.x + (cardr.width - CARD_THUMB_W) / 2, cardr.y + 8, CARD_THUMB_W, CARD_THUMB_H};
             if (c->thumb_ok && c->thumb.id) {
@@ -2704,6 +2891,7 @@ void workspace_frame(workspace *w, Rectangle area)
             }
             if (hover_strip && ui.released && !w->drag) c->cut = !c->cut;
             if (hover_card && ui.pressed) {
+                w->cursor = i, w->keyed = 0;
                 if (ui.ctrl) c->selected = !c->selected;
                 else if (ui.shift && w->anchor >= 0) {
                     int a = w->anchor < i ? w->anchor : i, b = w->anchor < i ? i : w->anchor;
@@ -2897,4 +3085,5 @@ void workspace_frame(workspace *w, Rectangle area)
                   B_PRIMARY | (w->cards.n ? 0 : B_DISABLED), NULL))
         run_save(w);
     pt_vec_free(starts);
+    ui_focus_scope_end();
 }

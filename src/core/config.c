@@ -46,7 +46,14 @@ const pt_setting_def pt_settings_defs[] = {
     {"line_numbers", PT_SET_BOOL, NULL, 0, "Number the text lines in the margins (View > Line numbers)"},
     {"reopen_tabs", PT_SET_BOOL, NULL, 1,
      "Starting without files reopens the documents open when the window last closed"},
-    {"line_numbers_restart", PT_SET_STR, "document", 0, "Line numbers count through the: document | page | paragraph"},
+    {"line_numbers_size", PT_SET_INT, NULL, PT_LINE_NUMBERS_PT,
+     "Size of the line numbers in points (4 to 14), scaled with the page"},
+    {"line_numbers_restart", PT_SET_STR, "document", 0,
+     "Line numbers count through the: document | page, or relative (to the vim caret's line)"},
+    {"vim_keys", PT_SET_BOOL, NULL, 0,
+     "Vim keys in the page view (j/k, gg/G, /, n/N...); the tool letters then follow the leader key (Space)"},
+    {"vim_key_hints", PT_SET_BOOL, NULL, 1,
+     "With vim keys, a pause after the leader, g, ] or [ lists the keys that can follow it"},
 };
 const int pt_settings_count = sizeof pt_settings_defs / sizeof *pt_settings_defs;
 
@@ -297,6 +304,27 @@ static void on_value(void *opaque, const char *key, tvalue *v)
         pt_strs_free(&val->list);
         for (int k = 0; k < v->list.n; k++) pt_push(val->list, pt_strdup(v->list.v[k]));
     }
+}
+
+typedef struct {
+    pt_toml_strings_fn on;
+    void *opaque;
+} strings_reader;
+
+static void on_strings(void *opaque, const char *key, tvalue *v)
+{
+    strings_reader *r = opaque;
+    if (v->type == V_LIST && v->list_all_strings) r->on(r->opaque, key, &v->list);
+    else if (v->type == V_STR) {
+        pt_strs one = {&v->str, 1, 1};
+        r->on(r->opaque, key, &one);
+    } else r->on(r->opaque, key, NULL);
+}
+
+int pt_toml_strings(const char *text, pt_toml_strings_fn on, void *opaque)
+{
+    strings_reader r = {on, opaque};
+    return parse_toml(text, on_strings, &r);
 }
 
 /* ---- loading, reading and changing settings ---- */

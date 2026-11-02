@@ -47,8 +47,9 @@ Notes:
   and removes hidden data from the result: metadata, attachments, scripts, hidden text
   (including invisible OCR layers) and thumbnails. Check `matches` and
   `text_left_under_redactions` in the output.
-- `--text` is matched without regard to case unless `--case-sensitive`; `--regex` uses
-  PCRE2 (Perl-compatible) syntax over each page's text in reading order.
+- `--text` and `--regex` are matched without regard to case unless `--case-sensitive`; `--text` also across line
+  breaks and hyphenation. `--regex` uses MuPDF's regular expressions (JavaScript syntax: `\d`, `\b`, `(?:)`,
+  lookahead, no lookbehind) over each line of the page's text, so `^` and `$` are line ends.
 - `pages`: `--order` lists the pages to keep in their new order (`5-1` counts down);
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
 - Field names for `fill` come from `info` (`fields[].name`); checkboxes take `true`/`false`.
@@ -65,7 +66,7 @@ Notes:
 ```sh
 pdf-tools search in.pdf --text "total" [--pages 1-3] [--case-sensitive]   # -> pages and boxes of each match
 pdf-tools inspect in.pdf                                     # annotations (with per-page index) and form fields
-pdf-tools comments in.pdf [-o out.md] [--format md|json] [--numbering document|page|paragraph] [--pages 1-3]
+pdf-tools comments in.pdf [-o out.md] [--format md|json] [--numbering document|page] [--pages 1-3]
 pdf-tools render in.pdf -o page.png [--page 1] [--dpi 150]
 pdf-tools export-images in.pdf -d outdir/ [--pages 1-3] [--format png|jpeg] [--dpi 150]   # outdir/in-page1.png, ...
 pdf-tools ocr in.pdf -o out.pdf [--pages 1-3] [--language deu+eng] [--tessdata DIR]       # invisible, searchable text layer
@@ -92,7 +93,7 @@ pdf-tools scrub in.pdf -o out.pdf                            # metadata, attachm
   annotation with a comment, each with its replies (`/IRT`), as
   `{"file", "numbering", "comments": [{"page", "lines": [first, last], "type", "author", "date", "quote",
   "comment", "replies": [...]}], "count"}`. Lines are numbered as the window's line numbers count them
-  (`--numbering`: through the document, per page or per paragraph); `lines` is null on a page without text,
+  (`--numbering`: through the document or per page); `lines` is null on a page without text,
   `date` is ISO 8601 in UTC. With `-o` the list goes to that file (Markdown when it ends in `.md` or with
   `--format md`, else this JSON) and the output is `{"output", "count"}`; `--format md` needs `-o`.
   No comments: exit 3, nothing written.

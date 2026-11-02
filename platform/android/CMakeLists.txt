@@ -11,8 +11,7 @@ add_compile_options(-Wno-unknown-warning-option)
 # ptcore and ptcli come from the desktop build; its programs (the desktop window, the tests) are left out.
 set(PT_BUILD_GUI OFF CACHE BOOL "" FORCE)
 set(PT_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-# PCRE2 comes from build.sh (PCRE2_INCLUDE_DIR/PCRE2_LIBRARY); fonts are matched with the NDK font API instead
-set(PT_USE_PCRE2 ON CACHE BOOL "" FORCE)
+# fonts are matched with the NDK font API instead
 set(PT_USE_FONTCONFIG OFF CACHE BOOL "" FORCE)
 add_subdirectory(${PT_ROOT} native EXCLUDE_FROM_ALL)
 target_link_libraries(ptcore PUBLIC android)

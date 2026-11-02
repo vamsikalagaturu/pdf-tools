@@ -2,7 +2,7 @@
 # Builds pdf-tools for Linux and packs it as an AppImage and as PDF-Tools-Linux-<arch>.tar.gz (a pdf-tools/
 # folder with bin/ and share/), for this machine's architecture (x86_64 or aarch64). Both run on systems with this
 # machine's glibc or newer, so release builds come from the oldest supported one (CI: ubuntu-24.04).
-# The libraries come from deps.sh (MuPDF with Tesseract, PCRE2, OpenSSL and raylib with both Wayland and X11, built
+# The libraries come from deps.sh (MuPDF with Tesseract, OpenSSL and raylib with both Wayland and X11, built
 # from the sources pinned in platform/versions.sh) and are linked statically; CMake finds them through pkg-config.
 # fontconfig, OpenGL and the window system's libraries come from the system at run time.
 # Needs a C/C++ compiler, make, CMake, pkg-config, curl, git and the X11/Wayland development headers (README.md).
@@ -26,7 +26,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 step "PDF Tools"
 # what was built here comes first; fontconfig from the system after it
-export PKG_CONFIG_PATH="$ROOT/pkgconfig:$PCRE2_OUT/lib/pkgconfig:$OPENSSL_OUT/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export PKG_CONFIG_PATH="$ROOT/pkgconfig:$OPENSSL_OUT/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 cmake --fresh -S "$REPO" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RAYLIB_OUT" \
     -DCMAKE_C_FLAGS_RELEASE="$SIZE_CFLAGS -DNDEBUG" -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--gc-sections" -DPT_TESSDATA="$ROOT/dl/eng.traineddata" >/dev/null

@@ -6,7 +6,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(GNUInstallDirs)
 option(PT_BUILD_GUI "Build the raylib window (without it pdf-tools runs commands only)" ON)
 option(PT_BUILD_PROGRAMS "Build pdf-tools and the tests (off: only the libraries, for the Android build)" ON)
-option(PT_USE_PCRE2 "Regular expressions: search, redaction, finding personal data (PCRE2)" ON)
 option(PT_USE_FONTCONFIG "Match PDF font names to installed fonts (fontconfig)" ON)
 option(PT_USE_OPENSSL "Certificate signatures (OpenSSL libcrypto)" ON)
 # -Wno-clobbered (below) is GCC's; clang (macOS) only needs to not warn about it
@@ -25,7 +24,7 @@ else()
 endif()
 
 # Dependencies come from pkg-config (PKG_CONFIG_PATH for a prefix of your own); a path given on the command line
-# (MUPDF_LIBRARY, PCRE2_LIBRARY, OPENSSL_ROOT_DIR) wins, which the cross builds (Android, macOS) use.
+# (MUPDF_LIBRARY, OPENSSL_ROOT_DIR) wins, which the cross builds (Android, macOS) use.
 find_package(PkgConfig QUIET)
 
 # Files compiled into the binaries as byte arrays: <symbol>[] and <symbol>_size (NUL-terminated).
@@ -82,28 +81,6 @@ if(APPLE)
   target_link_libraries(ptcore PUBLIC "-framework CoreText" "-framework CoreFoundation")
 endif()
 
-if(PT_USE_PCRE2)
-  if(PCRE2_LIBRARY)
-    target_include_directories(ptcore PRIVATE ${PCRE2_INCLUDE_DIR})
-    target_link_libraries(ptcore PUBLIC ${PCRE2_LIBRARY})
-    target_compile_definitions(ptcore PUBLIC PT_USE_PCRE2=1)
-    if(WIN32)
-      # a static PCRE2: without it pcre2.h declares the functions as DLL imports
-      target_compile_definitions(ptcore PRIVATE PCRE2_STATIC)
-    endif()
-  elseif(PkgConfig_FOUND)
-    pkg_check_modules(PCRE2 IMPORTED_TARGET libpcre2-8)
-    if(PCRE2_FOUND)
-      target_link_libraries(ptcore PUBLIC PkgConfig::PCRE2)
-      target_compile_definitions(ptcore PUBLIC PT_USE_PCRE2=1)
-      string(APPEND PT_PC_REQUIRES " libpcre2-8")
-    endif()
-  endif()
-  if(NOT PCRE2_LIBRARY AND NOT PCRE2_FOUND)
-    message(STATUS "PCRE2 not found: regular expressions and finding personal data are off")
-  endif()
-endif()
-
 if(PT_USE_FONTCONFIG AND PkgConfig_FOUND)
   pkg_check_modules(FONTCONFIG IMPORTED_TARGET fontconfig)
   if(FONTCONFIG_FOUND)
@@ -142,7 +119,28 @@ if(PT_USE_OPENSSL)
   endif()
 endif()
 
-target_compile_definitions(ptcore PUBLIC PT_VERSION="${PROJECT_VERSION}")
+# A release (release.yml sets PT_RELEASE=1) is the plain version; any other build is a development one, as semver
+# pre-release + build metadata: 0.4.3-dev+1b42e42, .dirty when the tree has uncommitted changes. The update check
+# reads both as 0.4.3. Fixed when configured: the build scripts configure afresh each time.
+set(PT_VERSION_STRING "${PROJECT_VERSION}")
+if(NOT "$ENV{PT_RELEASE}" STREQUAL "1")
+  set(PT_VERSION_STRING "${PROJECT_VERSION}-dev")
+  find_package(Git QUIET)
+  if(GIT_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=7 HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                    OUTPUT_VARIABLE PT_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE PT_GIT_FAILED)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE PT_GIT_CHANGES ERROR_QUIET)
+    if(NOT PT_GIT_FAILED AND PT_GIT_COMMIT)
+      set(PT_VERSION_STRING "${PT_VERSION_STRING}+${PT_GIT_COMMIT}")
+      if(PT_GIT_CHANGES)
+        set(PT_VERSION_STRING "${PT_VERSION_STRING}.dirty")
+      endif()
+    endif()
+  endif()
+endif()
+message(STATUS "pdf-tools ${PT_VERSION_STRING}")
+target_compile_definitions(ptcore PUBLIC PT_VERSION="${PT_VERSION_STRING}")
 
 add_library(ptcli STATIC src/cli.c ${PT_GEN}/agents_md.c)
 target_link_libraries(ptcli PUBLIC ptcore)

@@ -21,18 +21,20 @@ void glfwPostEmptyEvent(void);
 #define CTX app.ctx
 
 const tool_def TOOLS[T_COUNT] = {
-    {"view", "View", "view", KEY_V,
-     "Fill forms, drag to select text (Alt-drag: rectangle), click notes to read them (V)"},
-    {"redact", "Redact", "redact", KEY_R, "Drag over text to redact it; Alt-drag or Snap off for a free rectangle (R)"},
-    {"highlight", "Highlight", "highlight", KEY_H, "Drag over text to highlight it, then add an optional comment (H)"},
-    {"note", "Note", "note", KEY_N, "Click to add a sticky note; click one to read or edit it (N)"},
-    {"text", "Text", "text", KEY_T,
-     "Click to type on the page, or drag first to set a width; double-click a box to edit it (T)"},
-    {"sign", "Sign", "sign", KEY_S, "Click to place a signature (S)"},
-    {"image", "Image", "image", KEY_I, "Click, or drag a box, to place a picture; drag its corner to resize (I)"},
-    {"draw", "Draw", "draw", KEY_D, "Draw freehand; strokes made in quick succession form one drawing (D)"},
-    {"shape", "Shape", "shapes", KEY_O, "Drag to draw a rectangle, ellipse, line or arrow (O)"},
-    {"crop", "Crop", "crop", KEY_C, "Drag a rectangle to crop to it; drag the frame or its corner to adjust (C)"},
+    {"view", "View", "view", "tool.view",
+     "Fill forms, drag to select text (Shift-drag: whole lines, Alt-drag: rectangle), click notes to read them"},
+    {"redact", "Redact", "redact", "tool.redact",
+     "Drag over text to redact it; Alt-drag or Snap off for a free rectangle"},
+    {"highlight", "Highlight", "highlight", "tool.highlight",
+     "Drag over text to highlight it, then add an optional comment"},
+    {"note", "Note", "note", "tool.note", "Click to add a sticky note; click one to read or edit it"},
+    {"text", "Text", "text", "tool.text",
+     "Click to type on the page, or drag first to set a width; double-click a box to edit it"},
+    {"sign", "Sign", "sign", "tool.sign", "Click to place a signature"},
+    {"image", "Image", "image", "tool.image", "Click, or drag a box, to place a picture; drag its corner to resize"},
+    {"draw", "Draw", "draw", "tool.draw", "Draw freehand; strokes made in quick succession form one drawing"},
+    {"shape", "Shape", "shapes", "tool.shape", "Drag to draw a rectangle, ellipse, line or arrow"},
+    {"crop", "Crop", "crop", "tool.crop", "Drag a rectangle to crop to it; drag the frame or its corner to adjust"},
 };
 /* tints for background highlights on white paper; text under them stays black */
 const preset HIGHLIGHT_PRESETS[5] = {
@@ -68,7 +70,7 @@ tab *tab_new(void)
     t->want_scroll_page = -1;
     t->sel = SEL_NONE;
     t->text_sel_page = -1;
-    t->outline_sel = t->outline_drag = -1;
+    t->outline_sel = t->outline_drag = t->mark_sel = t->thumbs_pno = -1;
     t->side_tab = 0;
     t->side_w = SIDEBAR_WIDTH;
     t->side_target = pt_settings_int(&app.settings, "show_sidebar");
@@ -118,7 +120,7 @@ void tab_invalidate_pages(tab *t)
 
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
-        if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]);
+        if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]), pt_captions_free(&t->captions[p]);
         if (t->fields_ok && t->fields_ok[p]) {
             for (int i = 0; i < t->fields[p].n; i++) {
                 field_info *f = &t->fields[p].v[i];
@@ -140,7 +142,7 @@ void tab_invalidate_pages(tab *t)
     }
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok), free(t->line_info);
+    free(t->bounds), free(t->bounds_ok), free(t->line_info), free(t->captions);
     pt_bookmarks_free(&t->file_outline);
     t->outline_ok = 0;
     t->outline_drag = -1;
@@ -159,6 +161,7 @@ void tab_invalidate_pages(tab *t)
     t->thumbs = calloc((size_t)n + 1, sizeof(Texture2D));
     t->thumb_ok = calloc((size_t)n + 1, 1);
     t->words = calloc((size_t)n + 1, sizeof(pt_words));
+    t->captions = calloc((size_t)n + 1, sizeof(pt_captions));
     t->words_ok = calloc((size_t)n + 1, 1);
     t->line_info = calloc((size_t)n + 1, sizeof(page_lines_info));
     t->fields = calloc((size_t)n + 1, sizeof(field_infos));
@@ -212,6 +215,8 @@ void tab_reset(tab *t)
     t->loaded = 0;
 }
 
+static void marks_free(tab *t);
+
 void tab_free(tab *t)
 {
     tab_reset(t);
@@ -220,16 +225,20 @@ void tab_free(tab *t)
     free(t->future);
     text_free(&t->find);
     pt_vec_free(t->matches);
+    pt_strs_free(&t->match_lines);
+    pt_vec_free(t->match_at);
     pt_vec_free(t->stroke);
     pt_vec_free(t->flow_preview);
     pt_vec_free(t->text_sel);
     pt_vec_free(t->annot_types);
     pt_vec_free(t->sync_marks);
     pt_vec_free(t->editors);
+    marks_free(t);
+    pt_vec_free(t->marks);
     free(t->ticked);
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
-    free(t->bounds), free(t->bounds_ok), free(t->line_info);
+    free(t->bounds), free(t->bounds_ok), free(t->line_info), free(t->captions);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);
@@ -274,6 +283,203 @@ static int position_of(const char *file, int *page, float *zoom, float *top)
             found = sscanf(lines.v[i] + n + 1, "%d\t%f\t%f", page, zoom, top) == 3;
     pt_strs_free(&lines);
     return found;
+}
+
+/* ---- bookmarks: $XDG_DATA_HOME/pdf-tools/bookmarks.tsv, "path\tpage\ttop\tchar\tname" per line, in the order they
+ * were added; char is a vim mark's character "x,y" or "-". Lines without char (before 0.4.3) still read. ---- */
+
+/* a line after its "path\t" into m (name malloc'd); 0 when it is not one */
+static int parse_mark(const char *rest, user_mark *m)
+{
+    int used = 0, tabs = 0;
+    for (const char *c = rest; *c; c++) tabs += *c == '\t';
+    *m = (user_mark){0};
+    if (sscanf(rest, "%d\t%f\t%n", &m->at.page, &m->at.top, &used) != 2 || !used) return 0;
+    rest += used;
+    if (tabs > 2) {
+        m->has_char = sscanf(rest, "%f,%f", &m->ch.x, &m->ch.y) == 2;
+        rest = strchr(rest, '\t') + 1;
+    }
+    m->name = pt_strdup(rest);
+    return 1;
+}
+
+static char *marks_file(void)
+{
+    char *base = pt_data_dir(), *dir = pt_format("%s/pdf-tools", base);
+    pt_mkdirs(dir);
+    char *path = pt_format("%s/bookmarks.tsv", dir);
+    free(base), free(dir);
+    return path;
+}
+
+static void read_mark_lines(pt_strs *lines)
+{
+    char *path = marks_file();
+    pt_bytes b = {0};
+    int ok = !pt_read_file(path, &b);
+    free(path);
+    if (!ok) return;
+    char *text = calloc(b.len + 1, 1);
+    if (!text) abort();
+    memcpy(text, b.data, b.len);
+    free(b.data);
+    for (char *s = text, *end; *s; s = end + (*end != 0)) {
+        end = s + strcspn(s, "\r\n");
+        if (end > s) pt_push(*lines, pt_format("%.*s", (int)(end - s), s));
+    }
+    free(text);
+}
+
+static void marks_free(tab *t)
+{
+    for (int i = 0; i < t->marks.n; i++) free(t->marks.v[i].name);
+    t->marks.n = 0;
+}
+
+static void marks_load(tab *t)
+{
+    marks_free(t);
+    if (!t->path) return;
+    pt_strs lines = {0};
+    read_mark_lines(&lines);
+    size_t n = strlen(t->path);
+    for (int i = 0; i < lines.n; i++) {
+        user_mark m;
+        if (strncmp(lines.v[i], t->path, n) || lines.v[i][n] != '\t' || !parse_mark(lines.v[i] + n + 1, &m)) continue;
+        pt_push(t->marks, m);
+    }
+    pt_strs_free(&lines);
+}
+
+/* this file's lines replaced by its bookmarks now, the other files' kept */
+static void marks_store(tab *t)
+{
+    if (!t->path) return;
+    pt_strs lines = {0};
+    read_mark_lines(&lines);
+    size_t n = strlen(t->path), cap = 1;
+    pt_strs out = {0};
+    for (int i = 0; i < lines.n; i++)
+        if (strncmp(lines.v[i], t->path, n) || lines.v[i][n] != '\t') pt_push(out, pt_strdup(lines.v[i]));
+    for (int i = 0; i < t->marks.n; i++) {
+        const user_mark *m = &t->marks.v[i];
+        char ch[48] = "-";
+        if (m->has_char) snprintf(ch, sizeof ch, "%.1f,%.1f", m->ch.x, m->ch.y);
+        pt_push(out, pt_format("%s\t%d\t%.1f\t%s\t%s", t->path, m->at.page, m->at.top, ch, m->name));
+    }
+    for (int i = 0; i < out.n; i++) cap += strlen(out.v[i]) + 1;
+    char *text = calloc(cap, 1), *path = marks_file();
+    if (!text) abort();
+    for (int i = 0; i < out.n; i++) strcat(strcat(text, out.v[i]), "\n");
+    if (pt_write_file(path, text, strlen(text))) status("Could not save the bookmarks", 4);
+    free(text), free(path);
+    pt_strs_free(&out);
+    pt_strs_free(&lines);
+}
+
+/* a name on one line of the file */
+static char *mark_name(const char *name)
+{
+    char *s = pt_strdup(name && *name ? name : "Bookmark");
+    for (char *c = s; *c; c++)
+        if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
+    return s;
+}
+
+static void current_position(tab *t, int *page, float *zoom, float *top);
+
+void marks_add(tab *t, const char *name)
+{
+    if (!t->doc || !t->path) return;
+    user_mark m = {0};
+    float zoom;
+    current_position(t, &m.at.page, &zoom, &m.at.top);
+    m.name = mark_name(name);
+    pt_push(t->marks, m);
+    marks_store(t);
+}
+
+static void drop_named(user_marks *marks, const char *name)
+{
+    int n = 0;
+    for (int i = 0; i < marks->n; i++) {
+        if (!strcmp(marks->v[i].name, name)) free(marks->v[i].name);
+        else marks->v[n++] = marks->v[i];
+    }
+    marks->n = n;
+}
+
+void marks_set(tab *t, const char *name, const nav_spot *at, const fz_point *ch, int unique)
+{
+    if (!t->doc || !t->path) return;
+    user_mark m = {0};
+    if (at) m.at = *at;
+    else {
+        float zoom;
+        current_position(t, &m.at.page, &zoom, &m.at.top);
+    }
+    if (ch) m.has_char = 1, m.ch = *ch;
+    m.name = mark_name(name);
+    drop_named(&t->marks, m.name);
+    pt_push(t->marks, m);
+    if (unique) {
+        for (int k = 0; k < app.tabs.n; k++) {
+            tab *o = app.tabs.v[k].kind == TAB_DOC ? app.tabs.v[k].doc : NULL;
+            if (o && o != t) drop_named(&o->marks, m.name);
+        }
+        /* and from the file, before marks_store writes this file's own */
+        pt_strs lines = {0};
+        read_mark_lines(&lines);
+        size_t cap = 1;
+        for (int i = 0; i < lines.n; i++) cap += strlen(lines.v[i]) + 1;
+        char *text = calloc(cap, 1), *file = marks_file();
+        if (!text) abort();
+        for (int i = 0; i < lines.n; i++) {
+            const char *last = strrchr(lines.v[i], '\t');
+            if (last && !strcmp(last + 1, m.name)) continue;
+            strcat(strcat(text, lines.v[i]), "\n");
+        }
+        if (pt_write_file(file, text, strlen(text))) status("Could not save the bookmarks", 4);
+        free(text), free(file);
+        pt_strs_free(&lines);
+    }
+    marks_store(t);
+}
+
+void marks_lines(pt_strs *out) { read_mark_lines(out); }
+
+int marks_find(const char *name, char **path, user_mark *out)
+{
+    pt_strs lines = {0};
+    read_mark_lines(&lines);
+    int found = 0;
+    for (int i = 0; i < lines.n && !found; i++) {
+        const char *last = strrchr(lines.v[i], '\t');
+        size_t n = strcspn(lines.v[i], "\t");
+        if (!last || strcmp(last + 1, name) || !lines.v[i][n] || !parse_mark(lines.v[i] + n + 1, out)) continue;
+        found = 1;
+        *path = pt_format("%.*s", (int)n, lines.v[i]);
+    }
+    pt_strs_free(&lines);
+    return found;
+}
+
+void marks_rename(tab *t, int i, const char *name)
+{
+    if (i < 0 || i >= t->marks.n) return;
+    free(t->marks.v[i].name);
+    t->marks.v[i].name = mark_name(name);
+    marks_store(t);
+}
+
+void marks_remove(tab *t, int i)
+{
+    if (i < 0 || i >= t->marks.n) return;
+    free(t->marks.v[i].name);
+    memmove(t->marks.v + i, t->marks.v + i + 1, sizeof *t->marks.v * (size_t)(t->marks.n - i - 1));
+    t->marks.n--;
+    marks_store(t);
 }
 
 static void current_position(tab *t, int *page, float *zoom, float *top)
@@ -435,6 +641,7 @@ int tab_load(tab *t, const char *path, const char *password)
         t->restore_pending = 1, t->restore_top = top;
     }
     current_position(t, &t->saved_page, &t->saved_zoom, &t->saved_top);
+    marks_load(t);
 
     if (t->find_open) run_search(t);
     app_publish_state();
@@ -872,10 +1079,28 @@ static void nav_push(tab *t, int fwd)
 {
     int *n = fwd ? &t->nav_nfwd : &t->nav_nback;
     nav_spot *v = fwd ? t->nav_fwd : t->nav_back;
-    if (*n == NAV_MAX) memmove(v, v + 1, sizeof *v * (NAV_MAX - 1)), (*n)--;
+    caret_spot *at = fwd ? t->nav_fwd_at : t->nav_back_at;
+    if (*n == NAV_MAX) {
+        memmove(v, v + 1, sizeof *v * (NAV_MAX - 1));
+        memmove(at, at + 1, sizeof *at * (NAV_MAX - 1));
+        (*n)--;
+    }
     float zoom;
     current_position(t, &v[*n].page, &zoom, &v[*n].top);
+    at[*n] = t->caret ? t->at : (caret_spot){-1, 0, 0};
     (*n)++;
+}
+
+/* the caret back where Back or Forward found it, its words permitting */
+static void nav_caret(tab *t, caret_spot s)
+{
+    if (s.page < 0 || !t->caret || order_index(t, s.page) < 0) return;
+    pt_words *w = page_words(t, s.page);
+    if (s.word >= w->n || s.ch >= w->v[s.word].chars.n) return;
+    if (t->caret > CARET_ON) t->caret = CARET_ON;
+    t->at = s;
+    fz_rect r = w->v[s.word].chars.v[s.ch].r;
+    t->caret_x = (r.x0 + r.x1) / 2;
 }
 
 void nav_mark(tab *t)
@@ -896,6 +1121,16 @@ void nav_go(tab *t, int back)
     tab_goto(t, page);
     t->want_scroll_page = -1;
     t->restore_pending = 1, t->restore_top = (back ? t->nav_back : t->nav_fwd)[*n].top;
+    nav_caret(t, (back ? t->nav_back_at : t->nav_fwd_at)[*n]);
+}
+
+void nav_jump(tab *t, nav_spot to)
+{
+    if (!t->doc || order_index(t, to.page) < 0) return;
+    nav_mark(t);
+    tab_goto(t, to.page);
+    t->want_scroll_page = -1;
+    t->restore_pending = 1, t->restore_top = to.top;
 }
 
 void tab_step_page(tab *t, int delta)
@@ -990,6 +1225,7 @@ typedef struct render_job {
     int page, tile;
     int thumb, words;  /* a sidebar thumbnail; the page's words (text selection) instead of pixels */
     pt_words found;    /* words: the result */
+    pt_captions caps;  /* words: the page's figure, table and equation captions */
     float scale, prio; /* prio: distance from the middle of the view; nearest first */
     int visible;       /* else prefetched: stored only in free room */
     fz_irect box;      /* a tile's device pixels */
@@ -1004,11 +1240,13 @@ typedef struct render_job {
 
 #define RENDER_QUEUE_MAX 32
 #define UPLOAD_BUDGET_S 0.004
+#define HOLD_UPLOAD_BUDGET_S 0.05 /* per frame while the screen holds its last frame (app_hold_frames) */
 #define RENDER_RECHECK_S 0.25
 #define LIST_CACHE 8
 
-/* a screenful of tiles renders in parallel; each worker has its own context, open copy and display lists */
-#define RENDER_WORKERS_MAX 3
+/* a screenful of tiles renders in parallel; each worker has its own context, open copy and display lists, so more
+ * workers cost memory: a large display needs a few dozen tiles at once, and past this many the uploads limit */
+#define RENDER_WORKERS_MAX 8
 
 /* busy, held_gen and forgotten are shared with the main thread under R.lock; the rest is the worker's own */
 typedef struct {
@@ -1059,6 +1297,7 @@ static void job_free(fz_context *ctx, render_job *j)
     fz_drop_buffer(ctx, j->bytes);
     fz_drop_pixmap(ctx, j->pix);
     pt_words_free(&j->found);
+    pt_captions_free(&j->caps);
     free(j->password);
     free(j->name);
     free(j);
@@ -1148,7 +1387,11 @@ static void *render_worker(void *arg)
             if (j->words) {
                 fz_stext_options opts = {.flags = PT_TEXT_FLAGS};
                 fz_stext_page *st = fz_new_stext_page_from_display_list(ctx, list, &opts);
-                fz_try(ctx) pt_reading_order_words(st, &j->found);
+                fz_try(ctx)
+                {
+                    pt_reading_order_words(st, &j->found);
+                    pt_page_captions(ctx, st, &j->caps);
+                }
                 fz_always(ctx) fz_drop_stext_page(ctx, st);
                 fz_catch(ctx) fz_rethrow(ctx);
             } else {
@@ -1467,7 +1710,8 @@ static void render_collect(tab *t)
     }
 #endif
     if (frame != ui.now) frame = ui.now, spent = 0;
-    while (spent < budget) {
+    /* while the screen holds its last frame nothing is shown, so this frame may take every finished render */
+    while (spent < (app_holding() ? HOLD_UPLOAD_BUDGET_S : budget)) {
         render_job *mine = NULL, *stale = NULL;
         pthread_mutex_lock(&R.lock);
         for (render_job **q = &R.done; *q;) {
@@ -1486,7 +1730,10 @@ static void render_collect(tab *t)
         /* a failed render is kept as an empty texture, so it is not asked for again in every frame */
         int page = mine->page, known = page >= 0 && page < t->npages;
         if (mine->words) {
-            if (known && !t->words_ok[page]) t->words[page] = mine->found, mine->found = (pt_words){0};
+            if (known && !t->words_ok[page]) {
+                t->words[page] = mine->found, mine->found = (pt_words){0};
+                t->captions[page] = mine->caps, mine->caps = (pt_captions){0};
+            }
             if (known) t->words_ok[page] = 1;
         } else if (mine->thumb) {
             if (known && !t->thumb_ok[page]) t->thumbs[page] = texture_from_pixmap(mine->pix), t->thumb_ok[page] = 1;
@@ -1598,6 +1845,7 @@ pt_words *page_words(tab *t, int page)
             fz_page *p = fz_load_page(CTX, (fz_document *)t->doc, page);
             fz_stext_page *st = pt_stext(CTX, p);
             pt_reading_order_words(st, &t->words[page]);
+            pt_page_captions(CTX, st, &t->captions[page]);
             fz_drop_stext_page(CTX, st);
             fz_drop_page(CTX, p);
         }
@@ -1789,6 +2037,7 @@ void follow_link(tab *t, const link_info *l)
     }
     nav_mark(t);
     tab_goto(t, l->page);
+    caret_to_link_target(t, l->page, (fz_point){l->x, l->y});
     /* the target point, a little below the top of the view */
     fz_point src = disp_to_src(t, l->page, (fz_point){l->x, l->y});
     t->want_center = 1;
@@ -1947,6 +2196,8 @@ static fz_buffer *tab_output(tab *t, pt_leaks *leaks)
 static void save_confirmed(void *ctx, int yes)
 {
     tab *t = ctx;
+    int then_close = t->close_after_save;
+    t->close_after_save = 0;
     if (!yes) return;
     pt_leaks leaks = {0};
     fz_buffer *data = tab_output(t, &leaks);
@@ -1983,11 +2234,13 @@ static void save_confirmed(void *ctx, int yes)
     } else {
         tab_report(t, path, &leaks, scrubbed);
         if (!tab_load(t, path, password)) app_hold_frames(t);
+        else then_close = 0;
     }
     pt_leaks_free(&leaks);
     free(tmp);
     free(path);
     free(password);
+    if (then_close && !tab_edit_count(t)) app_remove_tab(t);
 }
 
 static void save_converted(tab *t);
@@ -2195,6 +2448,18 @@ void tab_save_as(tab *t)
     write_copy(t, NULL, name, 0, 1, NULL);
     free(stem);
     free(name);
+}
+
+void tab_save_copy(tab *t, const char *path)
+{
+    if (!t->doc) return;
+    copy_job *job = calloc(1, sizeof *job);
+    job->tab_id = t->id;
+    job->keep_password = 1;
+    pt_strs paths = {0};
+    pt_push(paths, pt_strdup(path));
+    write_copy_chosen(job, &paths);
+    pt_strs_free(&paths);
 }
 
 static void export_chosen(void *ctx, const char *ranges, int flat, int dpi)

@@ -204,7 +204,7 @@ void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, c
                 last = raw.v[i].c.page;
             }
 
-        pt_numbering_state state = {1, 0, 0, 0};
+        pt_numbering_state state = {1};
         for (int p = 0, t = 0; p <= last; p++) {
             int here = t < tops.n && raw.v[tops.v[t]].c.page == p;
             if (!here && mode == PT_NUMBER_PAGE) continue;

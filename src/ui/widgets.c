@@ -225,6 +225,21 @@ static int keys_blocked; /* while a dialog under the top one draws */
 static int left_down;
 static Vector2 drawn_mouse; /* the pointer when the last frame began */
 
+#define FOCUS_MAX 256
+
+/* the keyboard focus of ui_focus_scope_begin */
+static struct {
+    const void *scope;       /* the scope being drawn, NULL outside one */
+    const void *frame_owner; /* whose widgets the list below holds this frame */
+    const void *owner;       /* the scope `id` belongs to */
+    unsigned id;             /* the focused widget, 0 none */
+    unsigned press;          /* pressed in the next frame: Enter's primary button */
+    unsigned primary;        /* this frame's first primary button */
+    int n, taken, seen_button;
+    unsigned ids[FOCUS_MAX];
+    ui_text *texts[FOCUS_MAX];
+} kf;
+
 static void on_mouse(void *window, int button, int action, int mods)
 {
     if (raylib_mouse) raylib_mouse(window, button, action, mods);
@@ -487,6 +502,10 @@ void ui_begin_frame(void)
     ui.layer = 0;
     ui.tip = NULL;
     ui.focus_taken = 0;
+    kf.frame_owner = kf.scope = NULL;
+    kf.n = kf.taken = 0;
+    /* the ring shows keyboard use: a click hides it */
+    if (ui.pressed) kf.id = 0;
 
     rlPushMatrix();
     rlTranslatef(inset_l, inset_t, 0);
@@ -539,7 +558,8 @@ static void draw_tooltip(void)
     }
     float w = 0, lh = 18;
     for (int i = 0; i < lines.n; i++) w = fmaxf(w, text_width(lines.v[i], FS_SMALL, F_REGULAR));
-    w = fminf(w + 14, 480);
+    /* a pixel more than the text's width, so rounding at fractional interface scales does not cut it short */
+    w = fminf(ceilf(w) + 15, 480);
     Rectangle r = {ui.mouse.x + 12, ui.tip_rect.y + ui.tip_rect.height + 4, w, lines.n * lh + 8};
     if (r.x + r.width > ui.w - 4) r.x = ui.w - 4 - r.width;
     if (r.y + r.height > ui.h - 4) r.y = ui.tip_rect.y - r.height - 4;
@@ -554,10 +574,13 @@ static void draw_tooltip(void)
     pt_strs_free(&lines);
 }
 
+static void focus_step(void);
+
 void ui_end_frame(void)
 {
     dialogs_frame();
     menus_frame();
+    focus_step();
     draw_tooltip();
     /* after the widgets saw this frame's release */
     if (!ui.down) ui.active = 0;
@@ -646,6 +669,99 @@ int ui_shortcut_alt(int ctrl, int shift, int alt, int key)
 
 int ui_shortcut(int ctrl, int shift, int key) { return ui_shortcut_alt(ctrl, shift, 0, key); }
 
+int ui_shortcut_mods(int key, int mods)
+{
+    if (ui.focus && editing_key((mods & PT_MOD_CTRL) != 0, key)) return 0;
+    if (dialogs_open() || menu_is_open() || keys_blocked) return 0;
+    for (int i = 0; i < nframe_keys; i++)
+        if (frame_keys[i].key == key && (frame_keys[i].mods & PT_MODS) == mods) return 1;
+    return 0;
+}
+
+int ui_frame_key(int i, int *key, int *mods)
+{
+    if (keys_blocked || i < 0 || i >= nframe_keys) return 0;
+    *key = frame_keys[i].key;
+    *mods = frame_keys[i].mods & PT_MODS;
+    return 1;
+}
+
+/* ---- keyboard focus ---- */
+
+#define FOCUS_RING_W 2.0f
+#define FOCUS_RING_PAD 3.0f
+#define FOCUS_RING_ROUND 0.3f
+#define FOCUS_RING_SEGMENTS 6
+
+void ui_focus_scope_begin(const void *owner)
+{
+    if (kf.frame_owner != owner) {
+        kf.frame_owner = owner;
+        kf.n = 0;
+        kf.primary = 0;
+        kf.seen_button = 0;
+    }
+    if (kf.owner != owner) {
+        kf.owner = owner;
+        kf.id = kf.press = 0;
+    }
+    kf.scope = owner;
+}
+
+void ui_focus_scope_end(void) { kf.scope = NULL; }
+
+int ui_focused(unsigned id) { return kf.id && kf.id == id && kf.owner == kf.frame_owner; }
+
+int ui_focused_any(void) { return kf.id && kf.owner == kf.frame_owner; }
+
+void ui_focus_keys_taken(void) { kf.taken = 1; }
+
+static int activate_key(void) { return key_pressed(KEY_SPACE) || key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER); }
+
+/* a focusable widget at r (text: its field): 1 when a key presses it this frame */
+static int focus_widget(unsigned id, Rectangle r, ui_text *text, int primary)
+{
+    if (!kf.scope || keys_blocked) return 0;
+    for (int i = 0; i < kf.n; i++)
+        if (kf.ids[i] == id) {
+            if (text) kf.texts[i] = text;
+            return 0;
+        }
+    if (kf.n < FOCUS_MAX) kf.ids[kf.n] = id, kf.texts[kf.n] = text, kf.n++;
+    if (primary && !kf.primary) kf.primary = id;
+    if (kf.press == id) {
+        kf.press = 0;
+        return 1;
+    }
+    if (kf.id != id || text) return 0;
+    kf.seen_button = 1;
+    Rectangle ring = {r.x - FOCUS_RING_PAD, r.y - FOCUS_RING_PAD, r.width + 2 * FOCUS_RING_PAD,
+                      r.height + 2 * FOCUS_RING_PAD};
+    DrawRectangleRoundedLinesEx(ring, FOCUS_RING_ROUND, FOCUS_RING_SEGMENTS, FOCUS_RING_W, pal.highlight);
+    return !ui.focus && !kf.taken && !menu_is_open() && activate_key();
+}
+
+/* at the end of the frame: Tab and Shift+Tab move the focus over the widgets this frame drew */
+static void focus_step(void)
+{
+    if (kf.owner != kf.frame_owner || !kf.n || menu_is_open()) return;
+    int at = -1;
+    for (int i = 0; i < kf.n; i++)
+        if ((ui.focus && kf.texts[i] == ui.focus) || (!ui.focus && kf.ids[i] == kf.id)) at = i;
+    if (ui.focus && at >= 0) kf.id = kf.ids[at];
+    int tab = key_with_mods(KEY_TAB, 0, 0, 0), back = key_with_mods(KEY_TAB, 0, 1, 0);
+    int multiline = ui.focus && ((const ui_text *)ui.focus)->multiline;
+    /* a field that moved the focus itself (TE_TAB) was followed */
+    if ((!tab && !back) || kf.taken || multiline || ui.focus_taken) return;
+    int next = back ? (at <= 0 ? kf.n - 1 : at - 1) : (at + 1) % kf.n;
+    kf.id = kf.ids[next];
+    if (kf.texts[next]) {
+        text_focus(kf.texts[next]);
+        text_select_all(kf.texts[next]);
+    } else ui.focus = NULL;
+    ui.dirty = 1;
+}
+
 /* ---- basic widgets ---- */
 
 void ui_panel(Rectangle r, Color fill, Color border, float radius)
@@ -680,7 +796,8 @@ int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int
     int disabled = flags & B_DISABLED, hover = !disabled && ui_hover(r);
     if (hover && ui.pressed) ui.active = id;
     int pressed = ui.active == id && ui.down && hover;
-    int clicked = hover && ui.released && ui.active == id;
+    int keyed = !disabled && focus_widget(id, r, NULL, (flags & B_PRIMARY) != 0);
+    int clicked = (hover && ui.released && ui.active == id) || keyed;
     Color fill = BLANK, border = BLANK, fg = disabled ? pal.disabled_text : pal.button_text;
     if (flags & B_PRIMARY) {
         fill = disabled ? pal.button : pal.highlight;
@@ -728,7 +845,8 @@ int ui_checkbox(unsigned id, Rectangle r, const char *label, int *value, int dis
     int hover = !disabled && ui_hover(hit);
     if (hover && ui.pressed) ui.active = id;
     int changed = 0;
-    if (hover && ui.released && ui.active == id) {
+    int keyed = !disabled && focus_widget(id, hit, NULL, 0);
+    if ((hover && ui.released && ui.active == id) || keyed) {
         *value = !*value;
         changed = 1;
     }
@@ -754,11 +872,12 @@ int ui_swatch_button(unsigned id, Rectangle r, const unsigned char rgb[3], int c
 {
     int hover = ui_hover(r);
     if (hover && ui.pressed) ui.active = id;
+    int keyed = focus_widget(id, r, NULL, 0);
     if (checked) ui_panel(r, BLANK, pal.highlight, 4), DrawRectangleLinesEx(r, 2, pal.highlight);
     else if (hover) ui_panel(r, pal.button, pal.border, 4);
     ui_swatch((Rectangle){r.x + (r.width - 16) / 2, r.y + (r.height - 16) / 2, 16, 16}, rgb);
     ui_tooltip(id, r, tip);
-    return hover && ui.released && ui.active == id;
+    return (hover && ui.released && ui.active == id) || keyed;
 }
 
 void ui_separator_v(float x, float y0, float y1) { DrawLineEx((Vector2){x, y0}, (Vector2){x, y1}, 1, pal.border); }
@@ -1012,6 +1131,7 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
     if (!t->size) t->size = FS_NORMAL;
     text_reserve(t, t->len);
     int result = 0, focused = ui.focus == t;
+    if (!t->readonly) focus_widget(id, r, t, 0);
     if (focused && r.width > 0) ui.focus_rect = r;
     float pad = frame ? 5 : 1, lh = t->size * 1.36f;
     Rectangle inner = {r.x + pad, r.y + pad, r.width - 2 * pad, r.height - 2 * pad};
@@ -1069,7 +1189,7 @@ int ui_textfield(unsigned id, ui_text *t, Rectangle r, int frame)
     /* keys */
     if (focused) {
         int ch;
-        while ((ch = GetCharPressed()) > 0) {
+        while (!keys_blocked && (ch = GetCharPressed()) > 0) {
             if (t->readonly || ui.ctrl) continue;
             /* Android's soft keyboard replaces what it is composing with backspaces and deletes among its
              * characters (android_main.c), so they arrive here in order rather than as key presses */
@@ -1280,7 +1400,13 @@ int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float s
         snprintf(buf, sizeof buf, step < 1 ? "%.1f%s" : "%.0f%s", *value, suffix ? suffix : "");
         draw_text_in(buf, (Rectangle){field.x + 6, field.y, field.width - 6, field.height}, FS_NORMAL, F_REGULAR,
                      pal.text, -1);
-        if (ui_hover(field) && ui.pressed) {
+        int typed = focus_widget(id, r, NULL, 0);
+        if (ui_focused(id) && !ui.focus) {
+            float v = *value + (key_pressed(KEY_UP) ? step : 0) - (key_pressed(KEY_DOWN) ? step : 0);
+            /* the value above was drawn before the key */
+            if (v != *value && v >= lo && v <= hi) *value = v, changed = 1, ui.dirty = 1;
+        }
+        if ((ui_hover(field) && ui.pressed) || typed) {
             spin_editing = id;
             char num[32];
             snprintf(num, sizeof num, step < 1 ? "%.1f" : "%.0f", *value);
@@ -1347,11 +1473,22 @@ int ui_combo(unsigned id, Rectangle r, const char **items, int n, int *index)
         for (int i = 0; i < n; i++)
             menu_item(m, items[i], NULL, NULL, combo_pick, (void *)(uintptr_t)id, i, 1, i == *index);
         menu_open_below(m, r);
+        if (ui_focused(id)) menu_keyboard();
+    }
+    if (ui_focused(id) && !ui.focus && !menu_is_open() && n > 0) {
+        int step = key_pressed(KEY_DOWN) - key_pressed(KEY_UP);
+        if (step) {
+            *index = ((*index < 0 ? 0 : *index) + step + n) % n;
+            ui.dirty = 1;
+            return 1;
+        }
     }
     if (combo_changed == id) {
         combo_changed = 0;
         if (combo_choice != *index) {
             *index = combo_choice;
+            /* the label above was drawn with the old choice */
+            ui.dirty = 1;
             return 1;
         }
     }
@@ -1377,6 +1514,7 @@ struct ui_menu {
     menu_entries items;
     Rectangle r;
     int open_sub;
+    int key_sel; /* the item the keys moved to, -1 none */
 };
 
 #define MENU_ROW 26
@@ -1386,6 +1524,12 @@ struct ui_menu {
 #define MENU_CHIP_ROUND 0.3f
 #define MENU_CHIP_SEGMENTS 6
 #define MENU_CHECK_W 2.0f /* the swatch ring and the tick */
+#define MENU_INSET 4.0f   /* above the first item; a submenu overlaps its parent by as much */
+#define MENU_RADIUS 6.0f  /* the menu's corners */
+#define MENU_CORNER_SEGMENTS 8
+#define MENU_SHADOW_RINGS 4  /* the shadow's width in pixels, one ring each */
+#define MENU_SHADOW_DROP 1   /* it falls this much lower than the menu */
+#define MENU_SHADOW_ALPHA 48 /* the innermost ring's; ring k has 1/k of it */
 static ui_menu *open_menus[8];
 static int nopen;
 static Vector2 menu_at;
@@ -1394,11 +1538,15 @@ static int menu_below;
 static ui_action pending_fn;
 static void *pending_ctx;
 static intptr_t pending_arg;
+static int key_level;       /* the open menu the keys move in */
+static int opened_now;      /* opened in this frame: the key that opened it is not one for it */
+static int keyed_menu;      /* the keys moved last: the pointer's item is not highlighted until it moves */
+static Vector2 keyed_mouse; /* where the pointer was then */
 
 ui_menu *menu_new(void)
 {
     ui_menu *m = calloc(1, sizeof *m);
-    m->open_sub = -1;
+    m->open_sub = m->key_sel = -1;
     return m;
 }
 
@@ -1431,7 +1579,19 @@ ui_menu *menu_sub(ui_menu *m, const char *label, const char *icon)
 
 int menu_empty(const ui_menu *m) { return !m || !m->items.n; }
 
-static void menu_free(ui_menu *m)
+int menu_count(const ui_menu *m) { return m ? m->items.n : 0; }
+
+int menu_entry_at(const ui_menu *m, int i, ui_menu_info *out)
+{
+    if (!m || i < 0 || i >= m->items.n || m->items.v[i].sep) return 0;
+    const menu_entry *e = &m->items.v[i];
+    *out = (ui_menu_info){e->label, e->icon, e->shortcut, e->enabled, e->checked, e->has_swatch,
+                          {0},      e->fn,   e->ctx,      e->arg,     e->sub};
+    memcpy(out->rgb, e->rgb, sizeof out->rgb);
+    return 1;
+}
+
+void menu_free(ui_menu *m)
 {
     if (!m) return;
     for (int i = 0; i < m->items.n; i++) {
@@ -1486,7 +1646,73 @@ void menu_open(ui_menu *m, Vector2 at)
     nopen = 1;
     menu_at = at;
     menu_below = 0;
+    key_level = keyed_menu = 0;
+    opened_now = 1;
     place(m, at.x, at.y, at.x);
+}
+
+/* the next enabled item from `from` in direction dir, wrapping; -1 none */
+static int menu_step(const ui_menu *m, int from, int dir)
+{
+    int n = m->items.n;
+    for (int k = 1; k <= n; k++) {
+        int i = ((from + dir * k) % n + n) % n;
+        if (!m->items.v[i].sep && m->items.v[i].enabled) return i;
+    }
+    return -1;
+}
+
+void menu_keyboard(void)
+{
+    if (!nopen) return;
+    open_menus[0]->key_sel = menu_step(open_menus[0], -1, 1);
+    key_level = 0;
+    keyed_menu = 1;
+    keyed_mouse = ui.mouse;
+}
+
+static float entry_y(const ui_menu *m, int index)
+{
+    float y = m->r.y + MENU_INSET;
+    for (int i = 0; i < index; i++) y += m->items.v[i].sep ? MENU_SEP : MENU_ROW;
+    return y;
+}
+
+/* the keys of an open menu; 1 when one chose an item (the menus are closed then) */
+static int menu_keys(void)
+{
+    if (key_level >= nopen) key_level = nopen - 1;
+    ui_menu *m = open_menus[key_level];
+    int vim = vim_keys_on();
+    int down = key_pressed(KEY_DOWN) || (vim && key_pressed(KEY_J)),
+        up = key_pressed(KEY_UP) || (vim && key_pressed(KEY_K));
+    int into = key_pressed(KEY_RIGHT) || (vim && key_pressed(KEY_L));
+    int out = key_pressed(KEY_LEFT) || (vim && key_pressed(KEY_H));
+    int enter = key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER) || key_pressed(KEY_SPACE);
+    if (!down && !up && !into && !out && !enter) return 0;
+    keyed_menu = 1;
+    keyed_mouse = ui.mouse;
+    ui.dirty = 1;
+    if (down) m->key_sel = menu_step(m, m->key_sel < 0 ? -1 : m->key_sel, 1);
+    if (up) m->key_sel = menu_step(m, m->key_sel < 0 ? 0 : m->key_sel, -1);
+    menu_entry *e = m->key_sel >= 0 && m->key_sel < m->items.n ? &m->items.v[m->key_sel] : NULL;
+    if ((into || enter) && e && e->sub && !menu_empty(e->sub) && nopen < 8) {
+        float y = entry_y(m, m->key_sel);
+        place(e->sub, m->r.x + m->r.width - MENU_INSET, y - MENU_INSET, m->r.x + MENU_INSET);
+        m->open_sub = m->key_sel;
+        open_menus[key_level + 1] = e->sub;
+        nopen = key_level + 2;
+        key_level++;
+        e->sub->key_sel = menu_step(e->sub, -1, 1);
+    } else if (enter && e && !e->sub) {
+        if (e->fn) pending_fn = e->fn, pending_ctx = e->ctx, pending_arg = e->arg;
+        menus_close();
+        return 1;
+    } else if (out && key_level > 0) {
+        nopen = key_level;
+        key_level--;
+    }
+    return 0;
 }
 
 void menu_open_below(ui_menu *m, Rectangle anchor)
@@ -1495,6 +1721,8 @@ void menu_open_below(ui_menu *m, Rectangle anchor)
     if (!nopen) return;
     menu_anchor = anchor;
     menu_below = 1;
+    /* too wide to open rightwards: it ends where the anchor ends, under the button's arrow */
+    place(m, anchor.x, anchor.y + anchor.height + 2, anchor.x + anchor.width);
     Rectangle s = menu_size(m);
     if (anchor.y + anchor.height + 2 + s.height > ui.h - 2) m->r.y = fmaxf(2, anchor.y - s.height - 2);
 }
@@ -1519,13 +1747,22 @@ void menus_frame(void)
         menus_close();
         return;
     }
+    if (!opened_now && menu_keys()) return;
+    opened_now = 0;
+    if (keyed_menu && (ui.mouse.x != keyed_mouse.x || ui.mouse.y != keyed_mouse.y || ui.pressed || ui.released))
+        keyed_menu = 0;
     for (int level = 0; level < nopen; level++) {
         ui_menu *m = open_menus[level];
         unsigned lid = ui_id(m, 7);
         ui_layer_begin(lid, m->r, 0);
-        Rectangle shadow = {m->r.x + 2, m->r.y + 3, m->r.width, m->r.height};
-        DrawRectangleRounded(shadow, 0.02f, 4, with_alpha(pal.shadow, 60));
-        ui_panel(m->r, pal.window, pal.border, 6);
+        /* a soft shadow: rings fading outwards, not one dark block offset beside the menu */
+        for (int k = MENU_SHADOW_RINGS; k >= 1; k--) {
+            Rectangle ring = {m->r.x - k, m->r.y - k + MENU_SHADOW_DROP, m->r.width + 2 * k, m->r.height + 2 * k};
+            /* each ring's corners concentric with the menu's */
+            float round = (MENU_RADIUS + k) * 2 / fminf(ring.width, ring.height);
+            DrawRectangleRounded(ring, round, MENU_CORNER_SEGMENTS, with_alpha(pal.shadow, MENU_SHADOW_ALPHA / k));
+        }
+        ui_panel(m->r, pal.window, pal.border, MENU_RADIUS);
         float y = m->r.y + 4;
         float sc_x = m->r.x + m->r.width - 12;
         for (int i = 0; i < m->items.n; i++) {
@@ -1536,13 +1773,15 @@ void menus_frame(void)
                 continue;
             }
             Rectangle row = {m->r.x + 4, y, m->r.width - 8, MENU_ROW};
-            int hover = ui_hover(row) && e->enabled;
-            if (hover) {
+            int pointed = ui_hover(row) && e->enabled && !keyed_menu;
+            if (pointed) {
+                m->key_sel = -1;
                 if (m->open_sub != i) {
                     m->open_sub = i;
                     nopen = level + 1;
                 }
             }
+            int hover = pointed || (keyed_menu && level == key_level && i == m->key_sel);
             int sub_open = e->sub && level + 1 < nopen && open_menus[level + 1] == e->sub;
             if (hover || sub_open) DrawRectangleRounded(row, 0.2f, 4, pal.highlight);
             Color fg = !e->enabled ? pal.disabled_text : hover || sub_open ? pal.highlighted_text : pal.window_text;
@@ -1572,18 +1811,19 @@ void menus_frame(void)
             if (e->sub) {
                 float ax = row.x + row.width - 12, cy = y + MENU_ROW / 2;
                 DrawTriangle((Vector2){ax, cy - 4}, (Vector2){ax, cy + 4}, (Vector2){ax + 4, cy}, fg);
-                if (hover && !sub_open && nopen < 8) {
+                if (pointed && !sub_open && nopen < 8) {
                     place(e->sub, m->r.x + m->r.width - 4, y - 4, m->r.x + 4);
                     open_menus[level + 1] = e->sub;
                     nopen = level + 2;
+                    key_level = level;
                 }
             }
-            if (hover && ui.released && !e->sub && e->fn) {
+            if (pointed && ui.released && !e->sub && e->fn) {
                 pending_fn = e->fn;
                 pending_ctx = e->ctx;
                 pending_arg = e->arg;
             }
-            if (hover && ui.released && !e->sub) {
+            if (pointed && ui.released && !e->sub) {
                 ui_layer_end();
                 menus_close();
                 return;
@@ -1599,10 +1839,13 @@ void menus_frame(void)
 #define DIALOGS_MAX 8
 static dialog *dialogs[DIALOGS_MAX];
 static int ndialogs;
+/* pushed during this frame: the key that opened it (Space on a button) is not typed into it */
+static dialog *fresh_dialog;
 
 void dialog_push(dialog *d)
 {
     menus_close();
+    palette_close();
     if (ndialogs == DIALOGS_MAX) {
         /* answered as if closed, so the asker does not wait for it forever */
         pt_log(PT_LOG_WARN, "too many open dialogs: \"%s\" dropped", d->title ? d->title : "");
@@ -1611,10 +1854,11 @@ void dialog_push(dialog *d)
         return;
     }
     dialogs[ndialogs++] = d;
+    fresh_dialog = d;
     if (ui.focus) ui.focus = NULL;
 }
 
-int dialogs_open(void) { return ndialogs; }
+int dialogs_open(void) { return ndialogs + palette_is_open(); }
 
 void dialogs_frame(void)
 {
@@ -1632,9 +1876,14 @@ void dialogs_frame(void)
                      pal.window_text, -1);
         Rectangle body = {box.x + 16, box.y + 40, box.width - 32, box.height - 56};
         int done = 0;
-        if (i == top) {
+        if (i == top && d != fresh_dialog) {
+            ui_focus_scope_begin(d);
             done = d->frame(d, body);
-            if (!done && d->escape_closes && key_pressed(KEY_ESCAPE) && !ui.focus) done = 1;
+            ui_focus_scope_end();
+            if (!done && d->escape_closes && key_pressed(KEY_ESCAPE) && !ui.focus && !menu_is_open()) done = 1;
+            int enter = key_pressed(KEY_ENTER) || key_pressed(KEY_KP_ENTER);
+            if (!done && enter && !ui.focus && !kf.seen_button && !menu_is_open() && kf.frame_owner == d)
+                kf.press = kf.primary;
         } else {
             /* the others are drawn but get no input: an answer there could act on what the top one is about */
             unsigned saved = ui.mouse_layer;
@@ -1646,15 +1895,20 @@ void dialogs_frame(void)
         }
         ui_layer_end();
         if (done) {
+            if (kf.owner == d) kf.owner = NULL, kf.id = kf.press = 0;
+            if (kf.frame_owner == d) kf.frame_owner = NULL;
             for (int k = i; k < ndialogs - 1; k++) dialogs[k] = dialogs[k + 1];
             ndialogs--;
             if (d->free) d->free(d);
             free(d);
             ui.focus = NULL;
             ui.dirty = 1;
+            fresh_dialog = NULL;
             return;
         }
     }
+    if (fresh_dialog) ui.dirty = 1;
+    fresh_dialog = NULL;
 }
 
 /* word-wrapped lines of `s` at `width` */
@@ -1714,8 +1968,8 @@ static int msg_frame(dialog *d, Rectangle body)
     pt_strs_free(&lines);
     float bw = fmaxf(84, button_width(m->yes, NULL, B_PRIMARY) + 16);
     Rectangle yes = {body.x + body.width - bw, body.y + body.height - 30, bw, 30};
-    if (ui_button(ui_id(d, 1), yes, m->yes, NULL, B_PRIMARY, NULL) || key_pressed(KEY_ENTER) ||
-        key_pressed(KEY_KP_ENTER)) {
+    /* Enter presses the focused button, else this one (dialogs_frame) */
+    if (ui_button(ui_id(d, 1), yes, m->yes, NULL, B_PRIMARY, NULL)) {
         m->answered = 1;
         if (m->done) m->done(m->ctx, 1);
         return 1;
@@ -2057,6 +2311,7 @@ static const char *LUCIDE[][2] = {
     {"interface-size", "type"},
     {"recent", "history"},
     {"edit", "pencil-line"},
+    {"keyboard", "keyboard"},
 };
 #define NLUCIDE (int)(sizeof LUCIDE / sizeof *LUCIDE)
 #define ICON_PX 48

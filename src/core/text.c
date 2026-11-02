@@ -1,14 +1,11 @@
 /* Page text: characters and words, search and regular expressions, reading-order selection, personal data. */
 #include "pt_core.h"
 #include <ctype.h>
+#include <mupdf/fitz/regexp.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef PT_USE_PCRE2
-#define PCRE2_CODE_UNIT_WIDTH 8
-#include <pcre2.h>
-#endif
 
 /* ---- characters and search ---- */
 
@@ -113,21 +110,36 @@ char *pt_page_text(fz_context *ctx, fz_page *page)
 
 typedef struct {
     pt_rects *out;
-} search_acc;
+    int hits;
+} match_acc;
 
-static int on_hit(fz_context *ctx, void *opaque, int n, fz_quad *quads)
+/* one hit: its quads, one box per line */
+static int on_match(fz_context *ctx, void *opaque, int n, fz_quad *quads, int chapter, int page)
 {
-    (void)ctx;
-    search_acc *acc = opaque;
-    for (int i = 0; i < n; i++) pt_push(*acc->out, fz_rect_from_quad(quads[i]));
+    (void)ctx, (void)chapter, (void)page;
+    match_acc *acc = opaque;
+    pt_rects boxes = {0};
+    for (int i = 0; i < n; i++) {
+        fz_rect r = fz_rect_from_quad(quads[i]);
+        if (!fz_is_empty_rect(r)) pt_push(boxes, r);
+    }
+    pt_merge_lines(boxes.v, boxes.n, acc->out);
+    pt_vec_free(boxes);
+    acc->hits++;
     return 0;
 }
 
-void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, pt_rects *out)
+static int match_page(fz_context *ctx, fz_stext_page *st, const char *needle, fz_search_options options, pt_rects *out)
+{
+    match_acc acc = {out, 0};
+    fz_match_stext_page_cb(ctx, st, needle, on_match, &acc, options);
+    return acc.hits;
+}
+
+void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int case_sensitive, pt_rects *out)
 {
     if (!needle || !*needle) return;
-    search_acc acc = {out};
-    fz_search_stext_page_cb(ctx, st, needle, on_hit, &acc);
+    match_page(ctx, st, needle, case_sensitive ? FZ_SEARCH_EXACT : FZ_SEARCH_IGNORE_CASE, out);
 }
 
 void pt_merge_lines(const fz_rect *boxes, int n, pt_rects *out)
@@ -146,151 +158,44 @@ void pt_merge_lines(const fz_rect *boxes, int n, pt_rects *out)
     }
 }
 
-int pt_have_regex(void)
-{
-#ifdef PT_USE_PCRE2
-    return 1;
-#else
-    return 0;
-#endif
-}
-
-#ifdef PT_USE_PCRE2
-static pcre2_code *compile(fz_context *ctx, const char *pattern, int case_sensitive)
-{
-    int err;
-    PCRE2_SIZE off;
-    uint32_t flags = PCRE2_UTF | PCRE2_UCP | PCRE2_MULTILINE | (case_sensitive ? 0 : PCRE2_CASELESS);
-    pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED, flags, &err, &off, NULL);
-    if (!re) {
-        PCRE2_UCHAR msg[256];
-        pcre2_get_error_message(err, msg, sizeof msg);
-        fz_throw(ctx, FZ_ERROR_ARGUMENT, "invalid --regex %s: %s at position %d", pattern, (char *)msg, (int)off);
-    }
-    return re;
-}
-
-/* Where the next search starts after a match: its end, or one character on after an empty match (one byte would
- * land inside a UTF-8 sequence, which pcre2_match rejects). */
-static PCRE2_SIZE next_start(const char *text, size_t len, const PCRE2_SIZE *ov)
-{
-    if (ov[1] > ov[0]) return ov[1];
-    PCRE2_SIZE at = ov[1] + 1;
-    while (at < len && ((unsigned char)text[at] & 0xc0) == 0x80) at++;
-    return at;
-}
-
-static void match_failed(fz_context *ctx, int rc, const char *pattern)
-{
-    PCRE2_UCHAR msg[256];
-    pcre2_get_error_message(rc, msg, sizeof msg);
-    fz_throw(ctx, FZ_ERROR_LIMIT, "--regex %s failed: %s", pattern, (char *)msg);
-}
-#endif
-
+/* MuPDF's regular expressions over the page's text, line by line as it is set (^, $ and \b at line ends, hyphens
+ * kept): a pattern that does not compile, or that backtracks without end, throws */
 int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int case_sensitive, pt_rects *out)
 {
-#ifdef PT_USE_PCRE2
-    pcre2_code *re = compile(ctx, pattern, case_sensitive);
-
-    pt_chars chars = {0};
-    /* byte offset -> char index, -1 for the line breaks */
-    size_t cap = 64, len = 0;
-    char *text = pt_realloc(NULL, cap);
-    int *owner = pt_realloc(NULL, cap * sizeof(int));
-    for (fz_stext_block *b = st->first_block; b; b = b->next) {
-        if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
-        if (len + 8 > cap) {
-            cap *= 2;
-            text = pt_realloc(text, cap), owner = pt_realloc(owner, cap * sizeof(int));
-        }
-        if (len) text[len] = '\n', owner[len++] = -1;
-        for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
-            for (fz_stext_char *c = l->first_char; c; c = c->next) {
-                if (len + 8 > cap) {
-                    cap *= 2;
-                    text = pt_realloc(text, cap), owner = pt_realloc(owner, cap * sizeof(int));
-                }
-                int k = fz_runetochar(text + len, c->c);
-                for (int i = 0; i < k; i++) owner[len + (size_t)i] = chars.n;
-                len += (size_t)k;
-                pt_push(chars, (pt_char){c->c, fz_rect_from_quad(c->quad)});
-            }
-            if (len + 8 > cap) {
-                cap *= 2;
-                text = pt_realloc(text, cap), owner = pt_realloc(owner, cap * sizeof(int));
-            }
-            text[len] = '\n', owner[len++] = -1;
-        }
-    }
-
-    pcre2_match_data *md = pcre2_match_data_create_from_pattern(re, NULL);
-    PCRE2_SIZE start = 0;
-    int count = 0, rc = 0;
-    pt_rects boxes = {0};
-    while (start <= len) {
-        rc = pcre2_match(re, (PCRE2_SPTR)text, len, start, 0, md, NULL);
-        if (rc < 0) break;
-        PCRE2_SIZE *ov = pcre2_get_ovector_pointer(md);
-        boxes.n = 0;
-        int last = -1;
-        for (size_t b = ov[0]; b < ov[1]; b++) {
-            int i = owner[b];
-            if (i < 0 || i == last) continue;
-            last = i;
-            fz_rect r = chars.v[i].r;
-            if (!fz_is_empty_rect(r)) pt_push(boxes, r);
-        }
-        pt_merge_lines(boxes.v, boxes.n, out);
-        count++;
-        start = next_start(text, len, ov);
-    }
-
-    pt_vec_free(boxes);
-    pcre2_match_data_free(md);
-    pcre2_code_free(re);
-    free(text);
-    free(owner);
-    pt_vec_free(chars);
-    if (rc < 0 && rc != PCRE2_ERROR_NOMATCH) match_failed(ctx, rc, pattern);
-    return count;
-#else
-    (void)st, (void)pattern, (void)case_sensitive, (void)out;
-    fz_throw(ctx, FZ_ERROR_UNSUPPORTED, "--regex needs a build with PCRE2");
-#endif
+    fz_search_options options = FZ_SEARCH_REGEXP | FZ_SEARCH_KEEP_LINES | FZ_SEARCH_KEEP_HYPHENS;
+    if (!case_sensitive) options |= FZ_SEARCH_IGNORE_CASE;
+    return match_page(ctx, st, pattern, options, out);
 }
 
-/* Case-insensitive for ASCII letters, as fz_search_stext_page is for --text. */
-static const char *find_text(const char *hay, const char *needle, int case_sensitive)
-{
-    size_t n = strlen(needle);
-    if (!n) return NULL;
-    for (const char *h = hay; *h; h++) {
-        size_t i = 0;
-        while (i < n && h[i] &&
-               (case_sensitive ? h[i] == needle[i] : tolower((unsigned char)h[i]) == tolower((unsigned char)needle[i])))
-            i++;
-        if (i == n) return h;
-    }
-    return NULL;
-}
-
+/* an annotation's or field's text has `needle` in it or matches `pattern`, as the page's text is searched */
 static int text_matches(fz_context *ctx, const char *s, const char *needle, const char *pattern, int case_sensitive)
 {
     if (!s || !*s) return 0;
-    if (needle && *needle && find_text(s, needle, case_sensitive)) return 1;
-    if (!pattern) return 0;
-#ifdef PT_USE_PCRE2
-    pcre2_code *re = compile(ctx, pattern, case_sensitive);
-    pcre2_match_data *md = pcre2_match_data_create_from_pattern(re, NULL);
-    int rc = pcre2_match(re, (PCRE2_SPTR)s, strlen(s), 0, 0, md, NULL);
-    pcre2_match_data_free(md);
-    pcre2_code_free(re);
-    if (rc < 0 && rc != PCRE2_ERROR_NOMATCH) match_failed(ctx, rc, pattern);
-    return rc >= 0;
-#else
-    fz_throw(ctx, FZ_ERROR_UNSUPPORTED, "--regex needs a build with PCRE2");
-#endif
+    const char *find = needle && *needle ? needle : pattern;
+    if (!find) return 0;
+    int flags = REG_NEWLINE | (case_sensitive ? 0 : REG_ICASE), rc = 1;
+    /* a literal needle as a pattern: its characters escaped */
+    char *literal = NULL;
+    if (find == needle) {
+        literal = calloc(2 * strlen(needle) + 1, 1);
+        if (!literal) abort();
+        char *o = literal;
+        for (const char *c = needle; *c; c++) {
+            if (strchr("\\^$.|?*+()[]{}", *c)) *o++ = '\\';
+            *o++ = *c;
+        }
+    }
+    fz_regex *re = fz_regcomp(ctx, literal ? literal : pattern, flags);
+    struct fz_regmatch m;
+    fz_try(ctx) rc = fz_regexec(ctx, re, s, &m, REG_RUNAWAY);
+    fz_always(ctx)
+    {
+        fz_regfree(ctx, re);
+        free(literal);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+    if (rc < 0) fz_throw(ctx, FZ_ERROR_LIMIT, "--regex %s ran too long", pattern);
+    return rc == 0;
 }
 
 void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const char *pattern, int case_sensitive,
@@ -321,19 +226,15 @@ void pt_annot_matches(fz_context *ctx, fz_page *page, const char *needle, const 
 /* ---- text selection that follows reading order, as in a text viewer ----
  * Words carry their character boxes, so a drag can start and end inside a word. */
 
-/* A vertical gutter must be at least this many word-heights wide; a horizontal gap must clear normal leading. */
-#define MIN_COLUMN_GAP 1.0f
-#define MIN_BLOCK_GAP 0.5f
-
 static int is_space(int c)
 {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xa0 || c == 0x3000 || (c >= 0x2000 && c <= 0x200a);
 }
 
-static void flush(pt_chars *cur, pt_words *out)
+static void flush(pt_chars *cur, const fz_stext_line *line, int source_line, float size, pt_words *out)
 {
     if (!cur->n) return;
-    pt_word w = {fz_empty_rect, NULL, 0, *cur};
+    pt_word w = {fz_empty_rect, NULL, 0, *cur, source_line, line->dir, size};
     pt_ints runes = {0};
     for (int i = 0; i < cur->n; i++) {
         w.rect = i ? fz_union_rect(w.rect, cur->v[i].r) : cur->v[i].r;
@@ -345,19 +246,31 @@ static void flush(pt_chars *cur, pt_words *out)
     *cur = (pt_chars){0};
 }
 
-void pt_page_words(fz_stext_page *st, pt_words *out)
+/* the text blocks under `b` in order, into the structure blocks MuPDF's segmentation nests them in */
+static void block_words(fz_stext_block *b, int *source_line, pt_words *out)
 {
     pt_chars cur = {0};
-    for (fz_stext_block *b = st->first_block; b; b = b->next) {
+    float size = 0;
+    for (; b; b = b->next) {
+        if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) block_words(b->u.s.down->first_block, source_line, out);
         if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
-        for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+        for (fz_stext_line *l = b->u.t.first_line; l; l = l->next, (*source_line)++) {
             for (fz_stext_char *c = l->first_char; c; c = c->next) {
-                if (is_space(c->c)) flush(&cur, out);
-                else pt_push(cur, (pt_char){c->c, fz_rect_from_quad(c->quad)});
+                if (is_space(c->c)) flush(&cur, l, *source_line, size, out);
+                else {
+                    if (!cur.n) size = c->size;
+                    pt_push(cur, (pt_char){c->c, fz_rect_from_quad(c->quad)});
+                }
             }
-            flush(&cur, out);
+            flush(&cur, l, *source_line, size, out);
         }
     }
+}
+
+void pt_page_words(fz_stext_page *st, pt_words *out)
+{
+    int source_line = 0;
+    block_words(st->first_block, &source_line, out);
 }
 
 void pt_words_free(pt_words *w)
@@ -369,6 +282,16 @@ void pt_words_free(pt_words *w)
     pt_vec_free(*w);
 }
 
+/* ---- reading order: an XY-cut over MuPDF's text lines ----
+ * MuPDF's own segmentation (fz_segment_stext_page) orders these pages the same, at 20 times the cost (5 ms a page on
+ * average, 100 ms on a page of figures), and leaves a margin note in the text's block all the same. */
+
+/* a vertical gutter must be at least this many line heights wide; a horizontal gap must clear normal leading */
+#define MIN_COLUMN_GAP 1.0f
+#define MIN_BLOCK_GAP 0.5f
+/* cuts deeper than this stop splitting: a staircase layout would otherwise cut off one line per level */
+#define MAX_CUT_DEPTH 64
+
 typedef struct {
     float lo, hi;
 } span;
@@ -379,23 +302,20 @@ static int cmp_span(const void *a, const void *b)
     return x->lo < y->lo ? -1 : x->lo > y->lo;
 }
 
-/* The widest empty interval between merged spans: width and cut position; width 0 when none. */
+/* the widest empty interval between the spans: its width, and where to cut; 0 when none */
 static float widest_gap(span *spans, int n, float *cut)
 {
     qsort(spans, (size_t)n, sizeof *spans, cmp_span);
     float best = 0, end = 0;
     for (int i = 0; i < n; i++) {
-        if (i && spans[i].lo > end) {
-            float width = spans[i].lo - end;
-            if (width > best) best = width, *cut = (spans[i].lo + end) / 2;
+        if (i && spans[i].lo > end && spans[i].lo - end > best) {
+            best = spans[i].lo - end;
+            *cut = (spans[i].lo + end) / 2;
         }
         end = i ? fmaxf(end, spans[i].hi) : spans[i].hi;
     }
     return best;
 }
-
-/* Cuts deeper than this stop splitting: a staircase layout would otherwise cut off one word per level. */
-#define MAX_CUT_DEPTH 64
 
 typedef struct {
     int start, n, depth;
@@ -403,9 +323,9 @@ typedef struct {
 
 PT_VEC(cut_parts, cut_part);
 
-/* XY-cut (Nagy & Seth, 1984): split at the widest gap; columns left to right, blocks top to bottom. Splits `idx`
- * in place and appends the blocks as index lists into `blocks`, separated by -1. */
-static void xy_cut(const pt_words *words, int *idx, int count, float unit, pt_ints *blocks)
+/* XY-cut (Nagy & Seth, 1984) of the boxes: split at the widest gap, columns left to right, blocks top to bottom.
+ * Reorders `idx` in place and appends each block's indices to `blocks`, -1 after each. */
+static void xy_cut(const fz_rect *box, int *idx, int count, float unit, pt_ints *blocks)
 {
     span *spans = malloc(sizeof(span) * (size_t)(count ? count : 1));
     int *rest = malloc(sizeof(int) * (size_t)(count ? count : 1));
@@ -417,24 +337,21 @@ static void xy_cut(const pt_words *words, int *idx, int count, float unit, pt_in
         int *at = idx + part.start, n = part.n;
         float col_cut = 0, row_cut = 0, column = 0, row = 0;
         if (part.depth < MAX_CUT_DEPTH) {
-            for (int i = 0; i < n; i++) spans[i] = (span){words->v[at[i]].rect.x0, words->v[at[i]].rect.x1};
+            for (int i = 0; i < n; i++) spans[i] = (span){box[at[i]].x0, box[at[i]].x1};
             column = widest_gap(spans, n, &col_cut);
-            for (int i = 0; i < n; i++) spans[i] = (span){words->v[at[i]].rect.y0, words->v[at[i]].rect.y1};
+            for (int i = 0; i < n; i++) spans[i] = (span){box[at[i]].y0, box[at[i]].y1};
             row = widest_gap(spans, n, &row_cut);
         }
         if (column < MIN_COLUMN_GAP * unit) column = 0;
         if (row < MIN_BLOCK_GAP * unit) row = 0;
-        int by_column;
-        if (column > 0 && (row <= 0 || column >= row)) by_column = 1;
-        else if (row > 0) by_column = 0;
-        else {
+        if (!column && !row) {
             for (int i = 0; i < n; i++) pt_push(*blocks, at[i]);
             pt_push(*blocks, -1);
             continue;
         }
-        int nf = 0, nr = 0;
+        int by_column = column > 0 && column >= row, nf = 0, nr = 0;
         for (int i = 0; i < n; i++) {
-            fz_rect r = words->v[at[i]].rect;
+            fz_rect r = box[at[i]];
             if (by_column ? r.x1 <= col_cut : r.y1 <= row_cut) at[nf++] = at[i];
             else rest[nr++] = at[i];
         }
@@ -448,22 +365,22 @@ static void xy_cut(const pt_words *words, int *idx, int count, float unit, pt_in
     free(spans);
 }
 
-/* a word index with its sort keys: qsort passes no context, and render threads sort concurrently */
+/* a line index with its sort keys: qsort passes no context, and render threads sort concurrently */
 typedef struct {
     float mid, x0;
     int i;
-} word_key;
+} line_key;
 
 static int cmp_mid_then_x(const void *a, const void *b)
 {
-    const word_key *x = a, *y = b;
+    const line_key *x = a, *y = b;
     if (x->mid != y->mid) return x->mid < y->mid ? -1 : 1;
     return x->x0 < y->x0 ? -1 : x->x0 > y->x0;
 }
 
 static int cmp_x(const void *a, const void *b)
 {
-    const word_key *x = a, *y = b;
+    const line_key *x = a, *y = b;
     return x->x0 < y->x0 ? -1 : x->x0 > y->x0;
 }
 
@@ -473,59 +390,133 @@ static int cmp_float(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-void pt_reading_order_words(fz_stext_page *st, pt_words *out)
+/* `words` (pt_page_words: MuPDF's lines in content order) reordered: its lines XY-cut into blocks, each block's lines
+ * top to bottom, those beside each other left to right */
+static void order_lines(pt_words *words)
 {
-    pt_words words = {0};
-    pt_page_words(st, &words);
-    if (!words.n) return;
-    float *heights = malloc(sizeof(float) * (size_t)words.n);
-    int *idx = malloc(sizeof(int) * (size_t)words.n);
-    word_key *keys = malloc(sizeof(word_key) * (size_t)words.n);
-    if (!heights || !idx || !keys) abort();
-    for (int i = 0; i < words.n; i++) heights[i] = words.v[i].rect.y1 - words.v[i].rect.y0, idx[i] = i;
-    qsort(heights, (size_t)words.n, sizeof(float), cmp_float);
-    float unit = words.n % 2 ? heights[words.n / 2] : (heights[words.n / 2 - 1] + heights[words.n / 2]) / 2;
+    int lines = words->n ? words->v[words->n - 1].source_line + 1 : 0;
+    if (!lines) return;
+    fz_rect *box = malloc(sizeof(fz_rect) * (size_t)lines);
+    int *first = malloc(sizeof(int) * (size_t)(lines + 1)), *idx = malloc(sizeof(int) * (size_t)lines);
+    float *heights = malloc(sizeof(float) * (size_t)lines);
+    line_key *keys = malloc(sizeof(line_key) * (size_t)lines);
+    if (!box || !first || !idx || !heights || !keys) abort();
+    for (int l = 0; l <= lines; l++) first[l] = words->n;
+    for (int i = words->n - 1; i >= 0; i--) first[words->v[i].source_line] = i;
+    for (int l = lines - 1; l >= 0; l--)
+        if (first[l] == words->n) first[l] = first[l + 1];
+    int n = 0;
+    for (int l = 0; l < lines; l++) {
+        if (first[l] == first[l + 1]) continue;
+        box[l] = words->v[first[l]].rect;
+        for (int i = first[l] + 1; i < first[l + 1]; i++) box[l] = fz_union_rect(box[l], words->v[i].rect);
+        heights[n] = box[l].y1 - box[l].y0;
+        idx[n++] = l;
+    }
+    qsort(heights, (size_t)n, sizeof(float), cmp_float);
+    float unit = n % 2 ? heights[n / 2] : (heights[n / 2 - 1] + heights[n / 2]) / 2;
     pt_ints blocks = {0};
-    xy_cut(&words, idx, words.n, unit, &blocks);
-
-    int line = 0;
+    xy_cut(box, idx, n, unit, &blocks);
+    pt_words sorted = {0};
     for (int b = 0; b < blocks.n;) {
         int e = b;
         while (blocks.v[e] >= 0) e++;
-        int n = e - b;
-        for (int k = 0; k < n; k++) {
-            fz_rect r = words.v[blocks.v[b + k]].rect;
-            keys[k] = (word_key){(r.y0 + r.y1) / 2, r.x0, blocks.v[b + k]};
+        for (int k = b; k < e; k++) {
+            fz_rect r = box[blocks.v[k]];
+            keys[k - b] = (line_key){(r.y0 + r.y1) / 2, r.x0, blocks.v[k]};
         }
-        qsort(keys, (size_t)n, sizeof *keys, cmp_mid_then_x);
-        /* lines by vertical overlap, each left to right */
-        for (int i = 0; i < n;) {
-            fz_rect r = words.v[keys[i].i].rect;
-            float mid = (r.y0 + r.y1) / 2, height = r.y1 - r.y0;
-            int j = i + 1;
-            while (j < n) {
-                fz_rect q = words.v[keys[j].i].rect;
-                float qm = (q.y0 + q.y1) / 2, qh = q.y1 - q.y0;
-                if (fabsf(qm - mid) > fmaxf(qh, height) / 2) break;
+        int m = e - b;
+        qsort(keys, (size_t)m, sizeof *keys, cmp_mid_then_x);
+        /* lines overlapping vertically are side by side: left to right */
+        for (int k = 0; k < m;) {
+            fz_rect r = box[keys[k].i];
+            float mid = (r.y0 + r.y1) / 2, h = r.y1 - r.y0;
+            int j = k + 1;
+            while (j < m) {
+                fz_rect q = box[keys[j].i];
+                if (fabsf((q.y0 + q.y1) / 2 - mid) > fmaxf(q.y1 - q.y0, h) / 2) break;
                 j++;
             }
-            qsort(keys + i, (size_t)(j - i), sizeof *keys, cmp_x);
-            for (int k = i; k < j; k++) {
-                pt_word w = words.v[keys[k].i];
-                w.line = line;
-                pt_push(*out, w);
-            }
-            line++;
-            i = j;
+            qsort(keys + k, (size_t)(j - k), sizeof *keys, cmp_x);
+            k = j;
         }
+        for (int k = 0; k < m; k++)
+            for (int i = first[keys[k].i]; i < first[keys[k].i + 1]; i++) pt_push(sorted, words->v[i]);
         b = e + 1;
     }
+    free(words->v);
+    *words = sorted;
     pt_vec_free(blocks);
     free(keys);
-    free(idx);
     free(heights);
-    pt_vec_free(words);
+    free(idx);
+    free(first);
+    free(box);
 }
+
+/* Margin notes after the page's text: a note set close to the text can fall in the text's block, and
+ * a selection or a w through the text would then run through the note. The words on no numbered line (pt_number_lines
+ * leaves notes out; slanted headers aside) go last. */
+static void notes_last(fz_stext_page *st, pt_words *out)
+{
+    pt_numbering_state state = {1};
+    pt_text_lines lines = {0};
+    pt_number_lines(out, st->mediabox.x1 - st->mediabox.x0, PT_NUMBER_PAGE, &state, &lines);
+    char *note = calloc((size_t)out->n + 1, 1);
+    if (!note) abort();
+    int notes = 0;
+    for (int i = 0; lines.n && i < out->n; i++) {
+        fz_rect r = out->v[i].rect;
+        fz_point m = {(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2};
+        if (pt_word_slanted(&out->v[i])) continue;
+        int on = 0;
+        for (int k = 0; k < lines.n && !on; k++) on = fz_is_point_inside_rect(m, lines.v[k].r);
+        if (!on) note[i] = 1, notes++;
+    }
+    if (notes) {
+        pt_words sorted = {0};
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < out->n; i++)
+                if (note[i] == pass) pt_push(sorted, out->v[i]);
+        free(out->v);
+        *out = sorted;
+    }
+    free(note);
+    pt_vec_free(lines);
+}
+
+static int on_baseline_of(fz_rect a, fz_rect b);
+
+/* points a piece on the previous line's baseline may start before that line's end and still continue it */
+#define BASELINE_JOIN_OVERLAP 1
+
+/* `line` numbers the reading lines: MuPDF's text lines, one running on from the line before on its baseline (a
+ * hyphenated word's end MuPDF keeps apart, a table row's next cell) continuing it */
+static void number_reading_lines(pt_words *w)
+{
+    int line = -1;
+    for (int i = 0; i < w->n; i++) {
+        const pt_word *p = i ? &w->v[i - 1] : NULL;
+        int same =
+            p && (p->source_line == w->v[i].source_line ||
+                  (on_baseline_of(w->v[i].rect, p->rect) && w->v[i].rect.x0 >= p->rect.x1 - BASELINE_JOIN_OVERLAP));
+        if (!same) line++;
+        w->v[i].line = line;
+    }
+}
+
+void pt_reading_order_words(fz_stext_page *st, pt_words *out)
+{
+    pt_page_words(st, out);
+    order_lines(out);
+    notes_last(st, out);
+    number_reading_lines(out);
+}
+
+/* MuPDF's baseline directions are unit vectors from the text matrix; this absorbs its float rounding */
+#define LEVEL_EPS 1e-3f
+
+int pt_word_slanted(const pt_word *w) { return fabsf(w->dir.y) > LEVEL_EPS || w->dir.x < 0; }
 
 static int nearest_word(const pt_words *words, fz_point p)
 {
@@ -564,11 +555,20 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
         lo = ho;
         ho = t;
     }
+    return pt_words_range(words, lw, lo, hw, ho, rects);
+}
+
+char *pt_words_range(const pt_words *words, int lw, int lo, int hw, int ho, pt_rects *rects)
+{
+    rects->n = 0;
+    if (lw < 0) lw = 0, lo = 0;
+    if (hw >= words->n) hw = words->n - 1, ho = hw >= 0 ? words->v[hw].chars.n : 0;
     pt_ints runes = {0};
     int line = -1;
     for (int i = lw; i <= hw; i++) {
         const pt_word *w = &words->v[i];
         int a = i == lw ? lo : 0, z = i == hw ? ho : w->chars.n;
+        if (z > w->chars.n) z = w->chars.n;
         if (a >= z) continue;
         fz_rect box = w->chars.v[a].r;
         for (int k = a + 1; k < z; k++) box = fz_union_rect(box, w->chars.v[k].r);
@@ -590,22 +590,19 @@ char *pt_flow_select(const pt_words *words, fz_point start, fz_point end, pt_rec
 pt_numbering pt_numbering_from(const char *name)
 {
     if (name && !strcmp(name, "page")) return PT_NUMBER_PAGE;
-    if (name && !strcmp(name, "paragraph")) return PT_NUMBER_PARAGRAPH;
     return PT_NUMBER_DOCUMENT;
 }
 
-/* points a piece on the previous line's baseline may start before that line's end and still continue it */
-#define BASELINE_JOIN_OVERLAP 1
-/* a block narrower than this share of the page beside other blocks may be a table's column */
+/* lines narrower than this share of the page, one under the other, may be a table's column (cells, labels) */
 #define CELL_COLUMN_W 0.25f
-/* lines a column of cells shares with a block beside it to make them one table */
+/* lines a column of cells shares baselines with to make a table, or all of its lines when it has fewer */
 #define TABLE_SHARED_LINES 2
-/* a line ending more than this many line heights short of its column's edge ends its paragraph */
-#define SHORT_LINE_H 1.5f
-/* a gap of more than this many line heights between lines starts a paragraph */
-#define PARAGRAPH_GAP_H 0.6f
-/* a line whose height differs by more than this share from the previous one's (a heading) starts a paragraph */
-#define HEADING_SIZE_CHANGE 0.25f
+/* lines aligned on their left, right or middle within this many points are one column */
+#define ALIGN_PT 1.5f
+/* the column beside a column of cells is at most this many times as tall as it (and a line), starting at most
+ * CELL_ABOVE_LINES lines above it: a column of text beside a few short lines (equations) is no table */
+#define CELL_SPAN_MAX 3.0f
+#define CELL_ABOVE_LINES 2.0f
 
 static int overlap_x(fz_rect a, fz_rect b) { return a.x0 <= b.x1 && b.x0 <= a.x1; }
 
@@ -615,30 +612,96 @@ static int on_baseline_of(fz_rect a, fz_rect b)
     return cy > b.y0 && cy < b.y1;
 }
 
-/* a run of lines each overlapping the previous one horizontally: a column, or a column of a table's cells */
+static int aligned(fz_rect a, fz_rect b)
+{
+    return fabsf(a.x0 - b.x0) <= ALIGN_PT || fabsf(a.x1 - b.x1) <= ALIGN_PT ||
+           fabsf((a.x0 + a.x1) - (b.x0 + b.x1)) / 2 <= ALIGN_PT;
+}
+
+/* a run of lines each overlapping the previous one horizontally: a column */
 typedef struct {
-    int a, z, set;
+    int a, z;
     fz_rect r;
 } line_block;
 
 PT_VEC(line_blocks, line_block);
 
-static int block_set(line_blocks *b, int i)
+static fz_rect lines_extent(const pt_text_lines *l, int a, int z)
 {
-    while (b->v[i].set != i) i = b->v[i].set;
+    fz_rect r = l->v[a].r;
+    for (int i = a + 1; i < z; i++) r = fz_union_rect(r, l->v[i].r);
+    return r;
+}
+
+/* r overlaps none of lines a..z-1 beside it: a heading over the labels is not in the way of a reference's lines */
+static int clear_of(const pt_text_lines *l, int a, int z, fz_rect r)
+{
+    for (int i = a; i < z; i++)
+        if (r.y1 > l->v[i].r.y0 && r.y0 < l->v[i].r.y1 && overlap_x(r, l->v[i].r)) return 0;
+    return 1;
+}
+
+static int line_set(int *set, int i)
+{
+    while (set[i] != i) i = set[i];
     return i;
 }
 
-static int shared_baselines(const pt_text_lines *l, const line_block *b, const line_block *c)
+/* Lines a..z-1 (narrow, aligned, one under the other) as a column of cells: the lines on their baselines beside them,
+ * each with the run of lines aligned with it in reading order (a reference's further lines, a column's other cells),
+ * join them in one table when that column lies beside them and shares enough baselines. */
+static void cells_beside(const pt_text_lines *l, int a, int z, int *set)
 {
-    int n = 0;
-    for (int i = b->a; i < b->z; i++)
-        for (int k = c->a; k < c->z; k++)
-            if (on_baseline_of(l->v[i].r, l->v[k].r)) {
-                n++;
+    fz_rect p = lines_extent(l, a, z);
+    float lh = l->v[a].r.y1 - l->v[a].r.y0;
+    char *in = calloc((size_t)l->n, 1);
+    int shared = 0;
+    fz_rect q = fz_empty_rect;
+    for (int i = a; i < z; i++) {
+        int found = 0;
+        for (int m = 0; m < l->n; m++) {
+            if ((m >= a && m < z) || !clear_of(l, a, z, l->v[m].r) || !on_baseline_of(l->v[m].r, l->v[i].r)) continue;
+            found = 1;
+            for (int dir = -1; dir <= 1; dir += 2)
+                for (int k = m; k >= 0 && k < l->n && (k < a || k >= z) && clear_of(l, a, z, l->v[k].r) &&
+                                (k == m || aligned(l->v[k].r, l->v[k - dir].r));
+                     k += dir)
+                    in[k] = 1, q = fz_union_rect(q, l->v[k].r);
+        }
+        shared += found;
+    }
+    int need = z - a < TABLE_SHARED_LINES ? z - a : TABLE_SHARED_LINES;
+    int beside = !fz_is_empty_rect(q) && q.y0 >= p.y0 - CELL_ABOVE_LINES * lh &&
+                 q.y1 - q.y0 <= CELL_SPAN_MAX * (p.y1 - p.y0) + lh;
+    if (shared >= need && beside)
+        for (int k = 0; k < l->n; k++)
+            if (in[k] || (k >= a && k < z)) set[line_set(set, k)] = line_set(set, a);
+    free(in);
+}
+
+/* A table is every line within its extent: rows whose cells reading order joined into one line before the table was
+ * found (a number cell and its text) are its rows too, numbered with the others top to bottom. */
+static void table_takes_its_lines(const pt_text_lines *l, int *set)
+{
+    int *count = calloc((size_t)l->n + 1, sizeof *count);
+    fz_rect *extent = calloc((size_t)l->n + 1, sizeof *extent);
+    if (!count || !extent) abort();
+    for (int i = 0; i < l->n; i++) {
+        int s = line_set(set, i);
+        extent[s] = count[s]++ ? fz_union_rect(extent[s], l->v[i].r) : l->v[i].r;
+    }
+    for (int i = 0; i < l->n; i++) {
+        if (count[line_set(set, i)] > 1) continue;
+        fz_rect r = l->v[i].r;
+        fz_point m = {(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2};
+        for (int s = 0; s < l->n; s++)
+            if (count[s] > 1 && fz_is_point_inside_rect(m, extent[s])) {
+                set[i] = s;
                 break;
             }
-    return n;
+    }
+    free(count);
+    free(extent);
 }
 
 static int by_middle(const void *a, const void *b)
@@ -648,70 +711,163 @@ static int by_middle(const void *a, const void *b)
     return d < 0 ? -1 : d > 0;
 }
 
+/* lines starting (or ending) within this many points of each other share an edge */
+#define EDGE_BIN_PT 2.0f
+/* an edge shared by at least this share of the lines the most shared edge has is the main text's (both columns of
+ * a two-column page), not a note's */
+#define MAIN_EDGE_SHARE 0.5f
+
+static int sharing_edge(const pt_text_lines *lines, int ends, float x)
+{
+    int n = 0;
+    for (int k = 0; k < lines->n; k++) n += fabsf((ends ? lines->v[k].r.x1 : lines->v[k].r.x0) - x) <= EDGE_BIN_PT;
+    return n;
+}
+
+/* the outermost line start, or end (ends), of the main text; 0 without lines */
+static int main_edge(const pt_text_lines *lines, int ends, float *edge)
+{
+    int most = 0, found = 0;
+    for (int i = 0; i < lines->n; i++) {
+        int n = sharing_edge(lines, ends, ends ? lines->v[i].r.x1 : lines->v[i].r.x0);
+        if (n > most) most = n;
+    }
+    for (int i = 0; i < lines->n; i++) {
+        float x = ends ? lines->v[i].r.x1 : lines->v[i].r.x0;
+        if (sharing_edge(lines, ends, x) >= MAIN_EDGE_SHARE * most && (!found || (ends ? x > *edge : x < *edge)))
+            *edge = x, found = 1;
+    }
+    return found;
+}
+
+/* a label hung left of its text ([12], 3., (a)) is at most this many line heights wide and this far from the text */
+#define LABEL_W_H 4.0f
+#define LABEL_GAP_H 2.0f
+
+/* r, outside the main text, is a label: short, and on the baseline of a line of the main text just right of it */
+static int hung_label(const pt_text_lines *lines, const char *outside, fz_rect r)
+{
+    float h = r.y1 - r.y0;
+    if (r.x1 - r.x0 > LABEL_W_H * h) return 0;
+    for (int k = 0; k < lines->n; k++) {
+        fz_rect m = lines->v[k].r;
+        if (!outside[k] && on_baseline_of(r, m) && m.x0 >= r.x1 && m.x0 - r.x1 <= LABEL_GAP_H * h) return 1;
+    }
+    return 0;
+}
+
+/* Margin notes (todonotes, marginpars, review comments set beside the text) are not numbered, as lineno leaves them:
+ * a line wholly left of the main text or wholly right of it. The main text reaches as far as any line running over its
+ * most shared edge, so a table's first columns are not notes when that edge is the start of the table's text column;
+ * a list's or the references' labels hung left of the text are not notes either. */
+static void drop_margin_notes(pt_text_lines *lines)
+{
+    float left, right;
+    int has_left = main_edge(lines, 0, &left), has_right = main_edge(lines, 1, &right), n = 0;
+    float edge_left = left, edge_right = right;
+    for (int i = 0; i < lines->n; i++) {
+        fz_rect r = lines->v[i].r;
+        if (has_left && r.x1 > edge_left + EDGE_BIN_PT && r.x0 < left) left = r.x0;
+        if (has_right && r.x0 < edge_right - EDGE_BIN_PT && r.x1 > right) right = r.x1;
+    }
+    char *outside = calloc((size_t)lines->n + 1, 1);
+    if (!outside) abort();
+    for (int i = 0; i < lines->n; i++) {
+        fz_rect r = lines->v[i].r;
+        outside[i] = (has_left && r.x1 <= left - EDGE_BIN_PT) || (has_right && r.x0 >= right + EDGE_BIN_PT);
+    }
+    for (int i = 0; i < lines->n; i++)
+        if (!outside[i] || hung_label(lines, outside, lines->v[i].r)) lines->v[n++] = lines->v[i];
+    lines->n = n;
+    free(outside);
+}
+
 void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
                      pt_text_lines *out)
 {
     pt_text_lines lines = {0};
+    /* MuPDF's own text lines are the pieces, in the order reading order reaches them: a note set beside the text is a
+     * line of its own there however close it comes; the join below puts a line's pieces on one baseline together */
+    int sources = 0;
+    for (int i = 0; i < words->n; i++)
+        if (words->v[i].source_line >= sources) sources = words->v[i].source_line + 1;
+    int *piece_of = malloc(sizeof(int) * (size_t)(sources ? sources : 1));
+    if (!piece_of) abort();
+    for (int s = 0; s < sources; s++) piece_of[s] = -1;
     for (int i = 0; i < words->n; i++) {
-        fz_rect r = words->v[i].rect;
-        if (i && words->v[i].line == words->v[i - 1].line) {
-            lines.v[lines.n - 1].r = fz_union_rect(lines.v[lines.n - 1].r, r);
-            continue;
+        const pt_word *w = &words->v[i];
+        /* slanted words (a table's column headers) are on no line: lineno numbers the row they stand on */
+        if (pt_word_slanted(w)) continue;
+        int *piece = &piece_of[w->source_line];
+        if (*piece >= 0) lines.v[*piece].r = fz_union_rect(lines.v[*piece].r, w->rect);
+        else {
+            *piece = lines.n;
+            pt_push(lines, ((pt_text_line){w->rect, 0, 0, 0}));
         }
-        /* a section number and its title, or a label and its text, set apart on one baseline */
-        if (lines.n) {
-            fz_rect *last = &lines.v[lines.n - 1].r;
+    }
+    free(piece_of);
+    /* before joining pieces on one baseline, so a note beside a line of text is not joined to it */
+    drop_margin_notes(&lines);
+    /* a section number and its title, or a label and its text, set apart on one baseline */
+    int joined = 0;
+    for (int i = 0; i < lines.n; i++) {
+        fz_rect r = lines.v[i].r;
+        if (joined) {
+            fz_rect *last = &lines.v[joined - 1].r;
             if (on_baseline_of(r, *last) && r.x0 >= last->x1 - BASELINE_JOIN_OVERLAP) {
                 *last = fz_union_rect(*last, r);
                 continue;
             }
         }
-        pt_push(lines, ((pt_text_line){r, 0, 0, 0}));
+        lines.v[joined++] = lines.v[i];
     }
+    lines.n = joined;
     line_blocks blocks = {0};
+    int *block_of = calloc((size_t)lines.n + 1, sizeof *block_of), *set = calloc((size_t)lines.n + 1, sizeof *set);
     for (int a = 0, k = 1; k <= lines.n; k++) {
         if (k < lines.n && overlap_x(lines.v[k].r, lines.v[k - 1].r)) continue;
-        fz_rect r = lines.v[a].r;
-        for (int i = a + 1; i < k; i++) r = fz_union_rect(r, lines.v[i].r);
-        int self = blocks.n;
-        pt_push(blocks, ((line_block){a, k, self, r}));
+        for (int i = a; i < k; i++) block_of[i] = blocks.n;
+        pt_push(blocks, ((line_block){a, k, lines_extent(&lines, a, k)}));
         a = k;
     }
-    /* A table is not columns of text: a narrow block whose lines share baselines with blocks beside it is a column
-     * of cells, and the blocks it sits beside are the table's other columns. A table is numbered by its rows, at its
-     * left edge. */
-    for (int i = 0; i < blocks.n; i++) {
-        line_block *b = &blocks.v[i];
-        if (b->r.x1 - b->r.x0 >= CELL_COLUMN_W * page_w) continue;
-        for (int k = 0; k < blocks.n; k++) {
-            line_block *c = &blocks.v[k];
-            if (k == i || overlap_x(b->r, c->r) || c->r.y0 > b->r.y1 || b->r.y0 > c->r.y1) continue;
-            int need = b->z - b->a < TABLE_SHARED_LINES ? b->z - b->a : TABLE_SHARED_LINES;
-            if (shared_baselines(&lines, b, c) >= need) blocks.v[block_set(&blocks, k)].set = block_set(&blocks, i);
-        }
-    }
-    out->n = 0;
-    pt_text_lines rows = {0};
-    for (int i = 0; i < blocks.n; i++) {
-        int s = block_set(&blocks, i), alone = 1;
-        for (int k = 0; k < blocks.n && alone; k++) alone = k == i || block_set(&blocks, k) != s;
-        if (alone) {
-            for (int k = blocks.v[i].a; k < blocks.v[i].z; k++) {
-                pt_text_line l = lines.v[k];
-                l.col_x0 = blocks.v[i].r.x0, l.col_x1 = blocks.v[i].r.x1;
-                pt_push(*out, l);
-            }
+    /* A table is not columns of text: narrow lines one under the other (cells, labels) that share baselines with a
+     * column beside them are a column of cells, and those lines are the table's other column. A table is numbered by
+     * its rows, at its left edge. */
+    float narrow_w = CELL_COLUMN_W * page_w;
+    for (int i = 0; i < lines.n; i++) set[i] = i;
+    for (int a = 0; a < lines.n;) {
+        int z = a + 1;
+        if (lines.v[a].r.x1 - lines.v[a].r.x0 >= narrow_w) {
+            a = z;
             continue;
         }
-        int first = 1;
-        for (int k = 0; k < i && first; k++) first = block_set(&blocks, k) != s;
+        while (z < lines.n && lines.v[z].r.x1 - lines.v[z].r.x0 < narrow_w &&
+               overlap_x(lines.v[z].r, lines.v[z - 1].r) && aligned(lines.v[z].r, lines.v[z - 1].r))
+            z++;
+        cells_beside(&lines, a, z, set);
+        a = z;
+    }
+    table_takes_its_lines(&lines, set);
+    out->n = 0;
+    pt_text_lines rows = {0};
+    for (int i = 0; i < lines.n; i++) {
+        int s = line_set(set, i), alone = 1, first = 1;
+        for (int k = 0; k < lines.n && alone; k++) alone = k == i || line_set(set, k) != s;
+        if (alone) {
+            const line_block *b = &blocks.v[block_of[i]];
+            pt_text_line l = lines.v[i];
+            l.col_x0 = b->r.x0, l.col_x1 = b->r.x1;
+            pt_push(*out, l);
+            continue;
+        }
+        for (int k = 0; k < i && first; k++) first = line_set(set, k) != s;
         if (!first) continue;
         rows.n = 0;
         fz_rect table = fz_empty_rect;
-        for (int k = 0; k < blocks.n; k++) {
-            if (block_set(&blocks, k) != s) continue;
-            table = fz_union_rect(table, blocks.v[k].r);
-            for (int m = blocks.v[k].a; m < blocks.v[k].z; m++) pt_push(rows, lines.v[m]);
+        for (int k = 0; k < lines.n; k++) {
+            if (line_set(set, k) != s) continue;
+            table = fz_union_rect(table, lines.v[k].r);
+            pt_push(rows, lines.v[k]);
         }
         qsort(rows.v, (size_t)rows.n, sizeof *rows.v, by_middle);
         for (int k = 0; k < rows.n; k++) {
@@ -725,25 +881,10 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
     pt_vec_free(rows);
     pt_vec_free(blocks);
     pt_vec_free(lines);
+    free(block_of);
+    free(set);
     if (mode == PT_NUMBER_PAGE) state->next = 1;
-    for (int k = 0; k < out->n; k++) {
-        pt_text_line *l = &out->v[k];
-        /* a paragraph ends with a line short of its column's edge or a gap of more than half a line after it; a
-         * line of another size (a heading) starts one too */
-        float lh = l->r.y1 - l->r.y0;
-        int starts = !state->open;
-        if (k) {
-            const pt_text_line *p = &out->v[k - 1];
-            float gap = l->col_x0 == p->col_x0 ? l->r.y0 - p->r.y1 : 0;
-            starts = p->r.x1 < p->col_x1 - SHORT_LINE_H * state->h || gap > PARAGRAPH_GAP_H * state->h;
-        }
-        if (state->h > 0 && fabsf(lh - state->h) > HEADING_SIZE_CHANGE * fmaxf(lh, state->h)) starts = 1;
-        state->tail = starts ? 1 : state->tail + 1;
-        l->n = mode == PT_NUMBER_PARAGRAPH ? state->tail : state->next;
-        state->next++;
-        state->open = l->r.x1 >= l->col_x1 - SHORT_LINE_H * lh;
-        state->h = lh;
-    }
+    for (int k = 0; k < out->n; k++) out->v[k].n = state->next++;
 }
 
 /* ---- personal data ----
@@ -765,7 +906,6 @@ void pt_piis_free(pt_piis *p)
     pt_vec_free(*p);
 }
 
-#ifdef PT_USE_PCRE2
 static int digits_of(const char *s, int n, char *out, int cap)
 {
     int k = 0;
@@ -830,30 +970,41 @@ static int date_ok(const char *s, int n)
     /* day-month or month-day */
     return a >= 1 && b >= 1 && ((a <= 31 && b <= 12) || (a <= 12 && b <= 31));
 }
-#endif
+
+/* the next character's start after p in UTF-8 text */
+static const char *next_char(const char *p)
+{
+    if (*p) p++;
+    while (((unsigned char)*p & 0xc0) == 0x80) p++;
+    return p;
+}
 
 void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
 {
-#ifdef PT_USE_PCRE2
     char *month_day =
         pt_format("\\b\\d{1,2}\\.?\\s+%s\\.?,?\\s+\\d{4}\\b|\\b%s\\.?\\s+\\d{1,2},?\\s+\\d{4}\\b", MONTHS, MONTHS);
 
+    /* MuPDF's regular expressions have no lookbehind: `not_after` lists the characters a match may not follow */
     const struct {
         pt_pii_kind kind;
         const char *re;
         int caseless;
+        const char *not_after;
     } RULES[] = {
-        {PT_PII_IBAN, "\\b[A-Z]{2}\\d{2}(?: ?[A-Z0-9]){11,30}", 0},
-        {PT_PII_CARD, "\\b\\d(?:[ -]?\\d){12,18}\\b", 0},
-        {PT_PII_EMAIL, "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}\\b", 0},
-        {PT_PII_DATE, "\\b(?:\\d{1,2}[./-]\\d{1,2}[./-](?:\\d{4}|\\d{2})|\\d{4}-\\d{2}-\\d{2})\\b", 0},
-        {PT_PII_DATE, month_day, 1},
-        {PT_PII_PHONE, "(?:\\+|\\b00)\\d{1,3}[ ./-]?(?:\\(0\\)[ ./-]?)?\\(?\\d{1,5}\\)?(?:[ ./-]?\\d){4,12}\\b", 0},
-        {PT_PII_PHONE, "(?<![\\d+])\\(?\\b0\\d{1,5}\\)?(?:[ ./-]?\\d){5,10}\\b", 0},
-        {PT_PII_PHONE, "(?<!\\d)\\(?\\b\\d{3}\\)?[ .-]\\d{3}[ .-]\\d{4}\\b", 0},
-        {PT_PII_ID, "\\b\\d{3}-\\d{2}-\\d{4}\\b", 0},
-        {PT_PII_ID, "\\b[A-Z]{1,2}\\d{6,9}\\b", 0},
-        {PT_PII_ID, "\\b\\d{8,}\\b", 0},
+        {PT_PII_IBAN, "\\b[A-Z]{2}\\d{2}(?: ?[A-Z0-9]){11,30}", 0, NULL},
+        {PT_PII_CARD, "\\b\\d(?:[ -]?\\d){12,18}\\b", 0, NULL},
+        {PT_PII_EMAIL, "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}\\b", 0, NULL},
+        {PT_PII_DATE, "\\b(?:\\d{1,2}[./-]\\d{1,2}[./-](?:\\d{4}|\\d{2})|\\d{4}-\\d{2}-\\d{2})\\b", 0, NULL},
+        {PT_PII_DATE, month_day, 1, NULL},
+        {PT_PII_PHONE,
+         "(?:\\+|\\b00)\\d{1,3}[ ./-]?(?:\\(0\\)[ ./-]?)?"
+         "\\(?\\d{1,5}\\)?(?:[ ./-]?\\d){4,12}\\b",
+         0, NULL},
+        {PT_PII_PHONE, "\\(?\\b0\\d{1,5}\\)?(?:[ ./-]?\\d){5,10}\\b", 0, "0123456789+"},
+        {PT_PII_PHONE, "\\(?\\b\\d{3}\\)?[ .-]\\d{3}[ .-]\\d{4}\\b", 0, "0123456789"},
+        {PT_PII_ID, "\\b\\d{3}-\\d{2}-\\d{4}\\b", 0, NULL},
+        {PT_PII_ID, "\\b[A-Z]{1,2}\\d{6,9}\\b", 0, NULL},
+        {PT_PII_ID, "\\b\\d{8,}\\b", 0, NULL},
     };
 
     /* the page text, '\n' after each line; owner maps bytes back to characters (-1: the line breaks) */
@@ -881,22 +1032,24 @@ void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
             text[len] = '\n', owner[len++] = -1;
         }
     }
+    text[len] = 0;
 
     char *claimed = calloc(len + 1, 1);
     pt_rects boxes = {0};
     for (size_t r = 0; r < sizeof RULES / sizeof *RULES; r++) {
-        int err;
-        PCRE2_SIZE off;
-        uint32_t flags = PCRE2_UTF | PCRE2_UCP | (RULES[r].caseless ? PCRE2_CASELESS : 0);
-        pcre2_code *re = pcre2_compile((PCRE2_SPTR)RULES[r].re, PCRE2_ZERO_TERMINATED, flags, &err, &off, NULL);
-        if (!re) continue;
-        pcre2_match_data *md = pcre2_match_data_create_from_pattern(re, NULL);
-        PCRE2_SIZE start = 0;
-        while (start < len && pcre2_match(re, (PCRE2_SPTR)text, len, start, 0, md, NULL) >= 0) {
-            PCRE2_SIZE *ov = pcre2_get_ovector_pointer(md);
-            size_t a = ov[0], e = ov[1];
-            start = e > a ? e : e + 1;
-            int ok = 1;
+        fz_regex *re = fz_regcomp(ctx, RULES[r].re, REG_NEWLINE | (RULES[r].caseless ? REG_ICASE : 0));
+        const char *p = text;
+        struct fz_regmatch m;
+        while (*p) {
+            int bol = p == text || p[-1] == '\n';
+            if (fz_regexec(ctx, re, p, &m, (bol ? 0 : REG_NOTBOL) | REG_RUNAWAY) != 0) break;
+            size_t a = (size_t)(m.sub[0].sp - text), e = (size_t)(m.sub[0].ep - text);
+            if (a && RULES[r].not_after && strchr(RULES[r].not_after, text[a - 1])) {
+                p = next_char(text + a);
+                continue;
+            }
+            p = e > a ? text + e : next_char(text + e);
+            int ok = e > a;
             if (RULES[r].kind == PT_PII_IBAN) {
                 int keep = iban_prefix(text + a, (int)(e - a));
                 ok = keep > 0;
@@ -920,8 +1073,7 @@ void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
             if (hit.rects.n) pt_push(*out, hit);
             else free(hit.text);
         }
-        pcre2_match_data_free(md);
-        pcre2_code_free(re);
+        fz_regfree(ctx, re);
     }
     pt_vec_free(boxes);
     free(claimed);
@@ -929,9 +1081,4 @@ void pt_find_personal_data(fz_context *ctx, fz_stext_page *st, pt_piis *out)
     free(owner);
     free(month_day);
     pt_vec_free(chars);
-    (void)ctx;
-#else
-    (void)st, (void)out;
-    fz_throw(ctx, FZ_ERROR_UNSUPPORTED, "finding personal data needs a build with PCRE2");
-#endif
 }

@@ -69,7 +69,8 @@ The same operations are also available as commands that run without the window
 .SS Tools
 .TP
 .BR View " (V)"
-Read the document, fill form fields, drag to select text (Alt+drag selects a
+Read the document, fill form fields, drag to select text (Shift+drag selects whole lines,
+a table's rows across their cells; Alt+drag selects a
 rectangle) and right-click the selection to copy, mark or redact it.
 .TP
 .BR Redact " (R)"
@@ -294,8 +295,9 @@ Redact every match of
 .BI \-\-text " string"
 and
 .BI \-\-regex " pattern"
-(both repeatable; text matches ignore case unless
-.BR \-\-case\-sensitive ).
+(both repeatable; both ignore case unless
+.BR \-\-case\-sensitive ;
+patterns are MuPDF's regular expressions, written as in JavaScript, matched line by line).
 .BI \-\-pages " ranges"
 limits the pages,
 .BI \-\-fill " #rrggbb"
@@ -395,7 +397,7 @@ List annotations, with their index on each page, and form fields.
 Export the comments: marked text with the text under it, notes, text boxes,
 stamps and other annotations with a comment, with their replies, author, date,
 page and line numbers as the window numbers lines
-.RB ( \-\-numbering " document|page|paragraph,"
+.RB ( \-\-numbering " document|page,"
 .BR \-\-pages ).
 JSON on standard output, or with
 .BI \-o " file"
@@ -539,6 +541,17 @@ An install into a prefix you can write (e.g.
 .IR ~/.local )
 is updated file by file from the release tarball, and nothing else in the prefix is touched;
 a distro package or a prefix you cannot write gets the release page instead.
+.TP
+.I ~/.config/pdf-tools/keys.toml
+The window's keyboard shortcuts changed from the defaults, written by Menu > Keyboard shortcuts...:
+.B action = """Ctrl+Shift+X"""
+or a list
+.BR "[""Ctrl+F"", ""F3""]" ;
+.B """"""
+or
+.B []
+removes the shortcut.
+Unknown actions and keys are ignored with a warning.
 .TP
 .I ~/.local/share/pdf-tools/update-check
 When the window last checked for updates, and the version it found.

@@ -23,10 +23,6 @@ MUPDF_VERSION=1.28.5
 MUPDF_SHA256=98a5c10cda20c3992cdf76ff6b2a1149c32bd79cc796d3f703230b1185b7e934
 MUPDF_URL=https://mupdf.com/downloads/archive/mupdf-$MUPDF_VERSION-source.tar.gz
 
-PCRE2_VERSION=10.45
-PCRE2_SHA256=21547f3516120c75597e5b30a992e27a592a31950b5140e7b8bfde3f192033c4
-PCRE2_URL=https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VERSION/pcre2-$PCRE2_VERSION.tar.bz2
-
 OPENSSL_VERSION=3.5.4
 OPENSSL_SHA256=967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99
 OPENSSL_URL=https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz

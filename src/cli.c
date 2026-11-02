@@ -594,18 +594,8 @@ static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt
     pt_rects rects = {0};
     for (int t = 0; t < texts->n; t++) {
         pt_rects hits = {0};
-        pt_search(ctx, st, texts->v[t], &hits);
-        for (int i = 0; i < hits.n; i++) {
-            fz_rect r = hits.v[i];
-            if (cs) {
-                /* the search ignores case */
-                char *box = pt_textbox(ctx, st, fz_make_rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1));
-                int keep = strstr(box, texts->v[t]) != NULL;
-                free(box);
-                if (!keep) continue;
-            }
-            pt_push(rects, r);
-        }
+        pt_search(ctx, st, texts->v[t], cs, &hits);
+        for (int i = 0; i < hits.n; i++) pt_push(rects, hits.v[i]);
         pt_vec_free(hits);
     }
     for (int i = 0; i < patterns->n; i++) {
@@ -1851,8 +1841,8 @@ static int cmd_comments(args *a)
 {
     const char *path = input(a), *out = get(a, "--output"), *format = get(a, "--format");
     const char *numbering = get(a, "--numbering");
-    if (strcmp(numbering, "document") && strcmp(numbering, "page") && strcmp(numbering, "paragraph"))
-        usage_error(a->c, "argument --numbering: document, page or paragraph, got '%s'", numbering);
+    if (strcmp(numbering, "document") && strcmp(numbering, "page"))
+        usage_error(a->c, "argument --numbering: document or page, got '%s'", numbering);
     int markdown;
     if (!format) {
         size_t n = out ? strlen(out) : 0;
@@ -2299,7 +2289,7 @@ static const cmd COMMANDS[] = {
       {"--output", "-o", VALUE, 0, "OUTPUT", "write them to this file (.md: Markdown) instead of stdout", NULL},
       {"--format", NULL, VALUE, 0, "FORMAT", "md | json (default: md for an .md output, else json)", NULL},
       {"--numbering", NULL, VALUE, 0, "NUMBERING",
-       "document | page | paragraph: where line numbers restart, as in the window (default document)", "document"},
+       "document | page: where line numbers restart, as in the window (default document)", "document"},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL}},
      {0}},
     {"edit-annotation",

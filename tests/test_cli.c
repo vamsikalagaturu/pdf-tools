@@ -674,6 +674,7 @@ static void test_comments(const char *statement)
     CHECK(run("comments", r, "--format", "md", NULL) == FAILED && one_object() && has("{\"error\":\"usage:"));
     CHECK(run("comments", r, "--format", "xml", NULL) == FAILED && has("{\"error\":\"usage:"));
     CHECK(run("comments", r, "--numbering", "line", NULL) == FAILED && has("{\"error\":\"usage:"));
+    CHECK(run("comments", r, "--numbering", "paragraph", NULL) == FAILED && has("{\"error\":\"usage:"));
     CHECK(run("comments", r, "--pages", "9", NULL) == FAILED && one_object() && has("\"error\":"));
     CHECK(run("comments", r, "-o", r, NULL) == FAILED && has("overwrite"));
     free(h), free(n), free(r), free(md), free(js);
