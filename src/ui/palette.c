@@ -28,10 +28,6 @@
 #define PALETTE_SHORTCUT_GAP 16.0f
 #define PALETTE_ROW_ROUND 0.2f
 #define PALETTE_ROW_SEGMENTS 4
-#define PALETTE_SHADOW_X 2.0f
-#define PALETTE_SHADOW_Y 3.0f
-#define PALETTE_SHADOW_ROUND 0.02f
-#define PALETTE_SHADOW_ALPHA 60
 #define PALETTE_HOVER_ALPHA 160
 #define PALETTE_DISABLED_SEL_ALPHA 70
 #define PALETTE_PATH_SEP " \xe2\x80\xba " /* " › " */
@@ -264,9 +260,7 @@ void palette_frame(void)
     Rectangle box = {(ui.w - w) / 2, top, w, PALETTE_FIELD_H + list_h + 3 * PALETTE_PAD};
     int outside = (ui.pressed || ui.rpressed) && ui.mouse_layer == lid && !CheckCollisionPointRec(ui.mouse, box);
 
-    Rectangle shadow = {box.x + PALETTE_SHADOW_X, box.y + PALETTE_SHADOW_Y, box.width, box.height};
-    DrawRectangleRounded(shadow, PALETTE_SHADOW_ROUND, PALETTE_ROW_SEGMENTS,
-                         with_alpha(pal.shadow, PALETTE_SHADOW_ALPHA));
+    ui_shadow(box, PALETTE_RADIUS);
     ui_panel(box, pal.window, pal.border, PALETTE_RADIUS);
 
     /* the arrows move the selection: read before the text field, which takes them for its caret */

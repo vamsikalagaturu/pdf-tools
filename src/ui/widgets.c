@@ -196,6 +196,8 @@ typedef void (*glfw_mouse_fn)(void *window, int button, int action, int mods);
 typedef void (*glfw_key_fn)(void *window, int key, int scancode, int action, int mods);
 glfw_mouse_fn glfwSetMouseButtonCallback(void *window, glfw_mouse_fn fn);
 glfw_key_fn glfwSetKeyCallback(void *window, glfw_key_fn fn);
+typedef void (*glfw_char_fn)(void *window, unsigned int codepoint);
+glfw_char_fn glfwSetCharCallback(void *window, glfw_char_fn fn);
 void *glfwGetCurrentContext(void);
 int glfwGetPlatform(void);
 void glfwGetWindowContentScale(void *window, float *x, float *y);
@@ -205,9 +207,12 @@ void glfwGetWindowContentScale(void *window, float *x, float *y);
 #define GLFW_MOD_SHIFT 1
 #define GLFW_MOD_CONTROL 2
 #define GLFW_MOD_ALT 4
+#define GLFW_MOD_CAPS_LOCK 0x10
+#define GLFW_MOD_NUM_LOCK 0x20
 
 static glfw_mouse_fn raylib_mouse;
 static glfw_key_fn raylib_key;
+static glfw_char_fn raylib_char;
 
 static struct {
     int button, action;
@@ -246,17 +251,35 @@ static void on_mouse(void *window, int button, int action, int mods)
     if (nmouse < 64) mouse_events[nmouse].button = button, mouse_events[nmouse].action = action, nmouse++;
 }
 
+/* What Shift and a key type in the keyboard layout in use, learnt as it is typed (GLFW hands the character on right
+ * after the key): the key hints show "?" rather than "Shift+/". */
+#define LEARNT_KEYS 512
+static int shifted_char[LEARNT_KEYS];
+static int last_key = -1, last_mods;
+
 static void on_key(void *window, int key, int scancode, int action, int mods)
 {
     if (raylib_key) raylib_key(window, key, scancode, action, mods);
     if (action != GLFW_RELEASE && nkeys < 64) key_events[nkeys].key = key, key_events[nkeys].mods = mods, nkeys++;
+    if (action != GLFW_RELEASE) last_key = key, last_mods = mods;
 }
+
+static void on_char(void *window, unsigned int codepoint)
+{
+    if (raylib_char) raylib_char(window, codepoint);
+    int mods = last_mods & ~(GLFW_MOD_NUM_LOCK | GLFW_MOD_CAPS_LOCK);
+    if (last_key >= 0 && last_key < LEARNT_KEYS && mods == GLFW_MOD_SHIFT) shifted_char[last_key] = (int)codepoint;
+    last_key = -1;
+}
+
+int ui_shifted_char(int key) { return key >= 0 && key < LEARNT_KEYS ? shifted_char[key] : 0; }
 
 void ui_input_init(void)
 {
     void *w = glfwGetCurrentContext();
     raylib_mouse = glfwSetMouseButtonCallback(w, on_mouse);
     raylib_key = glfwSetKeyCallback(w, on_key);
+    raylib_char = glfwSetCharCallback(w, on_char);
 }
 
 /* Hands this frame the oldest mouse button event (the rest wait for the next frames) and every queued key press. */
@@ -764,6 +787,21 @@ static void focus_step(void)
 
 /* ---- basic widgets ---- */
 
+#define SHADOW_RINGS 4  /* a shadow's width in pixels, one ring each */
+#define SHADOW_DROP 1   /* it falls this much lower than what casts it */
+#define SHADOW_ALPHA 48 /* the innermost ring's; ring k has 1/k of it */
+#define SHADOW_CORNER_SEGMENTS 8
+
+void ui_shadow(Rectangle r, float radius)
+{
+    /* rings fading outwards, each one's corners concentric with r's */
+    for (int k = SHADOW_RINGS; k >= 1; k--) {
+        Rectangle ring = {r.x - k, r.y - k + SHADOW_DROP, r.width + 2 * k, r.height + 2 * k};
+        float round = (radius + k) * 2 / fminf(ring.width, ring.height);
+        DrawRectangleRounded(ring, round, SHADOW_CORNER_SEGMENTS, with_alpha(pal.shadow, SHADOW_ALPHA / k));
+    }
+}
+
 void ui_panel(Rectangle r, Color fill, Color border, float radius)
 {
     if (radius > 0) {
@@ -790,6 +828,9 @@ float button_width(const char *label, const char *icon, int flags)
     if (flags & B_MENU) w += 14;
     return w;
 }
+
+#define MENU_ARROW_H 5.0f /* a menu button's down arrow */
+#define MENU_ARROW_HALF_W 4.0f
 
 int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int flags, const char *tip)
 {
@@ -831,8 +872,12 @@ int ui_button(unsigned id, Rectangle r, const char *label, const char *icon, int
         draw_text_in(label, (Rectangle){x, r.y, r.width, r.height}, FS_NORMAL, f, fg, -1);
     }
     if (flags & B_MENU) {
-        float ax = r.x + r.width - 12;
-        DrawTriangle((Vector2){ax - 4, cy - 2}, (Vector2){ax, cy + 3}, (Vector2){ax + 4, cy - 2}, fg);
+        /* alone in the button (a split button's arrow half) it is centred, else it follows the icon or label */
+        int alone = !icon && icon_only;
+        float ax = alone ? r.x + r.width / 2 : r.x + r.width - 12;
+        float top = cy - MENU_ARROW_H / 2, tip = cy + MENU_ARROW_H / 2;
+        Vector2 left = {ax - MENU_ARROW_HALF_W, top}, right = {ax + MENU_ARROW_HALF_W, top};
+        DrawTriangle(left, (Vector2){ax, tip}, right, fg);
     }
     ui_tooltip(id, r, tip);
     return clicked;
@@ -1526,10 +1571,6 @@ struct ui_menu {
 #define MENU_CHECK_W 2.0f /* the swatch ring and the tick */
 #define MENU_INSET 4.0f   /* above the first item; a submenu overlaps its parent by as much */
 #define MENU_RADIUS 6.0f  /* the menu's corners */
-#define MENU_CORNER_SEGMENTS 8
-#define MENU_SHADOW_RINGS 4  /* the shadow's width in pixels, one ring each */
-#define MENU_SHADOW_DROP 1   /* it falls this much lower than the menu */
-#define MENU_SHADOW_ALPHA 48 /* the innermost ring's; ring k has 1/k of it */
 static ui_menu *open_menus[8];
 static int nopen;
 static Vector2 menu_at;
@@ -1755,13 +1796,7 @@ void menus_frame(void)
         ui_menu *m = open_menus[level];
         unsigned lid = ui_id(m, 7);
         ui_layer_begin(lid, m->r, 0);
-        /* a soft shadow: rings fading outwards, not one dark block offset beside the menu */
-        for (int k = MENU_SHADOW_RINGS; k >= 1; k--) {
-            Rectangle ring = {m->r.x - k, m->r.y - k + MENU_SHADOW_DROP, m->r.width + 2 * k, m->r.height + 2 * k};
-            /* each ring's corners concentric with the menu's */
-            float round = (MENU_RADIUS + k) * 2 / fminf(ring.width, ring.height);
-            DrawRectangleRounded(ring, round, MENU_CORNER_SEGMENTS, with_alpha(pal.shadow, MENU_SHADOW_ALPHA / k));
-        }
+        ui_shadow(m->r, MENU_RADIUS);
         ui_panel(m->r, pal.window, pal.border, MENU_RADIUS);
         float y = m->r.y + 4;
         float sc_x = m->r.x + m->r.width - 12;

@@ -116,8 +116,10 @@ typedef struct {
 } pt_char;
 
 PT_VEC(pt_chars, pt_char);
-#define PT_TEXT_FLAGS \
-    (FZ_STEXT_PRESERVE_LIGATURES | FZ_STEXT_PRESERVE_WHITESPACE | FZ_STEXT_CLIP | FZ_STEXT_USE_CID_FOR_UNKNOWN_UNICODE)
+/* with the page's shapes (FZ_STEXT_COLLECT_VECTORS: vector blocks) so a table's rules bound it */
+#define PT_TEXT_FLAGS                                                             \
+    (FZ_STEXT_PRESERVE_LIGATURES | FZ_STEXT_PRESERVE_WHITESPACE | FZ_STEXT_CLIP | \
+     FZ_STEXT_USE_CID_FOR_UNKNOWN_UNICODE | FZ_STEXT_COLLECT_VECTORS)
 /* The page's text with its annotations and form fields run too, so that a search and the check for text left under
  * a redaction find what they draw. */
 fz_stext_page *pt_stext(fz_context *ctx, fz_page *page);
@@ -126,12 +128,17 @@ char *pt_textbox(fz_context *ctx, fz_stext_page *st, fz_rect rect); /* chars cen
 char *pt_text_under(fz_context *ctx, fz_page *page, fz_rect rect);  /* stripped */
 char *pt_chars_under(const pt_chars *chars, fz_rect rect);          /* stripped */
 char *pt_page_text(fz_context *ctx, fz_page *page);
+
+/* how pt_search and pt_regex_rects match: case as given (else ignored), accents ignored (Strüber finds Struber) */
+
+enum { PT_MATCH_CASE = 1, PT_IGNORE_ACCENTS = 2 };
+
 /* MuPDF's search (fz_match_stext_page) for `needle`, across line breaks and hyphenation; one rect per line of a hit */
-void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int case_sensitive, pt_rects *out);
+void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int flags, pt_rects *out);
 /* Matches `pattern` (MuPDF's regular expressions, as JavaScript writes them) over the page text line by line, so that
  * ^, $ and \b see the line breaks; each match adds one rect per line to `out`. Returns the number of matches. Throws
  * on a bad pattern and when matching runs away. */
-int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int case_sensitive, pt_rects *out);
+int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int flags, pt_rects *out);
 /* Bounds of the annotations and form fields whose text that need not be drawn (comment, author, subject, rich
  * text, field value) contains `needle` or matches `pattern` (either may be NULL); one whose bounds already hold the
  * centre of a rect in `out` is not added again. Redacting such a rect deletes the annotation. */
@@ -571,9 +578,11 @@ typedef struct {
     char *text;
     int line;
     pt_chars chars;
-    int source_line; /* which of MuPDF's text lines it is on, counted through the page */
-    fz_point dir;    /* that line's baseline direction, (1, 0) for level text */
-    float size;      /* its first character's font size */
+    int source_line;  /* which of MuPDF's text lines it is on, counted through the page */
+    int source_block; /* and which of its text blocks (a paragraph) */
+    int table;        /* the ruled table it is in (between a table's top and bottom rule), -1 none */
+    fz_point dir;     /* that line's baseline direction, (1, 0) for level text */
+    float size;       /* its first character's font size */
 } pt_word;
 
 PT_VEC(pt_words, pt_word);

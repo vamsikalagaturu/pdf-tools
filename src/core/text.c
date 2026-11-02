@@ -136,10 +136,18 @@ static int match_page(fz_context *ctx, fz_stext_page *st, const char *needle, fz
     return acc.hits;
 }
 
-void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int case_sensitive, pt_rects *out)
+static fz_search_options search_options(int flags)
+{
+    fz_search_options o = FZ_SEARCH_EXACT;
+    if (!(flags & PT_MATCH_CASE)) o |= FZ_SEARCH_IGNORE_CASE;
+    if (flags & PT_IGNORE_ACCENTS) o |= FZ_SEARCH_IGNORE_DIACRITICS;
+    return o;
+}
+
+void pt_search(fz_context *ctx, fz_stext_page *st, const char *needle, int flags, pt_rects *out)
 {
     if (!needle || !*needle) return;
-    match_page(ctx, st, needle, case_sensitive ? FZ_SEARCH_EXACT : FZ_SEARCH_IGNORE_CASE, out);
+    match_page(ctx, st, needle, search_options(flags), out);
 }
 
 void pt_merge_lines(const fz_rect *boxes, int n, pt_rects *out)
@@ -160,11 +168,10 @@ void pt_merge_lines(const fz_rect *boxes, int n, pt_rects *out)
 
 /* MuPDF's regular expressions over the page's text, line by line as it is set (^, $ and \b at line ends, hyphens
  * kept): a pattern that does not compile, or that backtracks without end, throws */
-int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int case_sensitive, pt_rects *out)
+int pt_regex_rects(fz_context *ctx, fz_stext_page *st, const char *pattern, int flags, pt_rects *out)
 {
-    fz_search_options options = FZ_SEARCH_REGEXP | FZ_SEARCH_KEEP_LINES | FZ_SEARCH_KEEP_HYPHENS;
-    if (!case_sensitive) options |= FZ_SEARCH_IGNORE_CASE;
-    return match_page(ctx, st, pattern, options, out);
+    fz_search_options lines = FZ_SEARCH_REGEXP | FZ_SEARCH_KEEP_LINES | FZ_SEARCH_KEEP_HYPHENS;
+    return match_page(ctx, st, pattern, search_options(flags) | lines, out);
 }
 
 /* an annotation's or field's text has `needle` in it or matches `pattern`, as the page's text is searched */
@@ -231,10 +238,11 @@ static int is_space(int c)
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xa0 || c == 0x3000 || (c >= 0x2000 && c <= 0x200a);
 }
 
-static void flush(pt_chars *cur, const fz_stext_line *line, int source_line, float size, pt_words *out)
+static void flush(pt_chars *cur, const fz_stext_line *line, int source_line, int source_block, float size,
+                  pt_words *out)
 {
     if (!cur->n) return;
-    pt_word w = {fz_empty_rect, NULL, 0, *cur, source_line, line->dir, size};
+    pt_word w = {fz_empty_rect, NULL, 0, *cur, source_line, source_block, -1, line->dir, size};
     pt_ints runes = {0};
     for (int i = 0; i < cur->n; i++) {
         w.rect = i ? fz_union_rect(w.rect, cur->v[i].r) : cur->v[i].r;
@@ -246,31 +254,33 @@ static void flush(pt_chars *cur, const fz_stext_line *line, int source_line, flo
     *cur = (pt_chars){0};
 }
 
-/* the text blocks under `b` in order, into the structure blocks MuPDF's segmentation nests them in */
-static void block_words(fz_stext_block *b, int *source_line, pt_words *out)
+/* the text blocks under `b` in order, into structure blocks (tagged PDFs) */
+static void block_words(fz_stext_block *b, int *source_line, int *source_block, pt_words *out)
 {
     pt_chars cur = {0};
     float size = 0;
     for (; b; b = b->next) {
-        if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down) block_words(b->u.s.down->first_block, source_line, out);
+        if (b->type == FZ_STEXT_BLOCK_STRUCT && b->u.s.down)
+            block_words(b->u.s.down->first_block, source_line, source_block, out);
         if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
         for (fz_stext_line *l = b->u.t.first_line; l; l = l->next, (*source_line)++) {
             for (fz_stext_char *c = l->first_char; c; c = c->next) {
-                if (is_space(c->c)) flush(&cur, l, *source_line, size, out);
+                if (is_space(c->c)) flush(&cur, l, *source_line, *source_block, size, out);
                 else {
                     if (!cur.n) size = c->size;
                     pt_push(cur, (pt_char){c->c, fz_rect_from_quad(c->quad)});
                 }
             }
-            flush(&cur, l, *source_line, size, out);
+            flush(&cur, l, *source_line, *source_block, size, out);
         }
+        (*source_block)++;
     }
 }
 
 void pt_page_words(fz_stext_page *st, pt_words *out)
 {
-    int source_line = 0;
-    block_words(st->first_block, &source_line, out);
+    int source_line = 0, source_block = 0;
+    block_words(st->first_block, &source_line, &source_block, out);
 }
 
 void pt_words_free(pt_words *w)
@@ -454,6 +464,75 @@ static void order_lines(pt_words *words)
     free(box);
 }
 
+/* a table's rule: a filled rectangle at most this thick and at least this wide (a figure's dots and strokes are not) */
+#define RULE_MAX_H 2.0f
+#define RULE_MIN_W 40.0f
+/* the rules that close a table match its top rule's thickness to within this (booktabs: \toprule, \bottomrule) */
+#define RULE_SAME_H 0.05f
+#define RULE_ALIGN_PT 1.5f /* and start and end within this of it */
+#define TABLE_MIN_ROWS 2
+
+typedef struct {
+    fz_rect r;
+    int used;
+} rule;
+
+PT_VEC(rules, rule);
+
+/* Tables bounded by their rules (booktabs and \hline tables): from a rule to the next one as wide and as thick, the
+ * thinner rules between them (\midrule) inside. Each word within one gets its index in `table`. */
+static void mark_ruled_tables(fz_stext_page *st, pt_words *words)
+{
+    rules found = {0};
+    for (fz_stext_block *b = st->first_block; b; b = b->next) {
+        fz_rect r = b->bbox;
+        if (b->type == FZ_STEXT_BLOCK_VECTOR && (b->u.v.flags & FZ_STEXT_VECTOR_IS_RECTANGLE) &&
+            r.y1 - r.y0 <= RULE_MAX_H && r.x1 - r.x0 >= RULE_MIN_W)
+            pt_push(found, ((rule){r, 0}));
+    }
+    int tables = 0;
+    for (int i = 0; i < found.n; i++) {
+        if (found.v[i].used) continue;
+        fz_rect top = found.v[i].r;
+        float h = top.y1 - top.y0;
+        /* the nearest rule below as wide and as thick */
+        int end = -1;
+        for (int j = 0; j < found.n; j++) {
+            fz_rect r = found.v[j].r;
+            if (j == i || found.v[j].used || r.y0 <= top.y1 || fabsf(r.x0 - top.x0) > RULE_ALIGN_PT ||
+                fabsf(r.x1 - top.x1) > RULE_ALIGN_PT || fabsf((r.y1 - r.y0) - h) > RULE_SAME_H)
+                continue;
+            if (end < 0 || r.y0 < found.v[end].r.y0) end = j;
+        }
+        if (end < 0) continue;
+        fz_rect area = {top.x0, top.y1, top.x1, found.v[end].r.y0};
+        /* a table has a header and a row at least: one line between two rules is an underlined label in a figure */
+        float row_y[TABLE_MIN_ROWS];
+        int rows = 0;
+        for (int k = 0; k < words->n && rows < TABLE_MIN_ROWS; k++) {
+            fz_rect r = words->v[k].rect;
+            float my = (r.y0 + r.y1) / 2;
+            if (!fz_is_point_inside_rect((fz_point){(r.x0 + r.x1) / 2, my}, area)) continue;
+            int seen = 0;
+            for (int q = 0; q < rows && !seen; q++) seen = fabsf(row_y[q] - my) < (r.y1 - r.y0) / 2;
+            if (!seen) row_y[rows++] = my;
+        }
+        if (rows < TABLE_MIN_ROWS) continue;
+        /* the rules inside (\midrule) are this table's, not the start of another */
+        for (int k = 0; k < found.n; k++)
+            if (found.v[k].r.y0 >= top.y0 && found.v[k].r.y1 <= area.y1 + RULE_MAX_H &&
+                found.v[k].r.x0 >= top.x0 - RULE_ALIGN_PT && found.v[k].r.x1 <= top.x1 + RULE_ALIGN_PT)
+                found.v[k].used = 1;
+        for (int k = 0; k < words->n; k++) {
+            fz_rect r = words->v[k].rect;
+            if (fz_is_point_inside_rect((fz_point){(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2}, area))
+                words->v[k].table = tables;
+        }
+        tables++;
+    }
+    pt_vec_free(found);
+}
+
 /* Margin notes after the page's text: a note set close to the text can fall in the text's block, and
  * a selection or a w through the text would then run through the note. The words on no numbered line (pt_number_lines
  * leaves notes out; slanted headers aside) go last. */
@@ -509,6 +588,7 @@ void pt_reading_order_words(fz_stext_page *st, pt_words *out)
 {
     pt_page_words(st, out);
     order_lines(out);
+    mark_ruled_tables(st, out);
     notes_last(st, out);
     number_reading_lines(out);
 }
@@ -679,6 +759,26 @@ static void cells_beside(const pt_text_lines *l, int a, int z, int *set)
     free(in);
 }
 
+/* The lines within a ruled table (mark_ruled_tables: its words' area) are one table, whatever their cells look like */
+static void join_ruled_tables(const pt_words *words, const pt_text_lines *l, int *set)
+{
+    int tables = 0;
+    for (int i = 0; i < words->n; i++)
+        if (words->v[i].table >= tables) tables = words->v[i].table + 1;
+    for (int k = 0; k < tables; k++) {
+        fz_rect area = fz_empty_rect;
+        for (int i = 0; i < words->n; i++)
+            if (words->v[i].table == k) area = fz_union_rect(area, words->v[i].rect);
+        int root = -1;
+        for (int i = 0; i < l->n; i++) {
+            fz_rect r = l->v[i].r;
+            if (!fz_is_point_inside_rect((fz_point){(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2}, area)) continue;
+            if (root < 0) root = line_set(set, i);
+            else set[line_set(set, i)] = root;
+        }
+    }
+}
+
 /* A table is every line within its extent: rows whose cells reading order joined into one line before the table was
  * found (a number cell and its text) are its rows too, numbered with the others top to bottom. */
 static void table_takes_its_lines(const pt_text_lines *l, int *set)
@@ -847,6 +947,7 @@ void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_
         cells_beside(&lines, a, z, set);
         a = z;
     }
+    join_ruled_tables(words, &lines, set);
     table_takes_its_lines(&lines, set);
     out->n = 0;
     pt_text_lines rows = {0};

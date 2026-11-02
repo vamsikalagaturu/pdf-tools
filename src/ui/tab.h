@@ -373,7 +373,10 @@ struct tab {
     pt_captions *captions; /* per display page, found with its words (words_ok) */
     char *words_ok;
     page_lines_info *line_info; /* per display page, once its words are known (line numbers) */
-    field_infos *fields;        /* per display page */
+    pt_text_lines *caret_lines; /* per display page, the lines the caret moves through, once built (caret_lines_ok) */
+    char *caret_lines_ok;
+    unsigned text_gen;   /* counts tab_invalidate_pages: what was worked out from the text before it is stale */
+    field_infos *fields; /* per display page */
     char *fields_ok;
     annot_infos *annots;
     char *annots_ok;
@@ -420,6 +423,7 @@ struct tab {
 
     /* find bar */
     int find_open, find_case, find_first;
+    int find_accents;         /* the find bar's "ignore accents" */
     int find_regex, find_bad; /* the query is a regular expression; it did not compile */
     ui_text find;
     hits matches;

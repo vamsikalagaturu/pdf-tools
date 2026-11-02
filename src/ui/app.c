@@ -45,6 +45,12 @@ app_state app;
 #define TABS_H 34.0f
 #define STATUS_H 26.0f
 #define MENU_BUTTON ((Rectangle){6, 6, 32, 32})
+#define KEEP_RENDERS_TABS 2 /* documents shown before the current one that keep their page renders */
+#define TAB_CLOSE 22.0f     /* a tab's close button */
+#define TAB_CROSS 8.0f      /* the cross in it, and its strokes */
+#define TAB_CROSS_W 1.5f
+#define TAB_CLOSE_ROUND 0.3f
+#define TAB_CLOSE_SEGMENTS 6
 
 /* ---- the window's tabs ---- */
 
@@ -719,11 +725,20 @@ static void tab_strip(Rectangle r)
         char *el = elide_middle(title, tr.x + tr.width - 28 - tx, TAB_FS, fk);
         draw_text_in(el, (Rectangle){tx, cy, tr.width, tr.height}, TAB_FS, fk, fg, -1);
         free(el);
-        Rectangle close = {tr.x + tr.width - 26, tr.y + (tr.height - 20) / 2, 20, 20};
+        /* on whole pixels, so the cross's thin strokes stay sharp */
+        Rectangle close = {floorf(tr.x + tr.width - TAB_CLOSE - 4), floorf(tr.y + (tr.height - TAB_CLOSE) / 2),
+                           TAB_CLOSE, TAB_CLOSE};
         int on_close = ui_hover(close);
         void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
-        if (ui_button(ui_id(owner, 500 + (int)w->kind), close, NULL, "close", B_FLAT | B_ICON_ONLY,
-                      keymap_tip("Close", "close_tab"))) {
+        /* a bold cross in the title's colour (white on the current tab), on red under the pointer */
+        if (on_close) DrawRectangleRounded(close, TAB_CLOSE_ROUND, TAB_CLOSE_SEGMENTS, pal.danger);
+        Color cross = on_close ? pal.on_danger : fg;
+        float cx = close.x + TAB_CLOSE / 2, cy2 = close.y + TAB_CLOSE / 2, arm = TAB_CROSS / 2;
+        DrawLineEx((Vector2){cx - arm, cy2 - arm}, (Vector2){cx + arm, cy2 + arm}, TAB_CROSS_W, cross);
+        DrawLineEx((Vector2){cx - arm, cy2 + arm}, (Vector2){cx + arm, cy2 - arm}, TAB_CROSS_W, cross);
+        ui_tooltip(ui_id(owner, 500 + (int)w->kind), close, keymap_tip("Close", "close_tab"));
+        int closed = ui_clicked(close);
+        if (closed) {
             ui_scissor_end();
             app_close_tab(i);
             return;
@@ -906,11 +921,22 @@ static void frame(void)
     /* a shortcut may have closed or switched the tab: look again */
     t = app_current_doc();
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
-    /* other tabs keep watching their files, and give their page renders back */
+    /* other tabs keep watching their files; those not among the last shown give their page renders back, so going
+     * back and forth between a few documents shows them at once while many open ones don't add up */
+    static tab *recent[KEEP_RENDERS_TABS + 1];
+    if (t && recent[0] != t) {
+        int k = 0;
+        while (k < KEEP_RENDERS_TABS && recent[k] != t) k++;
+        memmove(recent + 1, recent, sizeof *recent * (size_t)k);
+        recent[0] = t;
+    }
     for (int i = 0; i < app.tabs.n; i++)
         if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc != t) {
-            tab_poll(app.tabs.v[i].doc);
-            tab_release_renders(app.tabs.v[i].doc);
+            tab *o = app.tabs.v[i].doc;
+            tab_poll(o);
+            int keep = 0;
+            for (int k = 0; k <= KEEP_RENDERS_TABS && !keep; k++) keep = recent[k] == o;
+            if (!keep) tab_release_renders(o);
         }
 
     char title[600];

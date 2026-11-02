@@ -233,6 +233,42 @@ Ctrl+Shift+W	close the window
 Ctrl+Q	quit (all windows)
 Ctrl+click	open the TeX source line
 .TE
+Shift+drag selects whole lines (a table's rows across their cells). Every
+shortcut can be changed in
+.BR "Menu > Keyboard shortcuts" ,
+kept in
+.IR ~/.config/pdf-tools/keys.toml .
+.SS Vim keys
+.B View > Vim keys
+puts a caret on the text and lets the keyboard do what the window does. The
+tools move behind the leader (Space): Space h is Highlight, Space n a note.
+After a prefix (Space, g, z, ], [, m, \(aq) a box lists the keys that can
+follow
+.RB ( "View > Vim key hints" ).
+The status line shows the mode and the caret's line : column.
+.TS
+l l.
+h j k l, w b e, 0 $	move the caret (j and k by numbered lines)
+gg, G, 12G	first page, last page, page 12
+Ctrl+d, Ctrl+u, Ctrl+e, Ctrl+y	half a view, or the view alone, down and up
+zz, zt, zb	the caret's line to the middle, top or bottom of the view
+v, V, Ctrl+v	select characters, lines (a table's rows), a block
+iw, ip	in a selection: the word, the paragraph
+y	copy the selection
+Space h u x w c r	highlight, underline, strike, squiggly, colour, redact it
+/, n, N	find, next and previous match
+*, #	find the word under the caret, onwards or backwards
+Enter, Ctrl+]	follow the link under the caret
+Ctrl+o, Ctrl+i	back and forward (across files after \(aqA)
+ma, \(aqa, \(gaa	set a mark, go to its line, to its character
+mA, \(aqA	the same across files
+]a, [a, dd, i	select the next or previous annotation, delete, edit it
+gt, gT	next and previous tab
+:	run any command or action (Tab completes)
+g?	list every key
+.TE
+A mouse selection becomes a visual one. Marks are bookmarks named by their
+letter, so they also show in the sidebar.
 .SH LATEX
 An open PDF reloads by itself whenever the file changes on disk, keeping the
 page, zoom and scroll position, so a running
@@ -296,7 +332,9 @@ Redact every match of
 and
 .BI \-\-regex " pattern"
 (both repeatable; both ignore case unless
-.BR \-\-case\-sensitive ;
+.BR \-\-case\-sensitive ,
+and accents with
+.BR \-\-ignore\-accents ;
 patterns are MuPDF's regular expressions, written as in JavaScript, matched line by line).
 .BI \-\-pages " ranges"
 limits the pages,
@@ -388,7 +426,8 @@ Print the page and boxes where that source line is typeset.
 .BI "search " input.pdf " \-\-text " string
 Print the pages and boxes of each match
 .RB ( \-\-pages ,
-.BR \-\-case\-sensitive ).
+.BR \-\-case\-sensitive ,
+.BR \-\-ignore\-accents ).
 .TP
 .BI "inspect " input.pdf
 List annotations, with their index on each page, and form fields.

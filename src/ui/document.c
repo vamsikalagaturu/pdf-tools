@@ -121,6 +121,7 @@ void tab_invalidate_pages(tab *t)
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
         if (t->words_ok && t->words_ok[p]) pt_words_free(&t->words[p]), pt_captions_free(&t->captions[p]);
+        if (t->caret_lines_ok && t->caret_lines_ok[p]) pt_vec_free(t->caret_lines[p]);
         if (t->fields_ok && t->fields_ok[p]) {
             for (int i = 0; i < t->fields[p].n; i++) {
                 field_info *f = &t->fields[p].v[i];
@@ -164,6 +165,8 @@ void tab_invalidate_pages(tab *t)
     t->captions = calloc((size_t)n + 1, sizeof(pt_captions));
     t->words_ok = calloc((size_t)n + 1, 1);
     t->line_info = calloc((size_t)n + 1, sizeof(page_lines_info));
+    t->caret_lines = calloc((size_t)n + 1, sizeof(pt_text_lines));
+    t->caret_lines_ok = calloc((size_t)n + 1, 1);
     t->fields = calloc((size_t)n + 1, sizeof(field_infos));
     t->fields_ok = calloc((size_t)n + 1, 1);
     t->annots = calloc((size_t)n + 1, sizeof(annot_infos));
@@ -239,6 +242,7 @@ void tab_free(tab *t)
     free(t->thumbs), free(t->thumb_ok), free(t->words), free(t->words_ok), free(t->fields), free(t->fields_ok);
     free(t->annots), free(t->annots_ok), free(t->links), free(t->links_ok), free(t->off_x), free(t->off_y);
     free(t->bounds), free(t->bounds_ok), free(t->line_info), free(t->captions);
+    free(t->caret_lines), free(t->caret_lines_ok);
     free(t->cert_path);
     if (t->cert_password) memset(t->cert_password, 0, strlen(t->cert_password)), free(t->cert_password);
     free(t);

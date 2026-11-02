@@ -601,6 +601,8 @@ static struct {
     int leader, g, count, d;
     int bracket; /* after ] (1) or [ (-1) */
     int mark;    /* after m (1) or ' (2), waiting for the mark's letter */
+    int z;       /* after z: zz, zt, zb */
+    int inner;   /* after i in a selection: iw, ip */
     double until, since;
     char hint[64];
 } vim;
@@ -610,7 +612,10 @@ static struct {
 #define MARK_JUMP_EXACT 3
 #define MARK_ABOVE_PT 24.0f /* a mark's line shows this far below the top of the view when its bookmark is opened */
 
-static int vim_pending(void) { return vim.leader || vim.g || vim.count || vim.d || vim.bracket || vim.mark; }
+static int vim_pending(void)
+{
+    return vim.leader || vim.g || vim.count || vim.d || vim.bracket || vim.mark || vim.z || vim.inner;
+}
 
 /* the prefix waiting for its key, when it has keys to list; 0 for none or a count alone */
 static int vim_hint_prefix(vim_prefix *p)
@@ -618,6 +623,8 @@ static int vim_hint_prefix(vim_prefix *p)
     if (vim.leader) *p = VIM_AFTER_LEADER;
     else if (vim.mark) *p = vim.mark == MARK_SET ? VIM_AFTER_M : VIM_AFTER_QUOTE;
     else if (vim.bracket) *p = VIM_AFTER_BRACKET;
+    else if (vim.z) *p = VIM_AFTER_Z;
+    else if (vim.inner) *p = VIM_AFTER_INNER;
     else if (vim.d) *p = VIM_AFTER_D;
     else if (vim.g) *p = VIM_AFTER_G;
     else return 0;
@@ -635,7 +642,7 @@ static int vim_hinting(void)
 static void vim_reset(void)
 {
     if (vim_pending() && !strcmp(app.status, vim.hint)) status("", 0);
-    vim.leader = vim.g = vim.count = vim.d = vim.bracket = vim.mark = 0;
+    vim.leader = vim.g = vim.count = vim.d = vim.bracket = vim.mark = vim.z = vim.inner = 0;
 }
 
 /* shows what is pending in the status line until the prefix times out */
@@ -651,6 +658,8 @@ static void vim_wait(void)
                                          : "`");
     else if (vim.bracket) snprintf(vim.hint, sizeof vim.hint, "%s%s\xe2\x80\xa6", count, vim.bracket > 0 ? "]" : "[");
     else if (vim.d) snprintf(vim.hint, sizeof vim.hint, "%sd\xe2\x80\xa6", count);
+    else if (vim.z) snprintf(vim.hint, sizeof vim.hint, "z\xe2\x80\xa6");
+    else if (vim.inner) snprintf(vim.hint, sizeof vim.hint, "i\xe2\x80\xa6");
     else if (vim.count) snprintf(vim.hint, sizeof vim.hint, "%s%s\xe2\x80\xa6", count, vim.g ? "g" : "");
     else snprintf(vim.hint, sizeof vim.hint, "g\xe2\x80\xa6");
     vim.until = ui.now + VIM_PREFIX_S;
@@ -862,7 +871,7 @@ static int line_index(const pt_text_lines *l, fz_rect r)
 
 /* The page's lines as line numbers count them (pt_number_lines: pieces on one baseline are one line, a table row is
  * one line), so j and k move through the lines the numbers beside them count. Display space. */
-static void caret_lines(tab *t, int page, pt_text_lines *out)
+static void build_caret_lines(tab *t, int page, pt_text_lines *out)
 {
     pt_numbering_state state = {1};
     fz_rect b = page_bounds(t, page);
@@ -885,6 +894,18 @@ static void caret_lines(tab *t, int page, pt_text_lines *out)
         fz_rect *row = &out->v[line_index(out, origin)].r;
         *row = fz_union_rect(*row, s->rect);
     }
+}
+
+/* the page's caret lines, built once per page: the caret, the status line and selections ask for them every frame */
+static void caret_lines(tab *t, int page, pt_text_lines *out)
+{
+    if (!t->caret_lines_ok[page]) {
+        build_caret_lines(t, page, &t->caret_lines[page]);
+        t->caret_lines_ok[page] = 1;
+    }
+    const pt_text_lines *c = &t->caret_lines[page];
+    out->n = 0;
+    for (int i = 0; i < c->n; i++) pt_push(*out, c->v[i]);
 }
 
 /* the line j or k last put a caret spot on: lines can overlap (rotated table headers), and the spot's own middle would
@@ -1900,9 +1921,63 @@ static caret_spot line_start_at(tab *t, int page, fz_point p)
     return s;
 }
 
-/* The caret to a mark, Back returning here: with `exact` (`) onto its character, else (') to the start of its line;
- * a bookmark without a character has the line its view opens on (MARK_ABOVE_PT below its top). */
-static void mark_goto(tab *t, const user_mark *m, int exact)
+/* Jumps between files (a capital mark), as vim's jump list keeps them: Ctrl+O in the file jumped to, before any
+ * jump within it, goes back to the file jumped from, at its place; Ctrl+I after that goes there again. `depth` is
+ * the target's Back count on arrival. */
+#define CROSS_JUMPS_MAX 32
+
+typedef struct {
+    tab *from, *to;
+    int depth;
+} cross_entry;
+
+static struct {
+    cross_entry back[CROSS_JUMPS_MAX], fwd[CROSS_JUMPS_MAX];
+    int nback, nfwd;
+} cross;
+
+static void cross_push(cross_entry *list, int *n, cross_entry e)
+{
+    if (*n == CROSS_JUMPS_MAX) memmove(list, list + 1, sizeof *list * (CROSS_JUMPS_MAX - 1)), (*n)--;
+    list[(*n)++] = e;
+}
+
+static void cross_jump(tab *from, tab *to)
+{
+    cross_push(cross.back, &cross.nback, (cross_entry){from, to, to->nav_nback});
+    cross.nfwd = 0;
+}
+
+/* the window's tab showing document t, -1 when it was closed */
+static int open_tab_of(const tab *t)
+{
+    for (int k = 0; k < app.tabs.n; k++)
+        if (app.tabs.v[k].kind == TAB_DOC && app.tabs.v[k].doc == t) return k;
+    return -1;
+}
+
+/* Ctrl+O (back) and Ctrl+I: across files when t is where the last jump between files ended, else within t */
+static void vim_jump(tab *t, int back)
+{
+    cross_entry *list = back ? cross.back : cross.fwd;
+    int *n = back ? &cross.nback : &cross.nfwd;
+    while (*n && open_tab_of(back ? list[*n - 1].from : list[*n - 1].to) < 0) (*n)--;
+    cross_entry e = *n ? list[*n - 1] : (cross_entry){0};
+    if (*n && back && e.to == t && t->nav_nback == e.depth) {
+        (*n)--;
+        cross_push(cross.fwd, &cross.nfwd, e);
+        app.current = open_tab_of(e.from);
+    } else if (*n && !back && e.from == t && !t->nav_nfwd) {
+        (*n)--;
+        cross_push(cross.back, &cross.nback, e);
+        app.current = open_tab_of(e.to);
+    } else run(t, back ? A_BACK : A_FORWARD);
+}
+
+/* The caret to a mark, Back returning here (or, `arrived` from another file, to that file: cross_jump): with `exact`
+ * (`) onto its character, else (') to the start of its line; a bookmark without a character has the line its view
+ * opens on (MARK_ABOVE_PT below its top). */
+static void mark_goto(tab *t, const user_mark *m, int exact, int arrived)
 {
     nav_spot at = m->at;
     if (order_index(t, at.page) < 0) {
@@ -1913,7 +1988,7 @@ static void mark_goto(tab *t, const user_mark *m, int exact)
         nav_jump(t, at);
         return;
     }
-    nav_mark(t);
+    if (!arrived) nav_mark(t);
     fz_point p = m->has_char ? m->ch : (fz_point){0, at.top + MARK_ABOVE_PT};
     t->at = exact && m->has_char ? spot_at(t, at.page, p, 0) : line_start_at(t, at.page, p);
     t->caret = CARET_ON;
@@ -1937,7 +2012,7 @@ static void vim_mark_jump(tab *t, char letter, int exact)
         for (int i = 0; i < t->marks.n; i++)
             if (!strcmp(t->marks.v[i].name, name)) {
                 user_mark m = t->marks.v[i];
-                mark_goto(t, &m, exact);
+                mark_goto(t, &m, exact, 0);
                 return;
             }
     } else {
@@ -1952,7 +2027,10 @@ static void vim_mark_jump(tab *t, char letter, int exact)
                 pt_strs_free(&paths);
                 dst = app_current_doc();
             }
-            if (dst && dst->doc && dst->path && !strcmp(dst->path, path)) mark_goto(dst, &m, exact);
+            if (dst && dst->doc && dst->path && !strcmp(dst->path, path)) {
+                mark_goto(dst, &m, exact, dst != t);
+                if (dst != t) cross_jump(t, dst);
+            }
             free(m.name);
             free(path);
             return;
@@ -1961,6 +2039,86 @@ static void vim_mark_jump(tab *t, char letter, int exact)
     char *msg = pt_format("Mark %c is not set", letter);
     status(msg, 3);
     free(msg);
+}
+
+/* zz (where 0), zt (-1), zb (1): the view scrolled so the caret's line is in its middle, at its top or bottom */
+static void vim_view(tab *t, int where)
+{
+    if (!caret_ready(t) || t->off_y[t->at.page] < -1e8f) return;
+    Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, t->at.page, spot_rect(t, t->at)));
+    float target = where < 0   ? t->view.y + CARET_MARGIN
+                   : where > 0 ? t->view.y + t->view.height - CARET_MARGIN - r.height
+                               : t->view.y + (t->view.height - r.height) / 2;
+    t->scroll_y += r.y - target;
+}
+
+/* iw (paragraph 0) and ip (1) in a selection: it becomes the caret's word, or its paragraph (MuPDF's text block) */
+static void select_inner(tab *t, int paragraph)
+{
+    if (!caret_ready(t)) return;
+    pt_words *w = page_words(t, t->at.page);
+    int first = t->at.word, last = t->at.word;
+    if (paragraph) {
+        int block = w->v[t->at.word].source_block;
+        while (first > 0 && w->v[first - 1].source_block == block) first--;
+        while (last + 1 < w->n && w->v[last + 1].source_block == block) last++;
+    }
+    t->anchor = (caret_spot){t->at.page, first, 0};
+    t->at = (caret_spot){t->at.page, last, w->v[last].chars.n - 1};
+    if (t->caret != CARET_VISUAL_LINE) t->caret = CARET_VISUAL;
+    keep_caret_x(t);
+}
+
+/* * (dir 1) and # (-1): find the word under the caret, the caret to its next (or previous) occurrence */
+static void vim_word_search(tab *t, int dir)
+{
+    if (!caret_ready(t)) return;
+    pt_words *w = page_words(t, t->at.page);
+    const pt_word *word = &w->v[t->at.word];
+    const char *s = word->text, *e = s + strlen(s);
+    /* without the punctuation around it: "(robots)," finds robots */
+    while (s < e && (unsigned char)*s < 0x80 && !isalnum((unsigned char)*s)) s++;
+    while (e > s && (unsigned char)e[-1] < 0x80 && !isalnum((unsigned char)e[-1])) e--;
+    if (s == e) return;
+    /* the whole word, as vim's \<word\>: \b where the word ends in an ASCII letter or digit (\b knows only those) */
+    pt_strs parts = {0};
+    if (isalnum((unsigned char)*s)) pt_push(parts, pt_strdup("\\b"));
+    for (const char *c = s; c < e; c++)
+        pt_push(parts, strchr("\\^$.|?*+()[]{}", *c) ? pt_format("\\%c", *c) : pt_format("%c", *c));
+    if (isalnum((unsigned char)e[-1])) pt_push(parts, pt_strdup("\\b"));
+    char *query = join_strs(&parts);
+    pt_strs_free(&parts);
+    text_set(&t->find, query);
+    free(query);
+    t->find_open = 1, t->find_regex = 1;
+    run_search(t);
+    if (!t->matches.n) return;
+    /* the occurrence after the word (before it, for #), in reading order of pages, then lines, then left to right */
+    int here = order_index(t, t->at.page), pick = -1;
+    fz_rect at = word->rect;
+    float my = (at.y0 + at.y1) / 2, h = at.y1 - at.y0;
+    for (int i = 0; i < t->matches.n; i++) {
+        hit m = t->matches.v[i];
+        int o = order_index(t, m.page);
+        fz_rect r = rect_src_to_disp(t, m.page, m.rect);
+        float ry = (r.y0 + r.y1) / 2;
+        int same_line = o == here && fabsf(ry - my) < h / 2;
+        int after = o > here || (o == here && !same_line && ry > my) || (same_line && r.x0 >= at.x1);
+        int before = o < here || (o == here && !same_line && ry < my) || (same_line && r.x1 <= at.x0);
+        if (dir > 0 && after) {
+            pick = i;
+            break;
+        }
+        if (dir < 0 && before) pick = i;
+    }
+    if (pick < 0) pick = dir > 0 ? 0 : t->matches.n - 1;
+    hit m = t->matches.v[pick];
+    fz_rect r = rect_src_to_disp(t, m.page, m.rect);
+    t->match_idx = pick;
+    nav_mark(t);
+    t->at = spot_at(t, m.page, (fz_point){r.x0, (r.y0 + r.y1) / 2}, 0);
+    keep_caret_x(t);
+    step_match(t, 0);
 }
 
 /* gt, gT: the next or previous tab, `count` of them; {N}gt tab N */
@@ -2062,6 +2220,34 @@ static int vim_key(tab *t, int key, int mods)
         vim_wait();
         return 0;
     }
+    if (vim.z) {
+        vim_reset();
+        if (keymap_is("vim.view_middle", key, mods)) vim_view(t, 0);
+        else if (keymap_is("vim.view_top", key, mods)) vim_view(t, -1);
+        else if (keymap_is("vim.view_bottom", key, mods)) vim_view(t, 1);
+        return 0;
+    }
+    if (vim.inner) {
+        vim_reset();
+        if (keymap_is("vim.inner_word", key, mods)) select_inner(t, 0);
+        else if (keymap_is("vim.inner_paragraph", key, mods)) select_inner(t, 1);
+        return 0;
+    }
+    if (!vim.g && keymap_is("vim.view", key, mods)) {
+        vim.z = 1;
+        vim_wait();
+        return 0;
+    }
+    int selecting = t->caret == CARET_VISUAL || t->caret == CARET_VISUAL_LINE;
+    if (!vim.g && selecting && keymap_is("vim.edit", key, mods)) {
+        vim.inner = 1;
+        vim_wait();
+        return 0;
+    }
+    if (keymap_is("vim.word_search", key, mods) || keymap_is("vim.word_search_back", key, mods)) {
+        vim_word_search(t, keymap_is("vim.word_search", key, mods) ? 1 : -1);
+        return 0;
+    }
     int item = t->caret <= CARET_ON && (t->sel == SEL_ITEM || t->sel == SEL_ANNOT);
     if (!vim.g && (keymap_is("vim.next_item", key, mods) || keymap_is("vim.prev_item", key, mods))) {
         vim.bracket = keymap_is("vim.next_item", key, mods) ? 1 : -1;
@@ -2095,7 +2281,7 @@ static int vim_key(tab *t, int key, int mods)
     }
     if (keymap_is("vim.back", key, mods) || keymap_is("vim.forward", key, mods)) {
         int back = keymap_is("vim.back", key, mods);
-        for (int i = 0; i < times; i++) run(t, back ? A_BACK : A_FORWARD);
+        for (int i = 0; i < times; i++) vim_jump(app_current_doc() ? app_current_doc() : t, back);
         return 0;
     }
     if (keymap_is("vim.follow", key, mods)) {
@@ -2647,7 +2833,7 @@ static void find_bar(tab *t, Rectangle r)
     }
 
     /* narrow: the count and the redact buttons move to a second row */
-    float field_w = t->narrow ? fmaxf(80, r.width - 150 - 36) : 300;
+    float field_w = t->narrow ? fmaxf(80, r.width - 150 - 2 * 36) : 300;
     int res = ui_textfield(bid(t, 100), &t->find, (Rectangle){x, y, field_w, h}, 1);
     if (res & TE_CHANGED) t->find_due = ui.now + 0.25;
     if (res & TE_SUBMIT) {
@@ -2666,6 +2852,12 @@ static void find_bar(tab *t, Rectangle r)
     x += field_w + 4;
     if (ui_button(bid(t, 101), (Rectangle){x, y, 34, h}, "Aa", NULL, t->find_case ? B_CHECKED : B_FLAT, "Match case")) {
         t->find_case = !t->find_case;
+        run_search(t);
+    }
+    x += 36;
+    if (ui_button(bid(t, 109), (Rectangle){x, y, 34, h}, "á", NULL, t->find_accents ? B_CHECKED : B_FLAT,
+                  "Ignore accents (Strüber finds Struber)")) {
+        t->find_accents = !t->find_accents;
         run_search(t);
     }
     x += 36;
@@ -2844,10 +3036,24 @@ float tab_status(tab *t, Rectangle area)
     rx -= pw + STATUS_PAD + POS_GAP;
     if (vim_keys_on()) {
         float lw = text_width(LINE_COL_WIDEST, FS_NORMAL, F_REGULAR);
-        int line = caret_line_number(t);
+
+        /* worked out again only when the caret moves or the text changes */
+        static struct {
+            const tab *t;
+            caret_spot at;
+            unsigned gen;
+            int line, col;
+        } shown;
+
+        if (shown.t != t || shown.gen != t->text_gen || memcmp(&shown.at, &t->at, sizeof t->at) || !shown.line) {
+            shown.t = t, shown.at = t->at, shown.gen = t->text_gen;
+            shown.line = caret_line_number(t);
+            shown.col = shown.line ? caret_column(t) : 0;
+        }
+        int line = t->caret ? shown.line : 0;
         if (line) {
             char lc[32];
-            snprintf(lc, sizeof lc, "%d : %d", line, caret_column(t));
+            snprintf(lc, sizeof lc, "%d : %d", line, shown.col);
             draw_text_in(lc, (Rectangle){rx - lw, area.y, lw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
         }
         rx -= lw + STATUS_GAP;
@@ -3918,6 +4124,8 @@ void on_context(tab *t, fz_point scene, Vector2 at)
 
 /* ---- popover ---- */
 
+#define POPOVER_RADIUS 6.0f
+
 static void open_popover(tab *t, pop_kind kind, int page, int index, fz_rect anchor, const char *title,
                          const char *text)
 {
@@ -4018,8 +4226,8 @@ void popover_frame(tab *t)
     Rectangle r = {x, y, w, h};
     ui_layer_begin(ui_id(p, 1), r, 0);
     set_cursor(CUR_ARROW);
-    DrawRectangleRounded((Rectangle){r.x + 2, r.y + 3, r.width, r.height}, 0.04f, 4, with_alpha(pal.shadow, 60));
-    ui_panel(r, pal.window, pal.border, 6);
+    ui_shadow(r, POPOVER_RADIUS);
+    ui_panel(r, pal.window, pal.border, POPOVER_RADIUS);
     draw_text(p->title, r.x + 10, r.y + 8, FS_NORMAL, F_BOLD, pal.window_text);
     float yy = r.y + 34;
     if (colours) {
@@ -4655,7 +4863,7 @@ void run_search(tab *t)
         tab *o = app.tabs.v[k].kind == TAB_DOC ? app.tabs.v[k].doc : NULL;
         if (!o || o == t || !o->doc) continue;
         text_set(&o->find, text_get(&t->find));
-        o->find_case = t->find_case, o->find_regex = t->find_regex;
+        o->find_case = t->find_case, o->find_regex = t->find_regex, o->find_accents = t->find_accents;
         search_tab(o, 0);
     }
 }
@@ -4752,10 +4960,11 @@ static void search_tab(tab *t, int show)
             fz_stext_page *st = pt_stext(CTX, page);
             pt_rects rects = {0};
             int regex = t->find_regex;
+            int flags = (t->find_case ? PT_MATCH_CASE : 0) | (t->find_accents ? PT_IGNORE_ACCENTS : 0);
             fz_try(CTX)
             {
-                if (regex) pt_regex_rects(CTX, st, query, t->find_case, &rects);
-                else pt_search(CTX, st, query, t->find_case, &rects);
+                if (regex) pt_regex_rects(CTX, st, query, flags, &rects);
+                else pt_search(CTX, st, query, flags, &rects);
             }
             fz_catch(CTX)
             {
@@ -4763,17 +4972,7 @@ static void search_tab(tab *t, int show)
                 t->find_bad = 1;
             }
             int first = t->matches.n;
-            for (int k = 0; k < rects.n; k++) {
-                /* pt_search ignores case, so Match case keeps only the hits whose text matches exactly */
-                if (t->find_case && !regex) {
-                    fz_rect r = rects.v[k];
-                    char *box = pt_textbox(CTX, st, fz_make_rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1));
-                    int keep = strstr(box, query) != NULL;
-                    free(box);
-                    if (!keep) continue;
-                }
-                pt_push(t->matches, (hit){p, rects.v[k]});
-            }
+            for (int k = 0; k < rects.n; k++) pt_push(t->matches, (hit){p, rects.v[k]});
             qsort(t->matches.v + first, (size_t)(t->matches.n - first), sizeof(hit), cmp_hit);
             for (int k = first; k < t->matches.n; k++) {
                 int at[2];

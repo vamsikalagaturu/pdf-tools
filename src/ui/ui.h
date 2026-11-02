@@ -166,7 +166,16 @@ const char *keymap_tip(const char *text, const char *id);
 void keymap_dialog(void);     /* Menu > Keyboard shortcuts... */
 void keymap_cheatsheet(void); /* g? and :help: the vim keys as bound now, and the commands */
 
-typedef enum { VIM_AFTER_LEADER, VIM_AFTER_G, VIM_AFTER_BRACKET, VIM_AFTER_D, VIM_AFTER_M, VIM_AFTER_QUOTE } vim_prefix;
+typedef enum {
+    VIM_AFTER_LEADER,
+    VIM_AFTER_G,
+    VIM_AFTER_BRACKET,
+    VIM_AFTER_D,
+    VIM_AFTER_M,
+    VIM_AFTER_QUOTE,
+    VIM_AFTER_Z,
+    VIM_AFTER_INNER
+} vim_prefix;
 
 /* The keys that can follow vim prefix p now, as typed, and what each does: after the leader those of the caret (when
  * there is one), a text selection, or a block rectangle, then the leader's own and the tools'. */
@@ -202,6 +211,8 @@ void ui_swatch(Rectangle r, const unsigned char rgb[3]);
 int ui_swatch_button(unsigned id, Rectangle r, const unsigned char rgb[3], int checked, const char *tip);
 void ui_label(Rectangle r, const char *s, float size, font_kind f, Color c, int align);
 void ui_panel(Rectangle r, Color fill, Color border, float radius);
+void ui_shadow(Rectangle r, float radius); /* a soft shadow around a panel with corners of `radius` */
+int ui_shifted_char(int key); /* what Shift+key typed in this session's layout (learnt as typed), 0 not yet */
 int ui_spin(unsigned id, Rectangle r, int *value, int lo, int hi, int step, const char *prefix, const char *suffix);
 int ui_spinf(unsigned id, Rectangle r, float *value, float lo, float hi, float step, const char *suffix);
 /* clamps *offset to 0..content - view and returns that maximum; 0 (drawing nothing) when everything fits */

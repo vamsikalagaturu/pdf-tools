@@ -13,7 +13,7 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
   insert and remove pages, Bates numbers, watermarks, document properties, outline.
 - **Sign**: a picture of your signature, or a digital certificate signature (.p12).
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
-  password, print. Undo and redo, find with regular expressions (JavaScript syntax, in one tab or all), two pages
+  password, print. Undo and redo, find with regular expressions (JavaScript syntax) or ignoring accents, in one tab or all, two pages
   side by side, presentation mode (F5).
 - **Read**: line numbers in the margins as LaTeX's lineno sets them (through the document, per page, or relative to
   the vim caret); a preview of where a link leads when resting on it; Back and Forward (Alt+Left/Right, mouse side
@@ -29,8 +29,9 @@ A PDF viewer and editor for Linux, macOS, Windows and Android, with a command li
   `:zoom 150`, `:set relativenumber`, `:colour #c62828`, with completion), `gt`/`gT` switch tabs, Space e moves
   into the sidebar, Space Shift+N/T/I/S put notes, text, images and signatures at the caret, Ctrl+V draws a box
   for shapes, crops and redactions, `]a`/`[a` select annotations to move (h/j/k/l), resize (H/J/K/L), edit (`i`) or delete (`dd`);
-  Enter or Ctrl+] follows the link at the caret, Ctrl+o/Ctrl+i go back and forward; `ma` sets a mark (a bookmark
-  called `a`; capitals work across files), `'a` and `` `a `` jump to its line or character. A mouse selection
+  Enter or Ctrl+] follows the link at the caret, Ctrl+o/Ctrl+i go back and forward (across files too); `ma` sets a
+  mark (a bookmark called `a`; capitals work across files), `'a` and `` `a `` jump to its line or character; `*`/`#`
+  find the word under the caret, `zz`/`zt`/`zb` place its line in the view, `viw`/`vip` select a word or paragraph. A mouse selection
   becomes a visual one. After a prefix (Space, `g`, `]`, `m`, `'`) a box lists the keys that can follow
   (`vim_key_hints`); the status line shows the mode and the caret's line : column.
   `g?` lists every key. Dialogs and menus work with Tab, arrows, Enter and Esc (F10 opens the menu).

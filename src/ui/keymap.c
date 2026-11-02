@@ -188,6 +188,14 @@ static const action_def ACTIONS[] = {
     {"vim.mark", "Mark the caret's line with the letter after it (A-Z: across files)", "Vim keys", KS_VIM, {"M"}},
     {"vim.mark_jump", "To the line of the mark of the letter after it", "Vim keys", KS_VIM, {"Apostrophe"}},
     {"vim.mark_jump_exact", "To the character of the mark of the letter after it", "Vim keys", KS_VIM, {"Grave"}},
+    {"vim.word_search", "Find the word under the caret, onwards (*)", "Vim keys", KS_VIM, {"Shift+8"}},
+    {"vim.word_search_back", "Find the word under the caret, backwards (#)", "Vim keys", KS_VIM, {"Shift+3"}},
+    {"vim.view", "Then z, t or b: the caret's line to the view's middle, top or bottom", "Vim keys", KS_VIM, {"Z"}},
+    {"vim.view_middle", "The caret's line to the middle of the view (zz)", VIM_AFTER, KS_PREFIXED, {"Z"}},
+    {"vim.view_top", "The caret's line to the top of the view (zt)", VIM_AFTER, KS_PREFIXED, {"T"}},
+    {"vim.view_bottom", "The caret's line to the bottom of the view (zb)", VIM_AFTER, KS_PREFIXED, {"B"}},
+    {"vim.inner_word", "In a selection: the word (viw)", VIM_AFTER, KS_PREFIXED, {"W"}},
+    {"vim.inner_paragraph", "In a selection: the paragraph (vip)", VIM_AFTER, KS_PREFIXED, {"P"}},
     {"vim.tab_next", "Next tab (gt; 3gt: tab 3)", VIM_AFTER, KS_PREFIXED, {"T"}},
     {"vim.tab_prev", "Previous tab (gT)", VIM_AFTER, KS_PREFIXED, {"Shift+T"}},
     {"vim.help", "These keys (g?)", VIM_AFTER, KS_PREFIXED, {"Shift+Slash"}},
@@ -222,6 +230,12 @@ static const struct {
     {"vim.tab_prev", "vim.first"},
     {"vim.help", "vim.first"},
     {"vim.item", "vim.next_item"},
+    {"vim.view_middle", "vim.view"},
+    {"vim.view_top", "vim.view"},
+    {"vim.view_bottom", "vim.view"},
+    /* in a selection the edit key (i) starts a text object */
+    {"vim.inner_word", "vim.edit"},
+    {"vim.inner_paragraph", "vim.edit"},
 };
 
 static const char *prefix_of(int i)
@@ -251,10 +265,15 @@ static void add_follower(int i, pt_strs *shown, pt_strs *what)
     if (i < 0 || !keys[i].n) return;
     char key[PT_COMBO_MAX];
     pt_combo c = keys[i].v[0];
-    /* as vim writes keys: a letter as typed, g for G and G for Shift+G */
+    /* as vim writes keys: a letter as typed, g for G and G for Shift+G, ? for Shift+/ once the layout's Shift+/ was
+     * typed */
+    int shifted = c.mods == PT_MOD_SHIFT ? ui_shifted_char(c.key) : 0;
     if (c.key >= KEY_A && c.key <= KEY_Z && (!c.mods || c.mods == PT_MOD_SHIFT))
         snprintf(key, sizeof key, "%c", (c.mods ? 'A' : 'a') + (c.key - KEY_A));
-    else pt_combo_format(c, 1, key, sizeof key);
+    else if (shifted > ' ') {
+        int n = fz_runetochar(key, shifted);
+        key[n] = 0;
+    } else pt_combo_format(c, 1, key, sizeof key);
     for (int k = 0; k < shown->n; k++)
         if (!strcmp(shown->v[k], key)) return;
     pt_push(*shown, pt_strdup(key));
@@ -281,6 +300,8 @@ void keymap_vim_followers(vim_prefix p, int caret, int selection, int block, pt_
         add_follower(action_index("vim.first"), shown, what);
         add_scope(KS_PREFIXED, "vim.first", shown, what);
     } else if (p == VIM_AFTER_BRACKET) add_scope(KS_PREFIXED, "vim.next_item", shown, what);
+    else if (p == VIM_AFTER_Z) add_scope(KS_PREFIXED, "vim.view", shown, what);
+    else if (p == VIM_AFTER_INNER) add_scope(KS_PREFIXED, "vim.edit", shown, what);
     else add_follower(action_index("vim.delete"), shown, what);
 }
 
@@ -522,6 +543,9 @@ static int clash_of(int i, pt_combo c)
 {
     for (int j = 0; j < NACTIONS; j++) {
         if (j == i || !scopes_meet(ACTIONS[i].scope, ACTIONS[j].scope)) continue;
+        /* keys after different prefixes (gt, zt) do not meet */
+        const char *pi = prefix_of(i), *pj = prefix_of(j);
+        if (pi && pj && strcmp(pi, pj)) continue;
         for (int k = 0; k < keys[j].n; k++)
             if (combo_eq(keys[j].v[k], c)) return j;
     }

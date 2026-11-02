@@ -937,6 +937,79 @@ static void test_line_numbers_hung_labels(void)
     free(path);
 }
 
+/* `ops` drawn on an A4 page: its words in reading order (w), numbered per page (l) */
+static void page_lines_of(const char *name, const char *ops, pt_words *w, pt_text_lines *l)
+{
+    char *path = content_pdf(name, ops, NULL);
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_reading_order_words(st, w);
+    pt_numbering_state state = {1};
+    pt_number_lines(w, 595, PT_NUMBER_PAGE, &state, l);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+}
+
+static const pt_word *word_named(const pt_words *w, const char *text)
+{
+    for (int i = 0; i < w->n; i++)
+        if (!strcmp(w->v[i].text, text)) return &w->v[i];
+    return NULL;
+}
+
+/* a booktabs table (top and bottom rule alike, a thinner one under the header) is one ruled table; a label between
+ * two underlines of a figure is not */
+static void test_ruled_tables(void)
+{
+    const char *ops = "0 g 72 700 300 1.6 re f 72 682 300 0.8 re f 72 640 300 1.6 re f "
+                      "72 500 100 1 re f 72 470 100 1 re f "
+                      "BT /F1 10 Tf 80 688 Td (Name) Tj 120 0 Td (Value) Tj ET "
+                      "BT /F1 10 Tf 80 668 Td (alpha) Tj 120 0 Td (one) Tj ET "
+                      "BT /F1 10 Tf 80 652 Td (beta) Tj 120 0 Td (two) Tj ET "
+                      "BT /F1 10 Tf 80 482 Td (label) Tj ET";
+    pt_words w = {0};
+    pt_text_lines l = {0};
+    page_lines_of("ruled.pdf", ops, &w, &l);
+    const pt_word *name = word_named(&w, "Name"), *two = word_named(&w, "two"), *label = word_named(&w, "label");
+    CHECK(name && two && label && name->table == 0 && two->table == 0 && label->table == -1);
+    pt_vec_free(l);
+    pt_words_free(&w);
+}
+
+/* a note in the left margin comes after the page's text in reading order, and is not numbered */
+static void test_margin_note_last(void)
+{
+    const char *ops = "BT /F1 10 Tf 100 700 Td (the first line of the text runs on across the page to here) Tj ET "
+                      "BT /F1 10 Tf 100 686 Td (the second line of the text runs on across the page to here) Tj ET "
+                      "BT /F1 10 Tf 100 672 Td (the third line of the text runs on across the page to here) Tj ET "
+                      "BT /F1 7 Tf 10 686 Td (margin) Tj ET";
+    pt_words w = {0};
+    pt_text_lines l = {0};
+    page_lines_of("note.pdf", ops, &w, &l);
+    CHECK(w.n > 1 && !strcmp(w.v[w.n - 1].text, "margin") && l.n == 3);
+    pt_vec_free(l);
+    pt_words_free(&w);
+}
+
+/* slanted column headers are on no line of their own: the row under them is */
+static void test_slanted_headers(void)
+{
+    const char *ops = "BT /F1 9 Tf 100 600 Td (Paper) Tj ET "
+                      "BT /F1 9 Tf 0.7071 0.7071 -0.7071 0.7071 160 600 Tm (Conceptualization) Tj ET "
+                      "BT /F1 9 Tf 0.7071 0.7071 -0.7071 0.7071 190 600 Tm (Methodology) Tj ET "
+                      "BT /F1 9 Tf 100 585 Td (P1) Tj ET BT /F1 9 Tf 100 570 Td (P2) Tj ET";
+    pt_words w = {0};
+    pt_text_lines l = {0};
+    page_lines_of("slanted.pdf", ops, &w, &l);
+    const pt_word *head = word_named(&w, "Conceptualization"), *paper = word_named(&w, "Paper");
+    CHECK(head && paper && pt_word_slanted(head) && !pt_word_slanted(paper) && l.n == 3);
+    pt_vec_free(l);
+    pt_words_free(&w);
+}
+
 static void test_captions(void)
 {
     /* "(3)" ends where the justified line below it does, at the column's edge */
@@ -1484,6 +1557,9 @@ int main(void)
     test_line_numbers();
     test_line_numbers_table_columns();
     test_line_numbers_hung_labels();
+    test_ruled_tables();
+    test_margin_note_last();
+    test_slanted_headers();
     test_stamps();
     test_repeated_page();
     test_redact_annotations();

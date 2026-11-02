@@ -585,21 +585,28 @@ static void matches_free(matches *m)
     pt_vec_free(*m);
 }
 
+static int search_flags(const args *a)
+{
+    return (given(a, "--case-sensitive") ? PT_MATCH_CASE : 0) | (given(a, "--ignore-accents") ? PT_IGNORE_ACCENTS : 0);
+}
+
 /* Rects of every occurrence of the literal `texts` and regex `patterns` on page `p`, each with the text under it,
  * appended to out. */
-static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int cs, matches *out)
+static void find_matches(fz_document *doc, int p, const pt_strs *texts, const pt_strs *patterns, int flags,
+                         matches *out)
 {
+    int cs = (flags & PT_MATCH_CASE) != 0;
     fz_page *page = fz_load_page(ctx, doc, p);
     fz_stext_page *st = pt_stext(ctx, page);
     pt_rects rects = {0};
     for (int t = 0; t < texts->n; t++) {
         pt_rects hits = {0};
-        pt_search(ctx, st, texts->v[t], cs, &hits);
+        pt_search(ctx, st, texts->v[t], flags, &hits);
         for (int i = 0; i < hits.n; i++) pt_push(rects, hits.v[i]);
         pt_vec_free(hits);
     }
     for (int i = 0; i < patterns->n; i++) {
-        fz_try(ctx) pt_regex_rects(ctx, st, patterns->v[i], cs, &rects);
+        fz_try(ctx) pt_regex_rects(ctx, st, patterns->v[i], flags, &rects);
         fz_catch(ctx) fail("%s", fz_caught_message(ctx));
     }
 
@@ -639,7 +646,7 @@ static int cmd_redact(args *a)
     page_list(get(a, "--pages"), n, &pages);
     matches found = {0};
     for (int i = 0; i < pages.n; i++)
-        find_matches((fz_document *)doc, pages.v[i], texts, patterns, given(a, "--case-sensitive"), &found);
+        find_matches((fz_document *)doc, pages.v[i], texts, patterns, search_flags(a), &found);
     for (int i = 0; i < areas->n; i++) {
         const char *box;
         int p = page_and_value(areas->v[i], "--rect", &box);
@@ -1277,8 +1284,7 @@ static int cmd_search(args *a)
     pt_strs none = {0};
     page_list(get(a, "--pages"), fz_count_pages(ctx, doc), &pages);
     pt_push(texts, pt_strdup(get(a, "--text")));
-    for (int i = 0; i < pages.n; i++)
-        find_matches(doc, pages.v[i], &texts, &none, given(a, "--case-sensitive"), &found);
+    for (int i = 0; i < pages.n; i++) find_matches(doc, pages.v[i], &texts, &none, search_flags(a), &found);
     static pt_json j;
     emit_begin(&j);
     pt_json_key(&j, "matches");
@@ -2022,6 +2028,7 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
       {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)",
        NULL}},
@@ -2124,7 +2131,8 @@ static const cmd COMMANDS[] = {
      {PASSWORD,
       {"--text", NULL, VALUE, 1, "TEXT", "text to find (case is ignored unless --case-sensitive)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
-      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL}},
+      {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL}},
      {0}},
     {"render",
      "Render one page to PNG",
@@ -2315,6 +2323,7 @@ static const cmd COMMANDS[] = {
       {"--regex", NULL, APPEND, 0, "REGEX", "regular expression to redact (repeatable)", NULL},
       {"--pages", NULL, VALUE, 0, "PAGES", "only these pages, e.g. 1-3,7", NULL},
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
       {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
      {0}},

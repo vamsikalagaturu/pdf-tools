@@ -28,7 +28,7 @@ the window.
 
 ```sh
 pdf-tools info in.pdf                     # pages, sizes, fonts, form fields, annotations, metadata, encrypted, synctex
-pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}' [--pages 1-3] [--case-sensitive] [--fill '#000000']
+pdf-tools redact in.pdf -o out.pdf --text "Jane Doe" --regex 'DE\d{20}' [--pages 1-3] [--case-sensitive] [--ignore-accents] [--fill '#000000']
 pdf-tools fill in.pdf -o out.pdf --field name=Jane --field agree=true
 pdf-tools pages in.pdf -o out.pdf [--order 3,1,2] [--remove 4-5] [--rotate 2:90] [--crop 1:x0,y0,x1,y1] [--crop-content [PAGES]]
 pdf-tools merge a.pdf b.pdf:1-3 scan.jpg -o out.pdf [--password-for b.pdf=PW]   # images become pages
@@ -47,8 +47,8 @@ Notes:
   and removes hidden data from the result: metadata, attachments, scripts, hidden text
   (including invisible OCR layers) and thumbnails. Check `matches` and
   `text_left_under_redactions` in the output.
-- `--text` and `--regex` are matched without regard to case unless `--case-sensitive`; `--text` also across line
-  breaks and hyphenation. `--regex` uses MuPDF's regular expressions (JavaScript syntax: `\d`, `\b`, `(?:)`,
+- `--text` and `--regex` are matched without regard to case unless `--case-sensitive`, and with `--ignore-accents`
+  without regard to accents (Strüber finds Struber); `--text` also across line breaks and hyphenation. `--regex` uses MuPDF's regular expressions (JavaScript syntax: `\d`, `\b`, `(?:)`,
   lookahead, no lookbehind) over each line of the page's text, so `^` and `$` are line ends.
 - `pages`: `--order` lists the pages to keep in their new order (`5-1` counts down);
   `--remove` drops pages after that; `--crop` deletes what lies outside the box.
@@ -64,7 +64,7 @@ Notes:
 ## More commands
 
 ```sh
-pdf-tools search in.pdf --text "total" [--pages 1-3] [--case-sensitive]   # -> pages and boxes of each match
+pdf-tools search in.pdf --text "total" [--pages 1-3] [--case-sensitive] [--ignore-accents]   # -> pages and boxes of each match
 pdf-tools inspect in.pdf                                     # annotations (with per-page index) and form fields
 pdf-tools comments in.pdf [-o out.md] [--format md|json] [--numbering document|page] [--pages 1-3]
 pdf-tools render in.pdf -o page.png [--page 1] [--dpi 150]
