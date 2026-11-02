@@ -25,6 +25,15 @@ pt_glfw_key_fn glfwSetKeyCallback(void *window, pt_glfw_key_fn fn)
     return NULL;
 }
 
+/* Typed text reaches raylib from the activity's input queue, not through GLFW, so nothing calls this one. */
+typedef void (*glfw_char_fn)(void *window, unsigned int codepoint);
+
+glfw_char_fn glfwSetCharCallback(void *window, glfw_char_fn fn)
+{
+    (void)window, (void)fn;
+    return NULL;
+}
+
 typedef void (*glfw_close_fn)(void *window);
 
 glfw_close_fn glfwSetWindowCloseCallback(void *window, glfw_close_fn fn)
