@@ -633,9 +633,12 @@ typedef struct {
 } pt_numbering_state;
 
 /* the lines of one page `page_w` wide from `words` (pt_reading_order_words), numbered from `state`, which moves past
- * the page; a table's rows are one line each, at the table's left edge */
-void pt_number_lines(const pt_words *words, float page_w, pt_numbering mode, pt_numbering_state *state,
-                     pt_text_lines *out);
+ * the page; a table's rows are one line each, at the table's left edge; the text of `figures` (pt_page_figures, NULL
+ * for none) and their labels are no lines */
+void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_w, pt_numbering mode,
+                     pt_numbering_state *state, pt_text_lines *out);
+/* the page's figures: drawings and images (st from pt_stext, with its vectors) */
+void pt_page_figures(fz_stext_page *st, pt_rects *out);
 pt_numbering pt_numbering_from(const char *name); /* "page", else document */
 
 /* ---- captions.c: figures, tables, algorithms, listings and numbered equations ---- */

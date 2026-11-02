@@ -846,7 +846,7 @@ static void test_line_numbers(void)
     pt_reading_order_words(st, &w);
     pt_numbering_state state = {1};
     pt_text_lines l = {0};
-    pt_number_lines(&w, 595, PT_NUMBER_DOCUMENT, &state, &l);
+    pt_number_lines(&w, NULL, 595, PT_NUMBER_DOCUMENT, &state, &l);
     CHECK(l.n == 12 && state.next == 13);
     const pt_text_line *effect = line_at(&l, 75, 740), *allow = line_at(&l, 165, 740);
     CHECK(effect && effect == allow && line_at(&l, 75, 712) == line_at(&l, 165, 712));
@@ -855,6 +855,39 @@ static void test_line_numbers(void)
     CHECK(p1 && p1 == line_at(&l, 105, 640) && next && next->n == p1->n + 1);
     const pt_text_line *left = line_at(&l, 75, 500), *right = line_at(&l, 325, 500);
     CHECK(left && right && left != right && left->col_x0 < right->col_x0);
+    pt_vec_free(l);
+    pt_words_free(&w);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+}
+
+/* a display's numerator, main line and denominator are one line, as lineno's [mathlines] numbers a display; the
+ * text lines around it keep a number each */
+static void test_line_numbers_display(void)
+{
+    const page_line lines[] = {
+        {1, 72, 700, "the text before the display runs from the left edge"},
+        {1, 72, 686, "of the column down to the display set below it"},
+        {1, 250, 655, "a + b"},
+        {1, 200, 650, "f(x) ="},
+        {1, 250, 645, "c - d"},
+        {1, 72, 616, "and the text after the display goes on again"},
+        {1, 72, 602, "from the same left edge as the text before it"},
+    };
+    char *path = lines_pdf("display.pdf", lines, (int)(sizeof lines / sizeof *lines));
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_words w = {0};
+    pt_reading_order_words(st, &w);
+    pt_numbering_state state = {1};
+    pt_text_lines l = {0};
+    pt_number_lines(&w, NULL, 595, PT_NUMBER_PAGE, &state, &l);
+    const pt_text_line *display = line_at(&l, 205, 650), *before = line_at(&l, 75, 686), *after = line_at(&l, 75, 616);
+    CHECK(l.n == 5 && display && display == line_at(&l, 255, 655) && display == line_at(&l, 255, 645));
+    CHECK(before && after && display && display->n == before->n + 1 && after->n == display->n + 1);
     pt_vec_free(l);
     pt_words_free(&w);
     fz_drop_stext_page(ctx, st);
@@ -890,7 +923,7 @@ static void test_line_numbers_table_columns(void)
     pt_reading_order_words(st, &w);
     pt_numbering_state state = {1};
     pt_text_lines l = {0};
-    pt_number_lines(&w, 595, PT_NUMBER_PAGE, &state, &l);
+    pt_number_lines(&w, NULL, 595, PT_NUMBER_PAGE, &state, &l);
     const pt_text_line *cost = line_at(&l, 85, 700);
     CHECK(cost && cost == line_at(&l, 152, 700) && cost == line_at(&l, 205, 700));
     CHECK(line_at(&l, 152, 650) && line_at(&l, 152, 650) == line_at(&l, 205, 650));
@@ -926,7 +959,7 @@ static void test_line_numbers_hung_labels(void)
     pt_reading_order_words(st, &w);
     pt_numbering_state state = {1};
     pt_text_lines l = {0};
-    pt_number_lines(&w, 595, PT_NUMBER_PAGE, &state, &l);
+    pt_number_lines(&w, NULL, 595, PT_NUMBER_PAGE, &state, &l);
     const pt_text_line *first = line_at(&l, 63, 760);
     CHECK(first && first == line_at(&l, 105, 760) && first->col_x0 <= 60.5f);
     CHECK(line_at(&l, 63, 712) && line_at(&l, 63, 712) == line_at(&l, 105, 712));
@@ -948,7 +981,7 @@ static void page_lines_of(const char *name, const char *ops, pt_words *w, pt_tex
     fz_stext_page *st = pt_stext(ctx, p);
     pt_reading_order_words(st, w);
     pt_numbering_state state = {1};
-    pt_number_lines(w, 595, PT_NUMBER_PAGE, &state, l);
+    pt_number_lines(w, NULL, 595, PT_NUMBER_PAGE, &state, l);
     fz_drop_stext_page(ctx, st);
     fz_drop_page(ctx, p);
     fz_drop_document(ctx, doc);
@@ -1606,6 +1639,7 @@ int main(void)
     test_personal_data();
     test_captions();
     test_line_numbers();
+    test_line_numbers_display();
     test_line_numbers_table_columns();
     test_line_numbers_hung_labels();
     test_ruled_tables();

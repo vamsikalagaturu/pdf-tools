@@ -918,43 +918,122 @@ static float view_distance(tab *t, Rectangle r)
     return hypotf(dx, dy) * UI_PX;
 }
 
-/* Tiles of page p (on screen at r) that meet `want` (screen units): drawn when `draw`, else only requested (as wanted
- * on screen when `visible`, else prefetched), nearest the middle of the view first. They render at the zoom level just
- * above the zoom and are drawn k <= 1 times that, each edge on a whole device pixel so text stays crisp while
- * scrolling; a new tile fades in. */
-static void page_tiles(tab *t, int p, Rectangle r, Rectangle want, int draw, int visible)
+/* The tiles of page p (on screen at r) that meet `want` (screen units), at the zoom level just above render zoom rz,
+ * laid out for the current zoom: drawn k times their size, each edge on a whole device pixel so text stays crisp
+ * while scrolling. */
+typedef struct {
+    float px, level, k, ox, oy;
+    int w, h;               /* the page in the level's pixels */
+    int tx0, tx1, ty0, ty1; /* the tiles meeting `want`, the ends excluded */
+} tile_grid;
+
+static int tile_grid_at(tab *t, int p, Rectangle r, Rectangle want, float rz, tile_grid *g)
 {
-    float px = UI_PX, zoom = t->zoom * px, level = tile_level(zoom), k = zoom / level;
+    float px = UI_PX, level = tile_level(rz * px), k = t->zoom * px / level;
     fz_irect all = page_pixels(t, p, level);
-    int w = all.x1 - all.x0, h = all.y1 - all.y0;
-    float ox = roundf(r.x * px), oy = roundf(r.y * px);
-    float x0 = fmaxf(0, (want.x * px - ox) / k), x1 = fminf(w, ((want.x + want.width) * px - ox) / k);
-    float y0 = fmaxf(0, (want.y * px - oy) / k), y1 = fminf(h, ((want.y + want.height) * px - oy) / k);
-    if (x1 <= x0 || y1 <= y0) return;
-    /* tiles of other levels, scaled, until this level's arrive */
-    if (draw)
-        for (int i = 0; i < TILE_CACHE; i++) {
-            if (!t->tiles[i].ok || t->tiles[i].page != p || fabsf(t->tiles[i].scale - level) < 0.001f) continue;
-            float kk = zoom / t->tiles[i].scale;
-            Texture2D *tex = &t->tiles[i].tex;
-            DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height},
-                           (Rectangle){(ox + t->tiles[i].tx * TILE_PX * kk) / px,
-                                       (oy + t->tiles[i].ty * TILE_PX * kk) / px, tex->width * kk / px,
-                                       tex->height * kk / px},
-                           (Vector2){0, 0}, 0, WHITE);
+    *g = (tile_grid){.px = px,
+                     .level = level,
+                     .k = k,
+                     .ox = roundf(r.x * px),
+                     .oy = roundf(r.y * px),
+                     .w = all.x1 - all.x0,
+                     .h = all.y1 - all.y0};
+    float x0 = fmaxf(0, (want.x * px - g->ox) / k), x1 = fminf(g->w, ((want.x + want.width) * px - g->ox) / k);
+    float y0 = fmaxf(0, (want.y * px - g->oy) / k), y1 = fminf(g->h, ((want.y + want.height) * px - g->oy) / k);
+    if (x1 <= x0 || y1 <= y0) return 0;
+    g->tx0 = (int)(x0 / TILE_PX), g->tx1 = (int)ceilf(x1 / TILE_PX);
+    g->ty0 = (int)(y0 / TILE_PX), g->ty1 = (int)ceilf(y1 / TILE_PX);
+    return 1;
+}
+
+/* where a tile tw x th pixels big at tx, ty of a level drawn k times its size lands on the screen */
+static Rectangle tile_rect(const tile_grid *g, float k, int tx, int ty, int tw, int th)
+{
+    float ax = roundf(g->ox + tx * TILE_PX * k), bx = roundf(g->ox + (tx * TILE_PX + tw) * k);
+    float ay = roundf(g->oy + ty * TILE_PX * k), by = roundf(g->oy + (ty * TILE_PX + th) * k);
+    return (Rectangle){ax / g->px, ay / g->px, (bx - ax) / g->px, (by - ay) / g->px};
+}
+
+static Rectangle grid_cell(const tile_grid *g, int tx, int ty)
+{
+    int tw = (int)fminf(TILE_PX, g->w - tx * TILE_PX), th = (int)fminf(TILE_PX, g->h - ty * TILE_PX);
+    return tile_rect(g, g->k, tx, ty, tw, th);
+}
+
+/* needs page p's tiles at render zoom rz that meet `want`; returns how many of them are not there yet */
+static int want_tiles(tab *t, int p, Rectangle r, Rectangle want, float rz, need_class c)
+{
+    tile_grid g;
+    if (!tile_grid_at(t, p, r, want, rz, &g)) return 0;
+    int missing = 0;
+    for (int ty = g.ty0; ty < g.ty1; ty++)
+        for (int tx = g.tx0; tx < g.tx1; tx++)
+            missing += !render_need_tile(t, p, g.level, tx, ty, c, view_distance(t, grid_cell(&g, tx, ty)));
+    return missing;
+}
+
+#define TILE_GAPS_MAX 256
+
+/* Page p's tiles at the shown render zoom, over its whole render. A page coming into view (or to a new level) shows
+ * them only once all of them in view are there, so it sharpens at once rather than tile by tile, or after
+ * PAGE_SHARP_MAX_S with what has come; showing them, it fills a tile scrolled into view as it arrives, fading in. Where
+ * one is missing, the tiles of other levels there stand in, coarsest first so the finest of them ends on top. */
+static void draw_tiles(tab *t, int p, Rectangle r)
+{
+    tile_grid g;
+    if (!tile_grid_at(t, p, r, t->view, t->shown_zoom, &g)) return;
+    Rectangle gaps[TILE_GAPS_MAX];
+    int ngaps = 0, all_gaps = 0;
+    double born;
+    for (int ty = g.ty0; ty < g.ty1; ty++)
+        for (int tx = g.tx0; tx < g.tx1; tx++)
+            if (!tile_shown(t, p, g.level, tx, ty, &born)) {
+                if (ngaps < TILE_GAPS_MAX) gaps[ngaps++] = grid_cell(&g, tx, ty);
+                else all_gaps = 1;
+            }
+    int waiting = 0;
+    if (t->tiles_on[p] != g.level) {
+        if (!ngaps && !all_gaps) {
+            t->tiles_on[p] = g.level;
+            render_reveal(t, p, g.level);
+        } else {
+            if (!t->tiles_wait[p]) t->tiles_wait[p] = ui.now;
+            if (ui.now - t->tiles_wait[p] < PAGE_SHARP_MAX_S)
+                waiting = 1, ui_redraw_at(t->tiles_wait[p] + PAGE_SHARP_MAX_S);
+            else t->tiles_on[p] = g.level;
         }
-    for (int ty = (int)(y0 / TILE_PX); ty * TILE_PX < y1; ty++)
-        for (int tx = (int)(x0 / TILE_PX); tx * TILE_PX < x1; tx++) {
-            float ax = roundf(ox + tx * TILE_PX * k), bx = roundf(ox + fminf((tx + 1) * TILE_PX, w) * k);
-            float ay = roundf(oy + ty * TILE_PX * k), by = roundf(oy + fminf((ty + 1) * TILE_PX, h) * k);
-            Rectangle d = {ax / px, ay / px, (bx - ax) / px, (by - ay) / px};
-            double born = 0;
-            Texture2D *tex = page_tile(t, p, level, tx, ty, view_distance(t, d), draw || visible ? &born : NULL);
-            if (!draw || !tex) continue;
+    }
+    if (!waiting) t->tiles_wait[p] = 0;
+    if (waiting) all_gaps = 1;
+    if (ngaps || all_gaps) {
+        render_entry *order[RENDER_CACHE];
+        int n = 0;
+        for (int i = 0; i < RENDER_CACHE; i++) {
+            render_entry *e = &t->cache[i];
+            if (!e->ok || !e->tile || e->page != p || fabsf(e->scale - g.level) < 0.001f) continue;
+            Rectangle d = tile_rect(&g, t->zoom * g.px / e->scale, e->tx, e->ty, e->tex.width, e->tex.height);
+            int meets = all_gaps && CheckCollisionRecs(d, t->view);
+            for (int k = 0; k < ngaps && !meets; k++) meets = CheckCollisionRecs(d, gaps[k]);
+            if (!meets) continue;
+            int at = n++;
+            for (; at > 0 && order[at - 1]->scale > e->scale; at--) order[at] = order[at - 1];
+            order[at] = e;
+        }
+        for (int k = 0; k < n; k++) {
+            render_entry *e = order[k];
+            render_drawn(t, e);
+            draw_render(t, &e->tex, tile_rect(&g, t->zoom * g.px / e->scale, e->tx, e->ty, e->tex.width, e->tex.height),
+                        WHITE);
+        }
+    }
+    if (waiting) return;
+    for (int ty = g.ty0; ty < g.ty1; ty++)
+        for (int tx = g.tx0; tx < g.tx1; tx++) {
+            Texture2D *tex = tile_shown(t, p, g.level, tx, ty, &born);
+            if (!tex) continue;
             float a = fminf(1, (float)((ui.now - born) / TILE_FADE_S));
             if (a < 1) ui.dirty = 1;
-            DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, d, (Vector2){0, 0}, 0,
-                           Fade(WHITE, a));
+            draw_render(t, tex, grid_cell(&g, tx, ty), Fade(WHITE, a));
         }
 }
 
@@ -962,19 +1041,25 @@ static void draw_page(tab *t, int p)
 {
     fz_rect sr = page_scene_rect(t, p);
     Rectangle r = scene_rect_to_screen(t, sr);
-    if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) return;
+    if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) {
+        t->tiles_on[p] = 0, t->tiles_wait[p] = 0;
+        return;
+    }
     if (t->tool == T_VIEW || t->tool == T_HIGHLIGHT || t->tool == T_REDACT) words_prefetch(t, p);
     DrawRectangleRec(r, pal.paper);
-    float px = UI_PX, base = base_scale(t, p, t->zoom);
-    Texture2D *tex = page_texture(t, p, base_scale(t, p, render_zoom(t)), view_distance(t, r), 1);
+    float px = UI_PX, base = base_scale(t, p, t->shown_zoom);
+    Texture2D *tex = page_render(t, p, base);
     if (tex) {
-        /* the same pixel-snapped origin as the tiles, so a stretched render sits exactly under them */
-        Rectangle d = {roundf(r.x * px) / px, roundf(r.y * px) / px, r.width, r.height};
-        if (fabsf(tex->width - r.width * px) < 2 && fabsf(tex->height - r.height * px) < 2)
-            d.width = tex->width / px, d.height = tex->height / px;
-        DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, d, (Vector2){0, 0}, 0, WHITE);
+        /* every edge on a whole device pixel like the tiles', so a scaled render sits exactly under them; a render
+         * made for this size is drawn pixel for pixel */
+        float x0 = roundf(r.x * px), y0 = roundf(r.y * px);
+        float x1 = roundf((r.x + r.width) * px), y1 = roundf((r.y + r.height) * px);
+        if (fabsf(tex->width - (x1 - x0)) < 2 && fabsf(tex->height - (y1 - y0)) < 2)
+            x1 = x0 + tex->width, y1 = y0 + tex->height;
+        draw_render(t, tex, (Rectangle){x0 / px, y0 / px, (x1 - x0) / px, (y1 - y0) / px}, WHITE);
     }
-    if (base < t->zoom * px - 0.001f) page_tiles(t, p, r, t->view, 1, 1);
+    if (base < t->shown_zoom * px - 0.001f) draw_tiles(t, p, r);
+    else t->tiles_on[p] = 0, t->tiles_wait[p] = 0;
 }
 
 static void draw_crop(tab *t, int i)
@@ -1000,10 +1085,10 @@ static void draw_crop(tab *t, int i)
     }
 }
 
-/* Asks for the renders of the pages (and tiles) within a screen of the view and of the pages just before and after
- * those in view, so a scroll or a page step finds them ready: prefetched, or with `landing` those in view as wanted on
- * screen. */
-static void request_pages(tab *t, Rectangle area, int landing)
+/* Needs the renders at render zoom rz of the pages (and tiles) in view as `c` says, and with `around` those within a
+ * screen of the view and the pages just before and after those in view, one class less, so a scroll or a page step
+ * finds them ready; without `tiles` only whole renders. Returns how many of those in view are not there yet. */
+static int request_pages(tab *t, Rectangle area, float rz, need_class c, int around, int tiles)
 {
     Rectangle near = {area.x, area.y - area.height, area.width, area.height * 3};
     int first = -1, last = -1;
@@ -1014,36 +1099,123 @@ static void request_pages(tab *t, Rectangle area, int landing)
             last = i;
         }
     }
+    need_class next = c < NEED_LATER ? c + 1 : NEED_LATER;
+    int missing = 0;
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
         if (t->off_y[p] < -1e8f) continue;
         Rectangle pr = scene_rect_to_screen(t, page_scene_rect(t, p));
+        int in_view = CheckCollisionRecs(pr, area);
         /* two either way: the next row of two pages side by side */
         int next_to = first >= 0 && i >= first - 2 && i <= last + 2;
-        if ((pr.y + pr.height <= near.y || pr.y >= near.y + near.height) && !next_to) continue;
-        int in_view = landing && CheckCollisionRecs(pr, area);
-        float base = base_scale(t, p, t->zoom);
-        page_texture(t, p, base, view_distance(t, pr), in_view);
-        if (base < t->zoom * UI_PX - 0.001f) {
-            if (in_view) page_tiles(t, p, pr, area, 0, 1);
-            page_tiles(t, p, pr, near, 0, 0);
-        }
+        if (!in_view && (!around || ((pr.y + pr.height <= near.y || pr.y >= near.y + near.height) && !next_to)))
+            continue;
+        float base = base_scale(t, p, rz);
+        int tiled = tiles && base < rz * UI_PX - 0.001f;
+        int have = render_need_page(t, p, base, in_view ? c : next, view_distance(t, pr));
+        /* under tiles the whole render is the same at every zoom, so only the tiles are waited for */
+        if (in_view && !tiled) missing += !have;
+        if (tiled && in_view) missing += want_tiles(t, p, pr, area, rz, c);
+        if (tiled && around) want_tiles(t, p, pr, near, rz, next);
+    }
+    return missing;
+}
+
+/* Needs the renders of the view as it would be at zoom z with the scene point now in its middle moved down by dy
+ * (scene points), as `c` says. Returns how many are not there yet. */
+static int request_zoomed(tab *t, Rectangle area, float z, float dy, need_class c)
+{
+    fz_point mid = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2});
+    float zoom = t->zoom, sx = t->scroll_x, sy = t->scroll_y;
+    t->zoom = z;
+    t->scroll_y = (mid.y + dy + PAGE_GAP) * z - area.height / 2;
+    t->scroll_x = t->scene_w * z > area.width ? (mid.x + PAGE_GAP) * z - area.width / 2 : 0;
+    clamp_scroll(t);
+    int missing = request_pages(t, area, z, c, 0, 1);
+    t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
+    return missing;
+}
+
+/* Needs the renders of the view a page step (Left, Right, Page Up, Page Down) would land on: the page's top, at the
+ * same zoom and sideways scroll. One page at a time lays out only the current page, so the target is laid out in its
+ * place meanwhile. */
+static void request_page_step(tab *t, Rectangle area, int delta)
+{
+    int target = tab_step_target(t, delta);
+    if (target < 0) return;
+    int pno = t->pno, cont = continuous();
+    float sx = t->scroll_x, sy = t->scroll_y;
+    t->pno = target;
+    if (cont) scroll_to_page(t, target);
+    else layout_scene(t), t->scroll_y = 0;
+    clamp_scroll(t);
+    request_pages(t, area, t->zoom, NEED_NEXT, 0, 1);
+    t->pno = pno, t->scroll_x = sx, t->scroll_y = sy;
+    if (!cont) layout_scene(t);
+}
+
+/* While flipping through pages: the whole renders of the FLIP_AHEAD pages ahead, nearest first, so every page shows
+ * one as it passes */
+static void request_flip_ahead(tab *t)
+{
+    int i = order_index(t, t->pno);
+    for (int k = 1; k <= FLIP_AHEAD && i >= 0; k++) {
+        int j = i + k * t->step_dir;
+        if (j < 0 || j >= t->st.order.n) break;
+        int p = t->st.order.v[j];
+        render_need_page(t, p, base_scale(t, p, t->zoom), NEED_NEXT, k * t->view.height * UI_PX);
     }
 }
 
-/* During a glide: the view as it is once the zoom lands, with the scroll it will have then, asks for its renders, so
- * they are ready when the glide ends instead of only once the zoom rests. */
-static void request_landing(tab *t, Rectangle area)
+/* What the view needs from the renderer in this frame, and the swap to a new render zoom.
+ * A changing zoom shows the pages with the renders of the render zoom they had (shown_zoom), scaled, while those for
+ * the new one (stage_zoom) are made out of sight; once all of them in view are there they replace the shown ones in
+ * one frame, so the pages sharpen at once, not tile by tile. A moving zoom (pinch, wheel) has renders made for where
+ * it is whenever it is a tile level from the shown ones, without waiting for it to rest. A glide (buttons, keys)
+ * needs where it lands from its start. At rest the view also needs, next, what a page step either way and a scroll by
+ * a screen would show, and later what a zoom step either way would. Flipping through pages, each page passed shows
+ * its whole render, made ahead, while the page in view and the next one get their tiles first, so the page it stops
+ * on sharpens without waiting for the flipping to end. */
+static void stage_renders(tab *t, Rectangle area)
 {
-    fz_point c = screen_to_scene(t, (Vector2){area.x + area.width / 2, area.y + area.height / 2});
-    float zoom = t->zoom, sx = t->scroll_x, sy = t->scroll_y, z = t->zanim_to;
-    float cy = c.y + (t->zanim_cy1 - t->zanim_cy0) * (1 - t->zanim_e);
-    t->zoom = z;
-    t->scroll_y = (cy + PAGE_GAP) * z - area.height / 2;
-    t->scroll_x = t->scene_w * z > area.width ? (c.x + PAGE_GAP) * z - area.width / 2 : 0;
-    clamp_scroll(t);
-    request_pages(t, area, 1);
-    t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
+    int flipping = t->flipping && ui.now - t->step_t < PAGE_FLIP_S;
+    if (flipping) ui_redraw_at(t->step_t + PAGE_FLIP_S);
+    int gliding = t->zanim_t0 > 0, moving = !gliding && ui.now - t->zoom_t < ZOOM_SETTLE_S;
+    float want = gliding ? t->zanim_to : t->zoom;
+    if (!t->shown_zoom) t->shown_zoom = t->stage_zoom = want;
+    /* moving: renders for the zoom it has reached as soon as it is a tile level from the shown ones, keeping renders
+     * under way until they are shown unless the zoom has gone far past them, so sharper renders keep arriving */
+    if (moving) {
+        int staging = t->stage_zoom != t->shown_zoom;
+        float from = staging ? t->stage_zoom : t->shown_zoom, ratio = t->zoom / from;
+        float limit = staging ? RERENDER_MAX : powf(2, 1.0f / TILE_LEVELS);
+        if (ratio < limit && ratio > 1 / limit) want = t->stage_zoom;
+        ui_redraw_at(t->zoom_t + ZOOM_SETTLE_S);
+    }
+    if (want != t->stage_zoom) t->stage_zoom = want, t->stage_t0 = ui.now;
+    int settled = !gliding && !moving && t->shown_zoom == t->stage_zoom;
+    int missing;
+    if (gliding) {
+        float dy = (t->zanim_cy1 - t->zanim_cy0) * (1 - t->zanim_e);
+        missing = request_zoomed(t, area, t->zanim_to, dy, NEED_NOW);
+    } else missing = request_pages(t, area, t->stage_zoom, NEED_NOW, settled && !flipping, 1);
+    if (flipping) {
+        request_page_step(t, area, t->step_dir);
+        request_flip_ahead(t);
+    } else if (settled) {
+        request_page_step(t, area, 1);
+        request_page_step(t, area, -1);
+        request_zoomed(t, area, fminf(t->zoom * ZOOM_STEP, ZOOM_MAX), 0, NEED_LATER);
+        request_zoomed(t, area, fmaxf(t->zoom / ZOOM_STEP, ZOOM_MIN), 0, NEED_LATER);
+    }
+    if (t->shown_zoom == t->stage_zoom) return;
+    if (missing && ui.now < t->stage_t0 + STAGE_MAX_S) {
+        ui_redraw_at(t->stage_t0 + STAGE_MAX_S);
+        return;
+    }
+    t->shown_zoom = t->stage_zoom;
+    /* what arrived out of sight shows at once, not faded in */
+    render_reveal(t, -1, tile_level(t->shown_zoom * UI_PX));
 }
 
 /* ---- link preview ----
@@ -1097,7 +1269,7 @@ static void draw_link_preview(tab *t)
                  F_BOLD, pal.window_text, -1);
     Rectangle paper = {r.x + 1, r.y + PREVIEW_HEAD, r.width - 2, h - 1};
     DrawRectangleRec(paper, pal.paper);
-    Texture2D *tex = page_texture(t, lp.page, base_scale(t, lp.page, t->zoom), 0, 1);
+    Texture2D *tex = page_texture(t, lp.page, base_scale(t, lp.page, t->stage_zoom), 0, 1);
     if (!tex || tex->width <= 0) return;
     float ts = tex->width / pw;
     Rectangle src = {0, (top - b.y0) * ts, (float)tex->width, paper.height / s * ts};
@@ -1169,12 +1341,12 @@ static void draw_line_numbers(tab *t)
         fz_rect b = page_bounds(t, p);
         if (shown && known) {
             page_lines_info *li = &t->line_info[p];
-            pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
+            pt_number_lines(&t->words[p], &t->figures[p], b.x1 - b.x0, mode, &state, &lines);
             li->ok = 1, li->after = state;
             number_page(t, p, &lines, caret_n);
         } else if (t->line_info[p].ok && known) state = t->line_info[p].after;
         else if (known && mode != PT_NUMBER_PAGE) {
-            pt_number_lines(&t->words[p], b.x1 - b.x0, mode, &state, &lines);
+            pt_number_lines(&t->words[p], &t->figures[p], b.x1 - b.x0, mode, &state, &lines);
             t->line_info[p].ok = 1, t->line_info[p].after = state;
         }
     }
@@ -1195,7 +1367,7 @@ static void request_match_views(tab *t, Rectangle area)
         if (t->off_y[m.page] < -1e8f) continue;
         center_on(t, to_scene(t, m.page, m.rect));
         clamp_scroll(t);
-        request_pages(t, area, 0);
+        request_pages(t, area, t->stage_zoom, NEED_LATER, 0, 1);
     }
     t->scroll_x = sx, t->scroll_y = sy;
 }
@@ -1376,13 +1548,15 @@ static void pane_frame(tab *t, Rectangle area)
         if (p >= 0 && p != t->pno) t->pno = p;
     }
 
-    if (t->zanim_t0 > 0) request_landing(t, area);
-    else request_pages(t, area, 0);
+    stage_renders(t, area);
     request_match_views(t, area);
     ui_scissor_begin(area);
     for (int i = 0; i < t->st.order.n; i++) {
         int p = t->st.order.v[i];
-        if (t->off_y[p] < -1e8f) continue;
+        if (t->off_y[p] < -1e8f) {
+            t->tiles_on[p] = 0, t->tiles_wait[p] = 0;
+            continue;
+        }
         draw_page(t, p);
         /* touch: one finger draws on the pages, and pans beside them */
         if (t->tool != T_VIEW)

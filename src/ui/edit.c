@@ -246,8 +246,8 @@ static void run(void *ctx, intptr_t a)
         break;
     }
     case A_CONTINUOUS: toggle_continuous(t); break;
-    case A_ZOOM_IN: zoom_by(t, 1.25f); break;
-    case A_ZOOM_OUT: zoom_by(t, 1 / 1.25f); break;
+    case A_ZOOM_IN: zoom_by(t, ZOOM_STEP); break;
+    case A_ZOOM_OUT: zoom_by(t, 1 / ZOOM_STEP); break;
     case A_FIT: zoom_to(t, 0, FIT_WIDTH); break;
     case A_FIT_HEIGHT: zoom_to(t, 0, FIT_HEIGHT); break;
     case A_PREV: tab_step_page(t, -1); break;
@@ -875,7 +875,7 @@ static void build_caret_lines(tab *t, int page, pt_text_lines *out)
     pt_numbering_state state = {1};
     fz_rect b = page_bounds(t, page);
     pt_words *w = page_words(t, page);
-    pt_number_lines(w, b.x1 - b.x0, PT_NUMBER_PAGE, &state, out);
+    pt_number_lines(w, &t->figures[page], b.x1 - b.x0, PT_NUMBER_PAGE, &state, out);
     /* a slanted word (a table's column header) belongs to the row its MuPDF line starts on, its first character along
      * the baseline, so the caret reaches it with that row */
     int n = out->n;
@@ -1014,7 +1014,7 @@ int caret_line_number(tab *t)
             return 0;
         } else {
             fz_rect b = page_bounds(t, p);
-            pt_number_lines(&t->words[p], b.x1 - b.x0, PT_NUMBER_DOCUMENT, &state, &lines);
+            pt_number_lines(&t->words[p], &t->figures[p], b.x1 - b.x0, PT_NUMBER_DOCUMENT, &state, &lines);
             t->line_info[p].doc_ok = 1, t->line_info[p].doc_after = state;
         }
     }

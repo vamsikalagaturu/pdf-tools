@@ -2178,8 +2178,10 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     }
     pt_key *deleted = malloc(sizeof(pt_key) * (size_t)(s->deleted.n + 1));
     if (!deleted) abort();
-    memcpy(deleted, s->deleted.v, sizeof(pt_key) * (size_t)s->deleted.n);
-    qsort(deleted, (size_t)s->deleted.n, sizeof(pt_key), cmp_key);
+    if (s->deleted.n) {
+        memcpy(deleted, s->deleted.v, sizeof(pt_key) * (size_t)s->deleted.n);
+        qsort(deleted, (size_t)s->deleted.n, sizeof(pt_key), cmp_key);
+    }
     for (int i = 0; i < s->deleted.n; i++) {
         const char *type = annot_type ? annot_type(opaque, deleted[i]) : NULL;
         add(&flat, deleted[i].page, PT_E_DELETED, type && *type ? type : "annotation", "",
@@ -2189,7 +2191,7 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
     pt_annot_texts comments = {0};
     for (int i = 0; i < s->annot_text.n; i++)
         if (!pt_state_has_key(&s->deleted, s->annot_text.v[i].key)) pt_push(comments, s->annot_text.v[i]);
-    qsort(comments.v, (size_t)comments.n, sizeof(pt_annot_text), cmp_key);
+    if (comments.n) qsort(comments.v, (size_t)comments.n, sizeof(pt_annot_text), cmp_key);
     for (int i = 0; i < comments.n; i++)
         add(&flat, comments.v[i].key.page, PT_E_COMMENT, "", comments.v[i].text,
             (pt_ref){PT_E_COMMENT, comments.v[i].key.page, 0, comments.v[i].key});
