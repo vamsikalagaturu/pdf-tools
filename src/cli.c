@@ -1,8 +1,6 @@
 /* Command-line (no window) interface for scripts and agents, as AGENTS.md documents it. Each command never
- * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. COMMANDS lists the editing and
- * converting ones first (up to "synctex"), then the rest and a few AGENTS.md does not cover (prepare-signature,
- * edit-annotation, redact-text). main.c sends argv here when argv[1] names a command; the window's app.c shares only
- * the usage text and the guide. */
+ * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. main.c sends argv here when argv[1]
+ * names a command; the window's app.c shares only the usage text and the guide. */
 #include "pt_cli.h"
 #include "pt_core.h"
 #include <ctype.h>
@@ -2121,7 +2119,6 @@ static const cmd COMMANDS[] = {
       {"--source", NULL, VALUE, 0, "SOURCE", "TeX file, with --line: prints the page and boxes", NULL},
       {"--line", NULL, VALUE, 0, "LINE", NULL, NULL}},
      {0}},
-    /* the rest, and a few AGENTS.md does not cover */
     {"search",
      "Find text: pages and boxes of each match",
      INPUT,
