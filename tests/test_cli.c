@@ -1,4 +1,4 @@
-/* The command-line contract of AGENTS.md: runs the pdf-tools binary (argv[1]) on PDFs made here and checks its JSON,
+/* The command-line contract: runs the pdf-tools binary (argv[1]) on PDFs made here and checks its JSON,
  * exit codes and output files. JSON is checked on its compact form (whitespace outside strings removed). */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE

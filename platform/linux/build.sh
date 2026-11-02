@@ -5,7 +5,7 @@
 # The libraries come from deps.sh (MuPDF with Tesseract, OpenSSL and raylib with both Wayland and X11, built
 # from the sources pinned in platform/versions.sh) and are linked statically; CMake finds them through pkg-config.
 # fontconfig, OpenGL and the window system's libraries come from the system at run time.
-# Needs a C/C++ compiler, make, CMake, pkg-config, curl, git and the X11/Wayland development headers (README.md).
+# Needs a C/C++ compiler, make, CMake, pkg-config, curl, git and the X11/Wayland development headers.
 # Output: $PT_LINUX_OUT/out (default ~/.cache/pdf-tools/linux). Re-runs are incremental.
 # MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from fontconfig);
 # PT_FONTS=full bundles them.

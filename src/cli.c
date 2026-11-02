@@ -1,4 +1,4 @@
-/* Command-line (no window) interface for scripts and agents, as AGENTS.md documents it. Each command never
+/* Command-line (no window) interface for scripts and agents. Each command never
  * prompts, prints one JSON object and exits with OK, FAILED, LEAKED or NO_MATCH. main.c sends argv here when argv[1]
  * names a command; the window's app.c shares only the usage text and the guide. */
 #include "pt_cli.h"
@@ -2027,8 +2027,7 @@ static const cmd COMMANDS[] = {
       {"--case-sensitive", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--ignore-accents", NULL, FLAG, 0, NULL, NULL, NULL},
       {"--fill", NULL, VALUE, 0, "FILL", "box colour, #rrggbb (default black)", PT_COLOUR_REDACT},
-      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable; addition of this port)",
-       NULL}},
+      {"--rect", NULL, APPEND, 0, "PAGE:x0,y0,x1,y1", "also redact this area (repeatable)", NULL}},
      {0}},
     {"fill",
      "Fill form fields",

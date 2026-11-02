@@ -320,8 +320,7 @@ void pt_words_free(pt_words *w)
 }
 
 /* ---- reading order: an XY-cut over MuPDF's text lines ----
- * MuPDF's own segmentation (fz_segment_stext_page) orders these pages the same, at 20 times the cost (5 ms a page on
- * average, 100 ms on a page of figures), and leaves a margin note in the text's block all the same. */
+ * not fz_segment_stext_page: it is too slow to run on every page shown, and leaves margin notes in the text's block */
 
 /* a vertical gutter must be at least this many line heights wide; a horizontal gap must clear normal leading */
 #define MIN_COLUMN_GAP 1.0f

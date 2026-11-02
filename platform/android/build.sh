@@ -5,7 +5,7 @@
 # Output: $PT_ANDROID_OUT/out/pdf-tools.apk (default ~/.cache/pdf-tools-native/android, which also keeps the debug
 # signing key: a new key would stop the APK installing over an older one). Re-runs are incremental.
 # With PT_ANDROID_KEYSTORE (a .jks) and PT_ANDROID_KEYSTORE_PASSWORD set, the APK is signed with that keystore's key
-# `pdf-tools` (key password = store password) instead, as releases are (README.md).
+# `pdf-tools` (key password = store password) instead, as releases are.
 # MuPDF's CJK and Noto fallback fonts are left out (fonts a PDF does not embed come from /system/fonts);
 # PT_FONTS=full bundles them.
 set -euo pipefail
