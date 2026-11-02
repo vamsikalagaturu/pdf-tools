@@ -3744,6 +3744,54 @@ static void delete_annot(tab *t, pt_key key)
     t->sel = SEL_NONE;
 }
 
+static const annot_info *annot_of(tab *t, pt_key key)
+{
+    annot_infos *as = page_annots(t, key.page);
+    for (int i = 0; i < as->n; i++)
+        if (as->v[i].xref == key.xref) return &as->v[i];
+    return NULL;
+}
+
+/* the PDF's annotation kinds whose colour is their stroke or mark, and those drawn with a line width */
+static int annot_recolourable(enum pdf_annot_type type)
+{
+    switch (type) {
+    case PDF_ANNOT_TEXT:
+    case PDF_ANNOT_LINE:
+    case PDF_ANNOT_SQUARE:
+    case PDF_ANNOT_CIRCLE:
+    case PDF_ANNOT_POLYGON:
+    case PDF_ANNOT_POLY_LINE:
+    case PDF_ANNOT_HIGHLIGHT:
+    case PDF_ANNOT_UNDERLINE:
+    case PDF_ANNOT_SQUIGGLY:
+    case PDF_ANNOT_STRIKE_OUT:
+    case PDF_ANNOT_INK: return 1;
+    default: return 0;
+    }
+}
+
+static int annot_has_width(enum pdf_annot_type type)
+{
+    return type == PDF_ANNOT_INK || type == PDF_ANNOT_LINE || type == PDF_ANNOT_SQUARE || type == PDF_ANNOT_CIRCLE ||
+           type == PDF_ANNOT_POLYGON || type == PDF_ANNOT_POLY_LINE;
+}
+
+/* Recolours (rgb) or re-widens (width > 0) one of the PDF's annotations; its type name is kept for the Edits list. */
+static void restyle_annot(tab *t, pt_key key, const unsigned char *rgb, float width)
+{
+    pt_state snap;
+    snapshot(t, &snap);
+    const annot_info *a = annot_of(t, key);
+    int named = 0;
+    for (int i = 0; i < t->annot_types.n; i++) named |= !memcmp(&t->annot_types.v[i].key, &key, sizeof key);
+    if (a && !named) pt_push(t->annot_types, (annot_type){key, pt_strdup(pdf_string_from_annot_type(CTX, a->type))});
+    if (rgb) pt_set_annot_colour(&t->st, key, rgb);
+    if (width > 0) pt_set_annot_width(&t->st, key, width);
+    reload_display(t);
+    push_undo(t, &snap);
+}
+
 static void recolour(tab *t, int index, const unsigned char rgb[3])
 {
     pt_item *it = &t->st.items.v[index];
@@ -3789,11 +3837,30 @@ static void a_ink_width(void *c, intptr_t a)
 }
 
 /* a favourite colour (its index in favourite_colours) for the item the menu is about */
+/* the menu's object: one of our items, or one of the PDF's annotations */
+static void mc_recolour(const unsigned char rgb[3])
+{
+    if (mc.kind == SEL_ANNOT) restyle_annot(mc.t, (pt_key){mc.page, mc.index}, rgb, 0);
+    else if (mc.index < mc.t->st.items.n) recolour(mc.t, mc.index, rgb);
+}
+
 static void a_favourite_colour(void *c, intptr_t a)
 {
     (void)c;
     unsigned char fav[FAVOURITES_MAX][3];
-    if (a < favourite_colours(fav, FAVOURITES_MAX)) recolour(mc.t, mc.index, fav[a]);
+    if (a < favourite_colours(fav, FAVOURITES_MAX)) mc_recolour(fav[a]);
+}
+
+static void a_annot_colour(void *c, intptr_t a)
+{
+    (void)c;
+    mc_recolour(PEN_COLOURS[a].rgb);
+}
+
+static void a_annot_width(void *c, intptr_t a)
+{
+    (void)c;
+    restyle_annot(mc.t, (pt_key){mc.page, mc.index}, NULL, PEN_WIDTHS[a].width);
 }
 
 static void favourite_items(ui_menu *m, const unsigned char current[3])
@@ -3836,14 +3903,20 @@ static void a_recolour_preset(void *c, intptr_t i)
 
 static void obj_colour_chosen(void *ctx, const unsigned char rgb[3])
 {
-    tab *t = ctx;
-    if (rgb && mc.index < t->st.items.n) recolour(t, mc.index, rgb);
+    (void)ctx;
+    if (rgb) mc_recolour(rgb);
 }
 
 static void a_pick_obj_colour(void *c, intptr_t a)
 {
     (void)c, (void)a;
-    colour_dialog("Colour", mc.t->st.items.v[mc.index].rgb, obj_colour_chosen, mc.t);
+    static const unsigned char black[3] = {0, 0, 0};
+    const unsigned char *now = black;
+    if (mc.kind == SEL_ANNOT) {
+        const annot_info *an = annot_of(mc.t, (pt_key){mc.page, mc.index});
+        if (an) now = an->rgb;
+    } else now = mc.t->st.items.v[mc.index].rgb;
+    colour_dialog("Colour", now, obj_colour_chosen, mc.t);
 }
 
 static void a_fill_around(void *c, intptr_t a)
@@ -3932,6 +4005,25 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         menu_item(m, "Delete", "remove", NULL, a_delete_item, NULL, 0, 1, 0);
     } else if (kind == SEL_ANNOT) {
         menu_item(m, "Comment...", "comment", NULL, a_item_clicked, NULL, 0, 1, 0);
+        const annot_info *an = annot_of(t, (pt_key){page, index});
+        if (an && annot_recolourable(an->type)) {
+            ui_menu *c = menu_sub(m, "Colour", "custom-colour");
+            for (int i = 0; i < 6; i++)
+                menu_swatch_item(c, PEN_COLOURS[i].name, PEN_COLOURS[i].rgb, a_annot_colour, NULL, i,
+                                 !memcmp(an->rgb, PEN_COLOURS[i].rgb, 3));
+            favourite_items(c, an->rgb);
+            menu_sep(c);
+            menu_item(c, "Custom...", "custom-colour", NULL, a_pick_obj_colour, NULL, 0, 1, 0);
+        }
+        if (an && annot_has_width(an->type)) {
+            float now = 0;
+            for (int i = 0; i < t->st.annot_style.n; i++)
+                if (t->st.annot_style.v[i].key.page == page && t->st.annot_style.v[i].key.xref == index)
+                    now = t->st.annot_style.v[i].width;
+            ui_menu *w = menu_sub(m, "Width", "draw");
+            for (int i = 0; i < 3; i++)
+                menu_item(w, PEN_WIDTHS[i].name, "draw", NULL, a_annot_width, NULL, i, 1, now == PEN_WIDTHS[i].width);
+        }
         menu_sep(m);
         menu_item(m, "Delete", "remove", NULL, a_delete_annot, NULL, 0, 1, 0);
     } else if (crop) {
@@ -3940,11 +4032,6 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         menu_item(m, "Remove crop", "remove", NULL, a_uncrop, NULL, 0, 1, 0);
     }
 
-    menu_sep(m);
-    pt_ints pages = {0};
-    target_pages(t, page, &pages);
-    add_page_actions(t, menu_sub(m, "Page", "pages"), &pages);
-    pt_vec_free(pages);
     mc_set(t, page, index, kind);
     menu_open(m, at);
 }
@@ -5098,16 +5185,27 @@ void hide_find(tab *t)
 static const struct {
     const char *label, *icon;
 } EDIT_KINDS[] = {
-    [PT_E_REDACT] = {"Redaction", "redact"},  [PT_E_TEXT] = {"Text", "text"},
-    [PT_E_NOTE] = {"Note", "note"},           [PT_E_SIGN] = {"Signature", "sign"},
-    [PT_E_IMAGE] = {"Image", "image"},        [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
-    [PT_E_INK] = {"Drawing", "draw"},         [PT_E_SHAPE] = {"Shape", "shapes"},
-    [PT_E_FORM] = {"Field", "file"},          [PT_E_DELETED] = {"Removed", "remove"},
-    [PT_E_COMMENT] = {"Comment", "note"},     [PT_E_ROTATE] = {"Rotated", "rotate"},
-    [PT_E_CROP] = {"Cropped", "crop"},        [PT_E_REMOVE_PAGE] = {"Page removed", "remove"},
-    [PT_E_INSERT] = {"Inserted from", "add"}, [PT_E_REORDER] = {"Pages reordered", "sort"},
-    [PT_E_STAMP] = {"Watermark", "stamp"},    [PT_E_META] = {"Properties", "about"},
-    [PT_E_OUTLINE] = {"Outline", "outline"},  [PT_E_CERT] = {"Certificate signature", "certificate"},
+    [PT_E_REDACT] = {"Redaction", "redact"},
+    [PT_E_TEXT] = {"Text", "text"},
+    [PT_E_NOTE] = {"Note", "note"},
+    [PT_E_SIGN] = {"Signature", "sign"},
+    [PT_E_IMAGE] = {"Image", "image"},
+    [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
+    [PT_E_INK] = {"Drawing", "draw"},
+    [PT_E_SHAPE] = {"Shape", "shapes"},
+    [PT_E_FORM] = {"Field", "file"},
+    [PT_E_DELETED] = {"Removed", "remove"},
+    [PT_E_COMMENT] = {"Comment", "note"},
+    [PT_E_ROTATE] = {"Rotated", "rotate"},
+    [PT_E_CROP] = {"Cropped", "crop"},
+    [PT_E_REMOVE_PAGE] = {"Page removed", "remove"},
+    [PT_E_INSERT] = {"Inserted from", "add"},
+    [PT_E_REORDER] = {"Pages reordered", "sort"},
+    [PT_E_STAMP] = {"Watermark", "stamp"},
+    [PT_E_META] = {"Properties", "about"},
+    [PT_E_OUTLINE] = {"Outline", "outline"},
+    [PT_E_CERT] = {"Certificate signature", "certificate"},
+    [PT_E_RESTYLE] = {"Restyled", "custom-colour"},
 };
 
 /* `text` with its whitespace collapsed, cut to `limit` characters ending in "..."; the caller frees it */
@@ -5235,6 +5333,7 @@ static void pages_panel(tab *t, Rectangle area)
         if (tex)
             DrawTexturePro(*tex, (Rectangle){0, 0, (float)tex->width, (float)tex->height}, thumb, (Vector2){0, 0}, 0,
                            WHITE);
+        draw_page_items_in(t, p, thumb);
         DrawRectangleLinesEx(thumb, current ? 2 : 1, current ? pal.highlight : pal.thumb_frame);
         int ticked = t->ticked[p];
         if (ticked || any_ticked || hover) {
@@ -5381,6 +5480,8 @@ static int count_annotations(tab *t)
     return n;
 }
 
+#define ROW_MORE 26 /* the ⋮ button at a row's top right */
+
 static void annotations_panel(tab *t, Rectangle area)
 {
     float *scroll = &t->side_scroll[1];
@@ -5420,7 +5521,7 @@ static void annotations_panel(tab *t, Rectangle area)
             if (hover || selected) DrawRectangleRec(row, with_alpha(pal.highlight, selected ? 70 : 35));
             ui_swatch((Rectangle){row.x + 14, row.y + 8, 14, 14}, r->rgb);
             for (int l = 0; l < nl; l++) {
-                char *e = elide_right(lines[l], w - 44, FS_NORMAL, F_REGULAR);
+                char *e = elide_right(lines[l], w - 44 - ROW_MORE, FS_NORMAL, F_REGULAR);
                 draw_text(e, row.x + 36, row.y + 6 + l * 19, FS_NORMAL, F_REGULAR, l ? pal.disabled_text : pal.text);
                 free(e);
                 free(lines[l]);
@@ -5434,8 +5535,17 @@ static void annotations_panel(tab *t, Rectangle area)
             free(tip);
             ui_tooltip(ui_id(t, 30000 + k * 100 + i), row, tipbuf);
 
+            Rectangle more = {row.x + row.width - ROW_MORE - 2, row.y + 3, ROW_MORE, ROW_MORE};
+            int more_hit = ui_hover(more);
+            if (ui_button(ui_id(t, 31000 + k * 100 + i), more, NULL, "more", B_FLAT, "More") ||
+                (hover && ui.rpressed)) {
+                t->sel = r->kind, t->sel_page = p, t->sel_index = r->index;
+                item_menu(t, r->kind, p, r->index, more_hit ? (Vector2){more.x, more.y + more.height} : ui.mouse);
+                more_hit = 1;
+            }
+
             int keyed = side_row(t, row, area, scroll);
-            if ((hover && ui.released) || keyed) {
+            if ((hover && ui.released && !more_hit) || keyed) {
                 if (t->off_y[p] < -1e8f) tab_goto(t, p);
                 t->sel = r->kind, t->sel_page = p, t->sel_index = r->index;
                 fz_rect target = r->kind == SEL_ITEM ? t->st.items.v[r->index].rect : fz_empty_rect;
@@ -5500,6 +5610,13 @@ static uint64_t state_signature(tab *t)
     for (int i = 0; i < t->st.annot_text.n; i++) {
         MIX(&t->st.annot_text.v[i].key, sizeof(pt_key));
         MIX(t->st.annot_text.v[i].text, strlen(t->st.annot_text.v[i].text));
+    }
+    for (int i = 0; i < t->st.annot_style.n; i++) {
+        const pt_annot_style *s = &t->st.annot_style.v[i];
+        MIX(&s->key, sizeof(pt_key));
+        MIX(&s->recoloured, sizeof s->recoloured);
+        MIX(s->rgb, 3);
+        MIX(&s->width, sizeof s->width);
     }
     MIX(t->st.order.v, sizeof(int) * (size_t)t->st.order.n);
     MIX(t->st.rotation.v, sizeof(pt_rotation) * (size_t)t->st.rotation.n);
@@ -5609,7 +5726,7 @@ static void on_edit_entry(tab *t, const pt_ref *ref)
                 t->sel = SEL_ITEM, t->sel_page = p, t->sel_index = i;
                 target = t->st.items.v[i].rect;
             }
-    } else if (ref->kind == PT_E_COMMENT) {
+    } else if (ref->kind == PT_E_COMMENT || ref->kind == PT_E_RESTYLE) {
         t->sel = SEL_ANNOT, t->sel_page = p, t->sel_index = ref->key.xref;
         annot_infos *as = page_annots(t, p);
         for (int a = 0; a < as->n; a++)

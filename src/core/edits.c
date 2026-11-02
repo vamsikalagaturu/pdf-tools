@@ -101,6 +101,7 @@ void pt_state_free(pt_state *s)
     pt_vec_free(s->forms);
     for (int i = 0; i < s->annot_text.n; i++) free(s->annot_text.v[i].text);
     pt_vec_free(s->annot_text);
+    pt_vec_free(s->annot_style);
     pt_vec_free(s->order);
     pt_vec_free(s->rotation);
     pt_vec_free(s->crop);
@@ -155,6 +156,7 @@ void pt_state_copy(pt_state *d, const pt_state *s)
     }
     for (int i = 0; i < s->annot_text.n; i++)
         pt_push(d->annot_text, (pt_annot_text){s->annot_text.v[i].key, pt_strdup(s->annot_text.v[i].text)});
+    for (int i = 0; i < s->annot_style.n; i++) pt_push(d->annot_style, s->annot_style.v[i]);
     for (int i = 0; i < s->order.n; i++) pt_push(d->order, s->order.v[i]);
     for (int i = 0; i < s->rotation.n; i++) pt_push(d->rotation, s->rotation.v[i]);
     for (int i = 0; i < s->crop.n; i++) pt_push(d->crop, s->crop.v[i]);
@@ -245,6 +247,24 @@ void pt_set_annot_text(pt_state *s, pt_key key, const char *text)
         }
     pt_push(s->annot_text, (pt_annot_text){key, pt_strdup(text)});
 }
+
+static pt_annot_style *annot_style_of(pt_state *s, pt_key key)
+{
+    for (int i = 0; i < s->annot_style.n; i++)
+        if (s->annot_style.v[i].key.page == key.page && s->annot_style.v[i].key.xref == key.xref)
+            return &s->annot_style.v[i];
+    pt_push(s->annot_style, (pt_annot_style){key, 0, {0}, 0});
+    return &s->annot_style.v[s->annot_style.n - 1];
+}
+
+void pt_set_annot_colour(pt_state *s, pt_key key, const unsigned char rgb[3])
+{
+    pt_annot_style *st = annot_style_of(s, key);
+    st->recoloured = 1;
+    memcpy(st->rgb, rgb, 3);
+}
+
+void pt_set_annot_width(pt_state *s, pt_key key, float width) { annot_style_of(s, key)->width = width; }
 
 /* ---- opening and writing ---- */
 
@@ -1482,6 +1502,29 @@ static void set_annot_texts(fz_context *ctx, pdf_document *doc, const pt_state *
     }
 }
 
+void pt_apply_annot_styles(fz_context *ctx, pdf_document *doc, const pt_state *s)
+{
+    for (int i = 0; i < s->annot_style.n; i++) {
+        const pt_annot_style *st = &s->annot_style.v[i];
+        if (pt_state_has_key(&s->deleted, st->key)) continue;
+        pdf_page *page = pdf_load_page(ctx, doc, st->key.page);
+        fz_try(ctx)
+        {
+            pdf_annot *a = find_annot(ctx, page, st->key.xref);
+            if (a) {
+                if (st->recoloured) {
+                    float c[3] = {st->rgb[0] / 255.0f, st->rgb[1] / 255.0f, st->rgb[2] / 255.0f};
+                    pdf_set_annot_color(ctx, a, 3, c);
+                }
+                if (st->width > 0 && pdf_annot_has_border(ctx, a)) pdf_set_annot_border_width(ctx, a, st->width);
+                pdf_update_annot(ctx, a);
+            }
+        }
+        fz_always(ctx) fz_drop_page(ctx, (fz_page *)page);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
 static void set_forms(fz_context *ctx, pdf_document *doc, const pt_state *s)
 {
     for (int i = 0; i < s->forms.n; i++) {
@@ -1636,6 +1679,7 @@ static fz_buffer *apply_edits(fz_context *ctx, const pt_source *src, const char 
         fonts_doc = open_with_inserts(ctx, src, password, &s->inserted);
         for (int i = 0; i < s->deleted.n; i++) pt_remove_annot(ctx, doc, s->deleted.v[i]);
         set_annot_texts(ctx, doc, s);
+        pt_apply_annot_styles(ctx, doc, s);
         set_forms(ctx, doc, s);
         pt_set_meta(ctx, doc, &s->meta);
         if (s->outline_set) pt_write_outline(ctx, doc, &s->outline);
@@ -2150,6 +2194,18 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
         add(&flat, comments.v[i].key.page, PT_E_COMMENT, "", comments.v[i].text,
             (pt_ref){PT_E_COMMENT, comments.v[i].key.page, 0, comments.v[i].key});
     pt_vec_free(comments);
+    for (int i = 0; i < s->annot_style.n; i++) {
+        const pt_annot_style *st = &s->annot_style.v[i];
+        if (pt_state_has_key(&s->deleted, st->key)) continue;
+        char colour[16] = "", width[24] = "";
+        if (st->recoloured) snprintf(colour, sizeof colour, "#%02x%02x%02x", st->rgb[0], st->rgb[1], st->rgb[2]);
+        if (st->width > 0) snprintf(width, sizeof width, "%s%g pt", *colour ? ", " : "", st->width);
+        char *detail = pt_format("%s%s", colour, width);
+        const char *type = annot_type ? annot_type(opaque, st->key) : NULL;
+        add(&flat, st->key.page, PT_E_RESTYLE, type && *type ? type : "annotation", detail,
+            (pt_ref){PT_E_RESTYLE, st->key.page, 0, st->key});
+        free(detail);
+    }
 
     /* grouped by page, pages in the order they are first listed */
     pt_ints order = {0};
@@ -2178,6 +2234,7 @@ int pt_count_edits(const pt_state *s, int own)
 {
     int comments = 0, removed = 0, inserted = 0;
     for (int i = 0; i < s->annot_text.n; i++) comments += !pt_state_has_key(&s->deleted, s->annot_text.v[i].key);
+    for (int i = 0; i < s->annot_style.n; i++) comments += !pt_state_has_key(&s->deleted, s->annot_style.v[i].key);
     for (int p = 0; p < own; p++) removed += !in_order(s, p);
     for (int i = 0; i < s->order.n; i++) inserted += s->order.v[i] >= own;
     int structure = removed + inserted + s->rotation.n + s->crop.n + pt_is_reordered(s->order.v, s->order.n, own);
@@ -2228,6 +2285,13 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
                     memmove(s->annot_text.v + i, s->annot_text.v + i + 1,
                             sizeof(pt_annot_text) * (size_t)(s->annot_text.n - i - 1));
                     s->annot_text.n--;
+                    break;
+                }
+            break;
+        case PT_E_RESTYLE:
+            for (int i = 0; i < s->annot_style.n; i++)
+                if (!memcmp(&s->annot_style.v[i].key, &ref.key, sizeof ref.key)) {
+                    s->annot_style.v[i] = s->annot_style.v[--s->annot_style.n];
                     break;
                 }
             break;

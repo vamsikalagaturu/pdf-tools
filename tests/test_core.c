@@ -1226,6 +1226,55 @@ static void test_redact_annotations(void)
     free(form);
 }
 
+/* A PDF's own ink annotation takes a new colour and line width on save; discarding the edit drops it. */
+static void test_restyle_annotation(void)
+{
+    char *plain = text_pdf("plain-ink.pdf", "Ink"), *path = tmp_path("ink-annot.pdf");
+    pdf_document *doc = pt_open_pdf(ctx, plain, NULL, NULL);
+    pdf_page *pp = pdf_load_page(ctx, doc, 0);
+    pdf_annot *a = pdf_create_annot(ctx, pp, PDF_ANNOT_INK);
+    fz_point stroke[2] = {{100, 100}, {200, 150}};
+    pdf_add_annot_ink_list(ctx, a, 2, stroke);
+    float red[3] = {1, 0, 0};
+    pdf_set_annot_color(ctx, a, 3, red);
+    pdf_set_annot_border_width(ctx, a, 1);
+    pdf_update_annot(ctx, a);
+    int xref = pdf_to_num(ctx, pdf_annot_obj(ctx, a));
+    pdf_drop_annot(ctx, a);
+    fz_drop_page(ctx, (fz_page *)pp);
+    pdf_save_document(ctx, doc, path, NULL);
+    pdf_drop_document(ctx, doc);
+
+    pt_state s;
+    pt_state_init(&s, 1);
+    static const unsigned char blue[3] = {0, 0, 255};
+    pt_set_annot_colour(&s, (pt_key){0, xref}, blue);
+    pt_set_annot_width(&s, (pt_key){0, xref}, 4);
+    CHECK(pt_count_edits(&s, 1) == 1);
+    fz_buffer *out = pt_apply_edits(ctx, path, NULL, &s, NULL);
+    doc = pt_open_pdf_bytes(ctx, out->data, out->len, NULL);
+    pp = pdf_load_page(ctx, doc, 0);
+    pdf_annot *got = pdf_first_annot(ctx, pp);
+    CHECK(got != NULL);
+    if (got) {
+        int n = 0;
+        float c[4] = {0};
+        pdf_annot_color(ctx, got, &n, c);
+        CHECK(n == 3 && c[0] == 0 && c[1] == 0 && c[2] == 1);
+        CHECK(pdf_annot_border_width(ctx, got) == 4);
+    }
+    fz_drop_page(ctx, (fz_page *)pp);
+    pdf_drop_document(ctx, doc);
+    fz_drop_buffer(ctx, out);
+
+    pt_ref ref = {PT_E_RESTYLE, 0, 0, {0, xref}};
+    pt_discard(&s, &ref, 1, 1);
+    CHECK(s.annot_style.n == 0 && pt_count_edits(&s, 1) == 0);
+    pt_state_free(&s);
+    free(plain);
+    free(path);
+}
+
 /* Merging page 1 of three, whose link points at page 3, leaves pages 2 and 3 out of the file. */
 static void test_merge_leaves_pages_out(void)
 {
@@ -1565,6 +1614,7 @@ int main(void)
     test_stamps();
     test_repeated_page();
     test_redact_annotations();
+    test_restyle_annotation();
     test_merge_leaves_pages_out();
     test_cyclic_parent();
     test_keep_encryption();

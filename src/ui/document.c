@@ -680,6 +680,7 @@ void reload_display(tab *t)
     {
         fresh = pt_open_pdf_buffer(CTX, t->file, t->path, t->password, &t->st.inserted);
         for (int i = 0; i < t->st.deleted.n; i++) pt_remove_annot(CTX, fresh, t->st.deleted.v[i]);
+        pt_apply_annot_styles(CTX, fresh, &t->st);
         for (int i = 0; i < t->st.rotation.n; i++) {
             pdf_obj *page = pdf_lookup_page_obj(CTX, fresh, t->st.rotation.v[i].page);
             int old = pdf_dict_get_inheritable_int(CTX, page, PDF_NAME(Rotate));
@@ -1012,6 +1013,17 @@ static int layout_differs(const pt_state *a, const pt_state *b)
         if (strcmp(a->inserted.v[i].path, b->inserted.v[i].path)) return 1;
     for (int i = 0; i < a->deleted.n; i++)
         if (!pt_state_has_key(&b->deleted, a->deleted.v[i])) return 1;
+    if (a->annot_style.n != b->annot_style.n) return 1;
+    for (int i = 0; i < a->annot_style.n; i++) {
+        const pt_annot_style *x = &a->annot_style.v[i];
+        int same = 0;
+        for (int k = 0; k < b->annot_style.n; k++) {
+            const pt_annot_style *y = &b->annot_style.v[k];
+            same |= y->key.page == x->key.page && y->key.xref == x->key.xref && y->recoloured == x->recoloured &&
+                    !memcmp(y->rgb, x->rgb, 3) && y->width == x->width;
+        }
+        if (!same) return 1;
+    }
     return 0;
 }
 
@@ -1067,6 +1079,8 @@ int page_edits(tab *t, int page)
     for (int i = 0; i < t->st.deleted.n; i++) n += t->st.deleted.v[i].page == page;
     for (int i = 0; i < t->st.annot_text.n; i++)
         n += t->st.annot_text.v[i].key.page == page && !pt_state_has_key(&t->st.deleted, t->st.annot_text.v[i].key);
+    for (int i = 0; i < t->st.annot_style.n; i++)
+        n += t->st.annot_style.v[i].key.page == page && !pt_state_has_key(&t->st.deleted, t->st.annot_style.v[i].key);
     return n;
 }
 
@@ -3209,6 +3223,8 @@ static void write_state(FILE *f, const pt_state *s)
     w_int(f, s->annot_text.n);
     for (int i = 0; i < s->annot_text.n; i++)
         fwrite(&s->annot_text.v[i].key, sizeof(pt_key), 1, f), w_str(f, s->annot_text.v[i].text);
+    w_int(f, s->annot_style.n);
+    fwrite(s->annot_style.v, sizeof(pt_annot_style), (size_t)s->annot_style.n, f);
     w_int(f, s->order.n);
     fwrite(s->order.v, sizeof(int), (size_t)s->order.n, f);
     w_int(f, s->rotation.n);
@@ -3285,6 +3301,11 @@ static void read_state(FILE *f, pt_state *s)
         pt_push(s->annot_text, a);
     }
     n = r_int(f);
+    for (int i = 0; i < n; i++) {
+        pt_annot_style a = {0};
+        if (fread(&a, sizeof a, 1, f) == 1) pt_push(s->annot_style, a);
+    }
+    n = r_int(f);
     for (int i = 0; i < n; i++) pt_push(s->order, r_int(f));
     n = r_int(f);
     for (int i = 0; i < n; i++) {
@@ -3326,7 +3347,7 @@ int tab_write_state(tab *t, const char *file)
 {
     FILE *f = fopen(file, "wb");
     if (!f) return -1;
-    fwrite("PTTAB3", 1, 6, f);
+    fwrite("PTTAB4", 1, 6, f);
     w_str(f, t->path), w_str(f, t->password), w_int(f, t->pno), w_float(f, t->zoom);
     write_state(f, &t->st);
     w_int(f, t->nhist);
@@ -3342,7 +3363,7 @@ tab *tab_read_state(const char *file)
     FILE *f = fopen(file, "rb");
     if (!f) return NULL;
     char magic[6];
-    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB3", 6)) {
+    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB4", 6)) {
         fclose(f);
         return NULL;
     }
