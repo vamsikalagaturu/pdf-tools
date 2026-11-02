@@ -290,7 +290,7 @@ static int position_of(const char *file, int *page, float *zoom, float *top)
 }
 
 /* ---- bookmarks: $XDG_DATA_HOME/pdf-tools/bookmarks.tsv, "path\tpage\ttop\tchar\tname" per line, in the order they
- * were added; char is a vim mark's character "x,y" or "-". Lines without char (before 0.4.3) still read. ---- */
+ * were added; char is a vim mark's character "x,y" or "-". Lines without char (before 0.5.0) still read. ---- */
 
 /* a line after its "path\t" into m (name malloc'd); 0 when it is not one */
 static int parse_mark(const char *rest, user_mark *m)
