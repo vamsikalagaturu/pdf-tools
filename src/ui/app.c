@@ -47,8 +47,9 @@ app_state app;
 #define MENU_BUTTON ((Rectangle){6, 6, 32, 32})
 #define KEEP_RENDERS_TABS 2 /* documents shown before the current one that keep their page renders */
 #define TAB_CLOSE 22.0f     /* a tab's close button */
-#define TAB_CROSS 8.0f      /* the cross in it, and its strokes */
-#define TAB_CROSS_W 1.5f
+#define TAB_CROSS 7.0f      /* the cross in it, its strokes, and how strong it shows until hovered */
+#define TAB_CROSS_W 1.25f
+#define TAB_CROSS_ALPHA 190
 #define TAB_CLOSE_ROUND 0.3f
 #define TAB_CLOSE_SEGMENTS 6
 
@@ -732,7 +733,7 @@ static void tab_strip(Rectangle r)
         void *owner = w->doc ? (void *)w->doc : w->cmp ? (void *)w->cmp : (void *)&app.tabs;
         /* a bold cross in the title's colour (white on the current tab), on red under the pointer */
         if (on_close) DrawRectangleRounded(close, TAB_CLOSE_ROUND, TAB_CLOSE_SEGMENTS, pal.danger);
-        Color cross = on_close ? pal.on_danger : fg;
+        Color cross = on_close ? pal.on_danger : with_alpha(fg, (unsigned char)(fg.a * TAB_CROSS_ALPHA / 255));
         float cx = close.x + TAB_CLOSE / 2, cy2 = close.y + TAB_CLOSE / 2, arm = TAB_CROSS / 2;
         DrawLineEx((Vector2){cx - arm, cy2 - arm}, (Vector2){cx + arm, cy2 + arm}, TAB_CROSS_W, cross);
         DrawLineEx((Vector2){cx - arm, cy2 + arm}, (Vector2){cx + arm, cy2 - arm}, TAB_CROSS_W, cross);
