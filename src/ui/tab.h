@@ -553,6 +553,7 @@ float tile_level(float scale);              /* the next of TILE_LEVELS zoom step
 fz_locks_context *render_locks(void);       /* for app.ctx, whose clones the render workers use */
 void render_stop(void);                     /* joins the render workers; before app.ctx is dropped */
 Texture2D *thumb_texture(tab *t, int page); /* NULL until a render worker has made it */
+void draw_page_items_in(tab *t, int page, Rectangle box); /* our unsaved items of `page`, scaled into `box` */
 /* a finished render of `t` that is wanted on screen is waiting to be taken by a frame */
 int render_ready(const tab *t);
 /* words_prefetch asks a render worker for a page's words; page_words makes them on the main thread if they have not

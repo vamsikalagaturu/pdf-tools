@@ -502,6 +502,26 @@ static void draw_item(tab *t, int index)
     }
 }
 
+void draw_page_items_in(tab *t, int page, Rectangle box)
+{
+    fz_rect b = page_bounds(t, page);
+    if (b.x1 - b.x0 <= 0 || t->off_y[page] < -1e8f) return;
+    /* the view's transform aimed at `box`: a zero-wide view makes content_x() the plain -scroll_x */
+    Rectangle view = t->view;
+    float zoom = t->zoom, sx = t->scroll_x, sy = t->scroll_y;
+    sel_kind sel = t->sel;
+    gesture_kind gesture = t->gesture;
+    t->zoom = box.width / (b.x1 - b.x0);
+    t->scroll_x = t->scroll_y = 0;
+    t->view = (Rectangle){box.x - (t->off_x[page] + PAGE_GAP) * t->zoom, box.y - (t->off_y[page] + PAGE_GAP) * t->zoom,
+                          0, box.height};
+    t->sel = SEL_NONE, t->gesture = G_NONE;
+    for (int i = 0; i < t->st.items.n; i++)
+        if (t->st.items.v[i].page == page && !(t->tb.active && t->tb.index == i)) draw_item(t, i);
+    t->view = view, t->zoom = zoom, t->scroll_x = sx, t->scroll_y = sy;
+    t->sel = sel, t->gesture = gesture;
+}
+
 /* ---- hit testing ---- */
 
 typedef struct {

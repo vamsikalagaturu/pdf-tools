@@ -244,6 +244,8 @@ static struct {
     float spread; /* distance between the first two fingers, for pinch zoom; 0 with one finger */
 } touch;
 
+#define LONG_PRESS_S 0.45 /* a finger held still this long right-clicks when lifted */
+
 /* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
 typedef struct {
     double t;
@@ -349,7 +351,7 @@ static double event_clock(void)
 /* Turns the touchscreen into the mouse and wheel the shared code knows: a tap clicks when the finger lifts, a
  * moving finger scrolls (and flings when let go), two fingers scroll and pinch-zoom, a double tap on a page zooms,
  * a long press then a move drags, a long press alone right-clicks. On a drag area (pen, signature pad) the finger
- * presses at once and draws. */
+ * presses as soon as it moves and draws. */
 static void on_touch(const AInputEvent *e, int action)
 {
     float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
@@ -648,10 +650,8 @@ void pt_android_frame(void)
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
 
-    if (touch.pending && GetTime() - touch.t > (touch.draws ? 0.15 : 0.45)) {
-        if (touch.draws) flush_press();
-        else touch.pending = 0, touch.held = 1;
-    }
+    /* also on a drawing tool's pages, so a finger held on an annotation opens its menu; the stroke starts on a move */
+    if (touch.pending && GetTime() - touch.t > LONG_PRESS_S) touch.pending = 0, touch.held = 1;
     /* the pointer stays while the page flings: the wheel goes to what is under it */
     if (touch.lifted && !ui_events_pending() && !fling.vx && !fling.vy) {
         touch.lifted = 0;

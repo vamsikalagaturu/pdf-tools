@@ -275,6 +275,13 @@ typedef struct {
 } pt_annot_text;
 
 typedef struct {
+    pt_key key;
+    int recoloured;
+    unsigned char rgb[3];
+    float width; /* line width in points; 0 keeps the annotation's own */
+} pt_annot_style;
+
+typedef struct {
     int page, degrees;
 } pt_rotation;
 
@@ -345,6 +352,7 @@ PT_VEC(pt_stamps, pt_stamp);
 PT_VEC(pt_keys, pt_key);
 PT_VEC(pt_forms, pt_form_value);
 PT_VEC(pt_annot_texts, pt_annot_text);
+PT_VEC(pt_annot_styles, pt_annot_style);
 PT_VEC(pt_rotations, pt_rotation);
 PT_VEC(pt_crops, pt_crop);
 PT_VEC(pt_inserts, pt_inserted);
@@ -354,8 +362,9 @@ typedef struct {
     pt_keys deleted; /* existing annotations to delete */
     pt_forms forms;  /* field values (with optional shrunk font size) */
     pt_annot_texts annot_text;
-    pt_ints order;         /* output pages in order; n == 0 keeps all */
-    pt_rotations rotation; /* degrees added */
+    pt_annot_styles annot_style; /* colour and line width of existing annotations */
+    pt_ints order;               /* output pages in order; n == 0 keeps all */
+    pt_rotations rotation;       /* degrees added */
     pt_crops crop;
     pt_inserts inserted; /* PDFs appended after the file's own pages */
     pt_stamps stamps;
@@ -386,6 +395,10 @@ void pt_set_crop(pt_state *s, int page, fz_rect rect);
 /* `size` > 0 replaces the value's font size, otherwise the one set earlier stays. */
 void pt_set_form(pt_state *s, pt_key key, const char *text, int is_bool, int on, float size);
 void pt_set_annot_text(pt_state *s, pt_key key, const char *text);
+void pt_set_annot_colour(pt_state *s, pt_key key, const unsigned char rgb[3]);
+void pt_set_annot_width(pt_state *s, pt_key key, float width);
+/* sets the colours and widths of `s` on `doc`'s annotations; the save and the window's display copy both use it */
+void pt_apply_annot_styles(fz_context *ctx, pdf_document *doc, const pt_state *s);
 pt_stamp pt_stamp_copy(const pt_stamp *s);
 void pt_stamp_free(pt_stamp *s);
 void pt_meta_free(pt_meta *m);
@@ -695,7 +708,8 @@ typedef enum {
     PT_E_STAMP,
     PT_E_META,
     PT_E_OUTLINE,
-    PT_E_CERT
+    PT_E_CERT,
+    PT_E_RESTYLE
 } pt_entry_kind;
 
 extern const char *pt_entry_names[];
