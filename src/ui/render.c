@@ -11,6 +11,7 @@
  * Finished pixmaps become textures on the main thread within a time budget per frame, in one cache per tab capped by
  * bytes: what is drawn stays, and the least needed goes first. */
 #include "tab.h"
+#include <float.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -194,11 +195,360 @@ static fz_display_list *worker_record(render_worker_state *w, render_job *j)
     return list;
 }
 
+/* ---- document dark mode: a device in front of the draw device that recolours what a page paints ----
+ * Colours change as they are painted, not in the finished pixels, so images keep theirs and text over an image stays
+ * right. Perceived brightness is reversed into the range from the paper to the ink, so yellow (bright) darkens under
+ * text that turned light and blue (dim) stays readable on the paper; the hue stays. */
+
+#define DARK_INK_L 0.94f
+#define LUMA_R 0.2126f
+#define LUMA_G 0.7152f
+#define LUMA_B 0.0722f
+/* coloured ink keeps its own brightness within this range, so it stays readable and looks like the colour it was */
+#define DARK_INK_COLOUR_MIN_L 0.6f
+#define DARK_INK_COLOUR_MAX_L 0.85f
+#define DARK_INK_MIN_CHROMA 0.15f /* greys are left out: white text may sit on a box that turned light */
+#define DARK_FILL_CHROMA 1.6f     /* a pale fill turned dark would otherwise look grey */
+#define DARK_MARK_L 0.42f         /* a highlight, bright enough to show when screened over the paper */
+#define DARK_IMAGE_ALPHA 0.88f    /* a white picture over the paper stays bright, but no longer glares */
+#define DARK_SCAN_MIN_COVER 0.7f  /* of the page: an image this large and without colour is a scanned page */
+#define DARK_SCAN_MAX_CHROMA 0.04f
+
+enum { DARK_FILL, DARK_INK, DARK_MARK };
+
+typedef struct {
+    fz_device super;
+    fz_device *target;
+    int mask_depth;              /* inside a soft mask, where lightness means transparency */
+    int group_depth, mark_group; /* the group that multiplies (a highlight), by depth; 0 when none is open */
+    fz_irect box;                /* the device pixels being rendered */
+    float page_area;             /* in device pixels */
+} dark_device;
+
+static void dark_colour(const float rgb[3], int role, float out[3])
+{
+    float paper_l = DOCUMENT_DARK_PAPER / 255.0f;
+    float l = LUMA_R * rgb[0] + LUMA_G * rgb[1] + LUMA_B * rgb[2];
+    float mapped = paper_l + (DARK_INK_L - paper_l) * (1 - l);
+    float chroma = fmaxf(rgb[0], fmaxf(rgb[1], rgb[2])) - fminf(rgb[0], fminf(rgb[1], rgb[2]));
+    if (role == DARK_INK && chroma > DARK_INK_MIN_CHROMA)
+        mapped = fminf(DARK_INK_COLOUR_MAX_L, fmaxf(DARK_INK_COLOUR_MIN_L, l));
+    else if (role == DARK_MARK) mapped = DARK_MARK_L;
+    for (int i = 0; i < 3; i++) {
+        /* towards black or white by what reaches that brightness, which leaves the hue alone */
+        float c = mapped < l ? rgb[i] * mapped / l : rgb[i] + (1 - rgb[i]) * (mapped - l) / fmaxf(1 - l, FLT_EPSILON);
+        if (role != DARK_INK) c = mapped + (c - mapped) * DARK_FILL_CHROMA;
+        out[i] = fminf(1, fmaxf(0, c));
+    }
+}
+
+/* every pixel of an RGB pixmap with alpha, whose colours are premultiplied */
+static void dark_recolour_pixmap(fz_context *ctx, fz_pixmap *pix)
+{
+    int w = fz_pixmap_width(ctx, pix), h = fz_pixmap_height(ctx, pix), n = fz_pixmap_components(ctx, pix);
+    int stride = fz_pixmap_stride(ctx, pix), has_alpha = fz_pixmap_alpha(ctx, pix);
+    unsigned char *row = fz_pixmap_samples(ctx, pix);
+    for (int y = 0; y < h; y++, row += stride)
+        for (int x = 0; x < w; x++) {
+            unsigned char *p = row + x * n;
+            float a = has_alpha ? p[3] / 255.0f : 1, rgb[3], out[3];
+            if (a <= 0) continue;
+            for (int i = 0; i < 3; i++) rgb[i] = fminf(1, p[i] / 255.0f / a);
+            dark_colour(rgb, DARK_FILL, out);
+            for (int i = 0; i < 3; i++) p[i] = (unsigned char)(out[i] * a * 255 + 0.5f);
+        }
+}
+
+/* the page as dark paper and light print when the image is a scanned page, else NULL */
+static fz_image *dark_scanned_page(fz_context *ctx, dark_device *d, fz_image *image, fz_matrix ctm)
+{
+    fz_rect r = fz_transform_rect(fz_unit_rect, ctm);
+    if ((r.x1 - r.x0) * (r.y1 - r.y0) < DARK_SCAN_MIN_COVER * d->page_area) return NULL;
+    fz_pixmap *src = NULL, *rgb = NULL;
+    fz_image *out = NULL;
+    fz_var(src);
+    fz_var(rgb);
+    fz_try(ctx)
+    {
+        fz_matrix scale = ctm;
+        src = fz_get_pixmap_from_image(ctx, image, NULL, &scale, NULL, NULL);
+        rgb = fz_convert_pixmap(ctx, src, fz_device_rgb(ctx), NULL, NULL, fz_default_color_params, 1);
+        int w = fz_pixmap_width(ctx, rgb), h = fz_pixmap_height(ctx, rgb), n = fz_pixmap_components(ctx, rgb);
+        int stride = fz_pixmap_stride(ctx, rgb);
+        const unsigned char *row = fz_pixmap_samples(ctx, rgb);
+        double chroma = 0;
+        for (int y = 0; y < h; y++, row += stride)
+            for (int x = 0; x < w; x++) {
+                const unsigned char *p = row + x * n;
+                int hi = p[0] > p[1] ? (p[0] > p[2] ? p[0] : p[2]) : (p[1] > p[2] ? p[1] : p[2]);
+                int lo = p[0] < p[1] ? (p[0] < p[2] ? p[0] : p[2]) : (p[1] < p[2] ? p[1] : p[2]);
+                chroma += hi - lo;
+            }
+        if (w > 0 && h > 0 && chroma / ((double)w * h * 255) <= DARK_SCAN_MAX_CHROMA) {
+            dark_recolour_pixmap(ctx, rgb);
+            out = fz_new_image_from_pixmap(ctx, rgb, NULL);
+        }
+    }
+    fz_always(ctx)
+    {
+        fz_drop_pixmap(ctx, rgb);
+        fz_drop_pixmap(ctx, src);
+    }
+    fz_catch(ctx) out = NULL;
+    return out;
+}
+
+/* the colour to paint with: the page's own in a mask, else recoloured in *cs and out */
+static const float *dark_paint(fz_context *ctx, dark_device *d, int text, fz_colorspace **cs, const float *color,
+                               fz_color_params params, float out[3])
+{
+    if (d->mask_depth || !*cs || !color) return color;
+    float rgb[3];
+    fz_convert_color(ctx, *cs, color, fz_device_rgb(ctx), rgb, NULL, params);
+    dark_colour(rgb, text, out);
+    *cs = fz_device_rgb(ctx);
+    return out;
+}
+
+static void dark_close(fz_context *ctx, fz_device *dev) { fz_close_device(ctx, ((dark_device *)dev)->target); }
+
+static void dark_fill_path(fz_context *ctx, fz_device *dev, const fz_path *path, int even_odd, fz_matrix ctm,
+                           fz_colorspace *cs, const float *color, float alpha, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    float out[3];
+    color = dark_paint(ctx, d, d->mark_group ? DARK_MARK : DARK_FILL, &cs, color, params, out);
+    fz_fill_path(ctx, d->target, path, even_odd, ctm, cs, color, alpha, params);
+}
+
+static void dark_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke,
+                             fz_matrix ctm, fz_colorspace *cs, const float *color, float alpha, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    float out[3];
+    color = dark_paint(ctx, d, 1, &cs, color, params, out);
+    fz_stroke_path(ctx, d->target, path, stroke, ctm, cs, color, alpha, params);
+}
+
+static void dark_fill_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm, fz_colorspace *cs,
+                           const float *color, float alpha, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    float out[3];
+    color = dark_paint(ctx, d, 1, &cs, color, params, out);
+    fz_fill_text(ctx, d->target, text, ctm, cs, color, alpha, params);
+    /* Blending in gamma space thins light strokes on a dark ground, so their edges look soft. A second pass raises the
+     * edges' coverage and leaves the solid parts as they are. */
+    if (!d->mask_depth && alpha >= 1) fz_fill_text(ctx, d->target, text, ctm, cs, color, alpha, params);
+}
+
+static void dark_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text, const fz_stroke_state *stroke,
+                             fz_matrix ctm, fz_colorspace *cs, const float *color, float alpha, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    float out[3];
+    color = dark_paint(ctx, d, 1, &cs, color, params, out);
+    fz_stroke_text(ctx, d->target, text, stroke, ctm, cs, color, alpha, params);
+}
+
+static void dark_fill_image_mask(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, fz_colorspace *cs,
+                                 const float *color, float alpha, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    float out[3];
+    color = dark_paint(ctx, d, 1, &cs, color, params, out);
+    fz_fill_image_mask(ctx, d->target, image, ctm, cs, color, alpha, params);
+}
+
+static void dark_begin_group(fz_context *ctx, fz_device *dev, fz_rect area, fz_colorspace *cs, int isolated,
+                             int knockout, int blendmode, float alpha)
+{
+    dark_device *d = (dark_device *)dev;
+    /* a highlight multiplies, which leaves nothing visible on dark paper */
+    int mode = blendmode & FZ_BLEND_MODEMASK, swapped = mode == FZ_BLEND_MULTIPLY ? FZ_BLEND_SCREEN
+                                                        : mode == FZ_BLEND_DARKEN ? FZ_BLEND_LIGHTEN
+                                                                                  : mode;
+    if (d->mask_depth) swapped = mode;
+    fz_begin_group(ctx, d->target, area, cs, isolated, knockout, (blendmode & ~FZ_BLEND_MODEMASK) | swapped, alpha);
+    d->group_depth++;
+    if (!d->mask_depth && mode == FZ_BLEND_MULTIPLY && !d->mark_group) d->mark_group = d->group_depth;
+}
+
+static void dark_begin_mask(fz_context *ctx, fz_device *dev, fz_rect area, int luminosity, fz_colorspace *cs,
+                            const float *bc, fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    fz_begin_mask(ctx, d->target, area, luminosity, cs, bc, params);
+    d->mask_depth++;
+}
+
+static void dark_end_mask(fz_context *ctx, fz_device *dev, fz_function *fn)
+{
+    dark_device *d = (dark_device *)dev;
+    d->mask_depth--;
+    fz_end_mask_tr(ctx, d->target, fn);
+}
+
+static void dark_clip_path(fz_context *ctx, fz_device *dev, const fz_path *path, int even_odd, fz_matrix ctm,
+                           fz_rect scissor)
+{
+    fz_clip_path(ctx, ((dark_device *)dev)->target, path, even_odd, ctm, scissor);
+}
+
+static void dark_clip_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke,
+                                  fz_matrix ctm, fz_rect scissor)
+{
+    fz_clip_stroke_path(ctx, ((dark_device *)dev)->target, path, stroke, ctm, scissor);
+}
+
+static void dark_clip_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm, fz_rect scissor)
+{
+    fz_clip_text(ctx, ((dark_device *)dev)->target, text, ctm, scissor);
+}
+
+static void dark_clip_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text, const fz_stroke_state *stroke,
+                                  fz_matrix ctm, fz_rect scissor)
+{
+    fz_clip_stroke_text(ctx, ((dark_device *)dev)->target, text, stroke, ctm, scissor);
+}
+
+static void dark_ignore_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm)
+{
+    fz_ignore_text(ctx, ((dark_device *)dev)->target, text, ctm);
+}
+
+/* A shade's colours lie in tables shared with other workers: it is painted to pixels, and those recoloured. */
+static void dark_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shade, fz_matrix ctm, float alpha,
+                            fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    fz_irect box = fz_intersect_irect(fz_round_rect(fz_bound_shade(ctx, shade, ctm)), d->box);
+    if (d->mask_depth || fz_is_empty_irect(box)) {
+        if (d->mask_depth) fz_fill_shade(ctx, d->target, shade, ctm, alpha, params);
+        return;
+    }
+    fz_pixmap *pix = NULL;
+    fz_image *image = NULL;
+    fz_var(pix);
+    fz_var(image);
+    fz_try(ctx)
+    {
+        pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), box, NULL, 1);
+        fz_clear_pixmap(ctx, pix);
+        fz_paint_shade(ctx, shade, NULL, ctm, pix, params, box, NULL, NULL);
+        dark_recolour_pixmap(ctx, pix);
+        image = fz_new_image_from_pixmap(ctx, pix, NULL);
+        float w = (float)(box.x1 - box.x0), h = (float)(box.y1 - box.y0);
+        fz_fill_image(ctx, d->target, image, (fz_matrix){w, 0, 0, h, (float)box.x0, (float)box.y0}, alpha, params);
+    }
+    fz_always(ctx)
+    {
+        fz_drop_image(ctx, image);
+        fz_drop_pixmap(ctx, pix);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+static void dark_fill_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, float alpha,
+                            fz_color_params params)
+{
+    dark_device *d = (dark_device *)dev;
+    if (d->mask_depth) {
+        fz_fill_image(ctx, d->target, image, ctm, alpha, params);
+        return;
+    }
+    fz_image *scan = dark_scanned_page(ctx, d, image, ctm);
+    if (!scan) {
+        fz_fill_image(ctx, d->target, image, ctm, alpha * DARK_IMAGE_ALPHA, params);
+        return;
+    }
+    fz_try(ctx) fz_fill_image(ctx, d->target, scan, ctm, alpha, params);
+    fz_always(ctx) fz_drop_image(ctx, scan);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+static void dark_clip_image_mask(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, fz_rect scissor)
+{
+    fz_clip_image_mask(ctx, ((dark_device *)dev)->target, image, ctm, scissor);
+}
+
+static void dark_pop_clip(fz_context *ctx, fz_device *dev) { fz_pop_clip(ctx, ((dark_device *)dev)->target); }
+
+static void dark_end_group(fz_context *ctx, fz_device *dev)
+{
+    dark_device *d = (dark_device *)dev;
+    if (d->mark_group == d->group_depth) d->mark_group = 0;
+    d->group_depth--;
+    fz_end_group(ctx, d->target);
+}
+
+static int dark_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xstep, float ystep,
+                           fz_matrix ctm, int id, int doc_id)
+{
+    return fz_begin_tile_tid(ctx, ((dark_device *)dev)->target, area, view, xstep, ystep, ctm, id, doc_id);
+}
+
+static void dark_end_tile(fz_context *ctx, fz_device *dev) { fz_end_tile(ctx, ((dark_device *)dev)->target); }
+
+static void dark_render_flags(fz_context *ctx, fz_device *dev, int set, int clear)
+{
+    fz_render_flags(ctx, ((dark_device *)dev)->target, set, clear);
+}
+
+static void dark_default_colorspaces(fz_context *ctx, fz_device *dev, fz_default_colorspaces *colorspaces)
+{
+    fz_set_default_colorspaces(ctx, ((dark_device *)dev)->target, colorspaces);
+}
+
+static void dark_begin_layer(fz_context *ctx, fz_device *dev, const char *name)
+{
+    fz_begin_layer(ctx, ((dark_device *)dev)->target, name);
+}
+
+static void dark_end_layer(fz_context *ctx, fz_device *dev) { fz_end_layer(ctx, ((dark_device *)dev)->target); }
+
+static fz_device *new_dark_device(fz_context *ctx, fz_device *target, fz_irect box, float page_area)
+{
+    dark_device *d = fz_new_derived_device(ctx, dark_device);
+    d->target = target;
+    d->box = box;
+    d->page_area = page_area;
+    d->super.hints = target->hints;
+    d->super.flags = target->flags;
+    d->super.close_device = dark_close;
+    d->super.fill_path = dark_fill_path;
+    d->super.stroke_path = dark_stroke_path;
+    d->super.clip_path = dark_clip_path;
+    d->super.clip_stroke_path = dark_clip_stroke_path;
+    d->super.fill_text = dark_fill_text;
+    d->super.stroke_text = dark_stroke_text;
+    d->super.clip_text = dark_clip_text;
+    d->super.clip_stroke_text = dark_clip_stroke_text;
+    d->super.ignore_text = dark_ignore_text;
+    d->super.fill_shade = dark_fill_shade;
+    d->super.fill_image = dark_fill_image;
+    d->super.fill_image_mask = dark_fill_image_mask;
+    d->super.clip_image_mask = dark_clip_image_mask;
+    d->super.pop_clip = dark_pop_clip;
+    d->super.begin_mask = dark_begin_mask;
+    d->super.end_mask = dark_end_mask;
+    d->super.begin_group = dark_begin_group;
+    d->super.end_group = dark_end_group;
+    d->super.begin_tile = dark_begin_tile;
+    d->super.end_tile = dark_end_tile;
+    d->super.render_flags = dark_render_flags;
+    d->super.set_default_colorspaces = dark_default_colorspaces;
+    d->super.begin_layer = dark_begin_layer;
+    d->super.end_layer = dark_end_layer;
+    return &d->super;
+}
+
 /* rasterizes (or extracts the words of) job j from its page's list */
 static void worker_render(fz_context *ctx, render_job *j, fz_display_list *list)
 {
-    fz_device *dev = NULL;
+    fz_device *dev = NULL, *dark = NULL;
     fz_var(dev);
+    fz_var(dark);
     fz_try(ctx)
     {
         if (!list) fz_throw(ctx, FZ_ERROR_GENERIC, "no display list");
@@ -216,15 +566,24 @@ static void worker_render(fz_context *ctx, render_job *j, fz_display_list *list)
         } else {
             fz_matrix ctm = fz_scale(j->scale, j->scale);
             fz_irect box = j->tile ? j->box : fz_round_rect(fz_transform_rect(fz_bound_display_list(ctx, list), ctm));
-            /* RGBA (opaque white under the page), the format GL textures take without conversion */
+            /* RGBA (opaque paper under the page), the format GL textures take without conversion */
             j->pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), box, NULL, 1);
-            fz_clear_pixmap_with_value(ctx, j->pix, 255);
             dev = fz_new_draw_device(ctx, fz_identity, j->pix);
-            fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(box), &j->cookie);
-            fz_close_device(ctx, dev);
+            if (app_document_dark()) {
+                float paper = DOCUMENT_DARK_PAPER / 255.0f, rgb[3] = {paper, paper, paper};
+                fz_fill_pixmap_with_color(ctx, j->pix, fz_device_rgb(ctx), rgb, fz_default_color_params);
+                fz_rect page = fz_transform_rect(fz_bound_display_list(ctx, list), ctm);
+                dark = new_dark_device(ctx, dev, box, (page.x1 - page.x0) * (page.y1 - page.y0));
+            } else fz_clear_pixmap_with_value(ctx, j->pix, 255);
+            fz_run_display_list(ctx, list, dark ? dark : dev, ctm, fz_rect_from_irect(box), &j->cookie);
+            fz_close_device(ctx, dark ? dark : dev);
         }
     }
-    fz_always(ctx) fz_drop_device(ctx, dev);
+    fz_always(ctx)
+    {
+        fz_drop_device(ctx, dark);
+        fz_drop_device(ctx, dev);
+    }
     fz_catch(ctx) fz_drop_pixmap(ctx, j->pix), j->pix = NULL;
 }
 

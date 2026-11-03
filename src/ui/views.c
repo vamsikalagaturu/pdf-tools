@@ -1046,7 +1046,7 @@ static void draw_page(tab *t, int p)
         return;
     }
     if (t->tool == T_VIEW || t->tool == T_HIGHLIGHT || t->tool == T_REDACT) words_prefetch(t, p);
-    DrawRectangleRec(r, pal.paper);
+    DrawRectangleRec(r, app_document_paper());
     float px = UI_PX, base = base_scale(t, p, t->shown_zoom);
     Texture2D *tex = page_render(t, p, base);
     if (tex) {
@@ -1268,7 +1268,7 @@ static void draw_link_preview(tab *t)
     draw_text_in(label, (Rectangle){r.x + PREVIEW_MARGIN, r.y, r.width - 2 * PREVIEW_MARGIN, PREVIEW_HEAD}, FS_SMALL,
                  F_BOLD, pal.window_text, -1);
     Rectangle paper = {r.x + 1, r.y + PREVIEW_HEAD, r.width - 2, h - 1};
-    DrawRectangleRec(paper, pal.paper);
+    DrawRectangleRec(paper, app_document_paper());
     Texture2D *tex = page_texture(t, lp.page, base_scale(t, lp.page, t->stage_zoom), 0, 1);
     if (!tex || tex->width <= 0) return;
     float ts = tex->width / pw;

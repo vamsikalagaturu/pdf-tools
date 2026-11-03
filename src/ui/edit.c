@@ -155,6 +155,7 @@ enum {
     A_SPLIT_VIEW_LAST = A_SPLIT_VIEW + SPLIT_STACKED,
     A_PRESENT,
     A_READING,
+    A_DOCUMENT_DARK,
     A_FULLSCREEN,
     A_COMPARE,
     A_OCR,
@@ -290,6 +291,7 @@ static void run(void *ctx, intptr_t a)
     }
     case A_PRESENT: present_start(t); break;
     case A_READING: app_toggle_reading(); break;
+    case A_DOCUMENT_DARK: app_toggle_document_dark(); break;
 #ifndef __ANDROID__
     case A_FULLSCREEN: app_toggle_fullscreen(); break;
 #endif
@@ -441,6 +443,8 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
                   on && size > PT_LINE_NUMBERS_MIN_PT, 0);
         menu_item(view, "Presentation", "presentation", keymap_label("present"), run, t, A_PRESENT, doc, 0);
         menu_item(view, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(view, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", keymap_label("zoom_in"), run, t, A_ZOOM_IN, doc, 0);
         menu_item(view, "Zoom out", "zoom-out", keymap_label("zoom_out"), run, t, A_ZOOM_OUT, doc, 0);
@@ -587,6 +591,7 @@ static const struct {
     {"page.next", A_NEXT},
     {"present", A_PRESENT},
     {"reading_mode", A_READING},
+    {"document_dark", A_DOCUMENT_DARK},
     {"bookmark", A_BOOKMARK},
     {"nav.back", A_BACK},
     {"nav.forward", A_FORWARD},
@@ -2696,6 +2701,8 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, starred ? "Unstar this file" : "Star this file", starred ? "star-filled" : "star",
                   keymap_label("star_file"), run, t, A_STAR, t->path != NULL, 0);
         menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(m, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
 #ifndef __ANDROID__
         menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
 #endif
@@ -2818,6 +2825,8 @@ void tab_toolbar(tab *t, Rectangle area)
         ui_menu *m = menu_new();
         int n = tab_edit_count(t);
         menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(m, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
 #ifndef __ANDROID__
         menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
 #endif

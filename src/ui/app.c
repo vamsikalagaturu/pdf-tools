@@ -432,6 +432,32 @@ void app_about(void)
                 NULL, NULL);
 }
 
+static int document_dark, document_dark_pending;
+
+int app_document_dark(void) { return document_dark; }
+
+Color app_document_paper(void)
+{
+    return document_dark ? (Color){DOCUMENT_DARK_PAPER, DOCUMENT_DARK_PAPER, DOCUMENT_DARK_PAPER, 255} : pal.paper;
+}
+
+void app_toggle_document_dark(void)
+{
+    document_dark_pending = !document_dark_pending;
+    ui.dirty = 1;
+}
+
+/* Between frames: every page's texture goes, and the frame being drawn may still use them. */
+static void document_dark_apply(void)
+{
+    if (!document_dark_pending) return;
+    document_dark_pending = 0;
+    document_dark = !document_dark;
+    for (int i = 0; i < app.tabs.n; i++)
+        if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc->doc) tab_invalidate_pages(app.tabs.v[i].doc);
+    ui.dirty = 1;
+}
+
 #ifndef __ANDROID__
 static int fullscreen_pending;
 
@@ -1403,6 +1429,7 @@ int pt_app_main(int argc, char **argv)
         gestures_poll();
         update_poll();
         file_dialogs_poll();
+        document_dark_apply();
 #ifndef __ANDROID__
         fullscreen_apply();
 #endif

@@ -125,6 +125,7 @@ static const action_def ACTIONS[] = {
     {"two_pages", "Two pages", "View", KS_DOC, {0}},
     {"present", "Presentation", "View", KS_DOC, {"F5"}},
     {"reading_mode", "Reading mode", "View", KS_DOC, {"F8"}},
+    {"document_dark", "Dark document", "View", KS_DOC, {"F7"}},
     {"zoom_in", "Zoom in", "View", KS_DOC, {"Ctrl+Equal", "Ctrl+Shift+Equal", "Ctrl+NumPlus"}},
     {"zoom_out", "Zoom out", "View", KS_DOC, {"Ctrl+Minus", "Ctrl+NumMinus"}},
     {"fit_width", "Fit width", "View", KS_DOC, {"Ctrl+0"}},
