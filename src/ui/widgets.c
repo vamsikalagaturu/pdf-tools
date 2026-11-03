@@ -1559,7 +1559,8 @@ struct ui_menu {
     menu_entries items;
     Rectangle r;
     int open_sub;
-    int key_sel; /* the item the keys moved to, -1 none */
+    int key_sel;      /* the item the keys moved to, -1 none */
+    const char *back; /* it covers its parent: a first row with the parent item's label leads back */
 };
 
 #define MENU_ROW 26
@@ -1568,9 +1569,12 @@ struct ui_menu {
 #define MENU_CHIP 24 /* the accent square behind an active item's icon */
 #define MENU_CHIP_ROUND 0.3f
 #define MENU_CHIP_SEGMENTS 6
-#define MENU_CHECK_W 2.0f /* the swatch ring and the tick */
-#define MENU_INSET 4.0f   /* above the first item; a submenu overlaps its parent by as much */
-#define MENU_RADIUS 6.0f  /* the menu's corners */
+#define MENU_CHECK_W 2.0f       /* the swatch ring and the tick */
+#define MENU_INSET 4.0f         /* above the first item; a submenu overlaps its parent by as much */
+#define MENU_RADIUS 6.0f        /* the menu's corners */
+#define MENU_LABEL_X 34.0f      /* an item's label, from the row's left edge */
+#define MENU_ARROW 4.0f         /* half the height of a submenu arrow */
+#define MENU_BACK_ARROW_X 12.0f /* the back row's arrow, from the row's left edge */
 static ui_menu *open_menus[8];
 static int nopen;
 static Vector2 menu_at;
@@ -1583,6 +1587,17 @@ static int key_level;       /* the open menu the keys move in */
 static int opened_now;      /* opened in this frame: the key that opened it is not one for it */
 static int keyed_menu;      /* the keys moved last: the pointer's item is not highlighted until it moves */
 static Vector2 keyed_mouse; /* where the pointer was then */
+/* the open menu the last press began in: a release chooses only there, so the tap that opens a submenu does not
+ * choose the item the submenu puts under the finger */
+static ui_menu *pressed_menu;
+static int drill; /* the submenus open over the menu (choose_drill) */
+/* A finger moves the pointer onto an item before its tap arrives, so a submenu opened on hover would lie under the
+ * tap; and Back (sent as Escape) leaves one submenu at a time, as Android's own menus do. */
+#ifdef __ANDROID__
+#define MENU_TOUCH 1
+#else
+#define MENU_TOUCH 0
+#endif
 
 ui_menu *menu_new(void)
 {
@@ -1648,11 +1663,16 @@ void menus_close(void)
 {
     if (nopen) menu_free(open_menus[0]);
     nopen = 0;
+    pressed_menu = NULL;
 }
 
 static Rectangle menu_size(ui_menu *m)
 {
     float w = 160, h = 8, shortcut_w = 0;
+    if (m->back) {
+        h += MENU_ROW;
+        w = fmaxf(w, text_width(m->back, FS_NORMAL, F_BOLD) + 64);
+    }
     for (int i = 0; i < m->items.n; i++) {
         menu_entry *e = &m->items.v[i];
         if (e->sep) {
@@ -1676,6 +1696,58 @@ static void place(ui_menu *m, float x, float y, float alt_x)
     m->r = (Rectangle){x, y, s.width, s.height};
 }
 
+/* the widest of a menu and all its submenus, each submenu with its row back */
+static float tree_width(ui_menu *m, const char *back)
+{
+    const char *own = m->back;
+    m->back = back;
+    float w = menu_size(m).width;
+    m->back = own;
+    for (int i = 0; i < m->items.n; i++)
+        if (m->items.v[i].sub) w = fmaxf(w, tree_width(m->items.v[i].sub, m->items.v[i].label));
+    return w;
+}
+
+/* When a submenu has room on neither side of the open menu, every submenu opens over it instead, where it lies and
+ * as wide as the widest of them, with a row back; the open menu takes that width at once, so nothing moves while
+ * going in and out. */
+static void choose_drill(void)
+{
+    ui_menu *root = open_menus[0];
+    float w = fminf(tree_width(root, NULL), ui.w - 4);
+    drill = root->r.x + root->r.width + w > ui.w - 2 && root->r.x - w < 2;
+    if (!drill) return;
+    root->r.width = fmaxf(root->r.width, w);
+    if (root->r.x + root->r.width > ui.w - 2) root->r.x = fmaxf(2, ui.w - 2 - root->r.width);
+}
+
+/* beside the parent's item at y, or over the parent when the submenus drill in */
+static void place_sub(ui_menu *sub, const ui_menu *parent, const char *label, float y)
+{
+    sub->back = drill ? label : NULL;
+    if (!drill) {
+        place(sub, parent->r.x + parent->r.width - MENU_INSET, y - MENU_INSET, parent->r.x + MENU_INSET);
+        return;
+    }
+    float h = fmaxf(menu_size(sub).height, parent->r.height), top = open_menus[0]->r.y;
+    if (top + h > ui.h - 2) top = fmaxf(2, ui.h - 2 - h);
+    sub->r = (Rectangle){parent->r.x, top, parent->r.width, h};
+}
+
+/* closes the submenus from level on, the keys staying on the parent's item that opened them */
+static void menu_back(int level)
+{
+    ui_menu *parent = open_menus[level - 1];
+    nopen = level;
+    key_level = level - 1;
+    parent->key_sel = parent->open_sub;
+    parent->open_sub = -1;
+    /* the pointer now lies on the parent, maybe on an item with a submenu: not opened until it moves */
+    keyed_menu = 1;
+    keyed_mouse = ui.mouse;
+    ui.dirty = 1;
+}
+
 void menu_open(ui_menu *m, Vector2 at)
 {
     menus_close();
@@ -1690,6 +1762,7 @@ void menu_open(ui_menu *m, Vector2 at)
     key_level = keyed_menu = 0;
     opened_now = 1;
     place(m, at.x, at.y, at.x);
+    choose_drill();
 }
 
 /* the next enabled item from `from` in direction dir, wrapping; -1 none */
@@ -1714,7 +1787,7 @@ void menu_keyboard(void)
 
 static float entry_y(const ui_menu *m, int index)
 {
-    float y = m->r.y + MENU_INSET;
+    float y = m->r.y + MENU_INSET + (m->back ? MENU_ROW : 0);
     for (int i = 0; i < index; i++) y += m->items.v[i].sep ? MENU_SEP : MENU_ROW;
     return y;
 }
@@ -1738,8 +1811,7 @@ static int menu_keys(void)
     if (up) m->key_sel = menu_step(m, m->key_sel < 0 ? 0 : m->key_sel, -1);
     menu_entry *e = m->key_sel >= 0 && m->key_sel < m->items.n ? &m->items.v[m->key_sel] : NULL;
     if ((into || enter) && e && e->sub && !menu_empty(e->sub) && nopen < 8) {
-        float y = entry_y(m, m->key_sel);
-        place(e->sub, m->r.x + m->r.width - MENU_INSET, y - MENU_INSET, m->r.x + MENU_INSET);
+        place_sub(e->sub, m, e->label, entry_y(m, m->key_sel));
         m->open_sub = m->key_sel;
         open_menus[key_level + 1] = e->sub;
         nopen = key_level + 2;
@@ -1750,8 +1822,7 @@ static int menu_keys(void)
         menus_close();
         return 1;
     } else if (out && key_level > 0) {
-        nopen = key_level;
-        key_level--;
+        menu_back(key_level);
     }
     return 0;
 }
@@ -1766,6 +1837,7 @@ void menu_open_below(ui_menu *m, Rectangle anchor)
     place(m, anchor.x, anchor.y + anchor.height + 2, anchor.x + anchor.width);
     Rectangle s = menu_size(m);
     if (anchor.y + anchor.height + 2 + s.height > ui.h - 2) m->r.y = fmaxf(2, anchor.y - s.height - 2);
+    choose_drill();
 }
 
 int menu_is_open(void) { return nopen > 0; }
@@ -1784,7 +1856,10 @@ void menus_frame(void)
     ui_layer_begin(catcher, (Rectangle){0, 0, ui.w, ui.h}, 0);
     int outside_press = (ui.pressed || ui.rpressed) && ui.mouse_layer == catcher;
     ui_layer_end();
-    if (outside_press || key_pressed(KEY_ESCAPE)) {
+    int escape = key_pressed(KEY_ESCAPE);
+    if (escape && !outside_press && MENU_TOUCH && nopen > 1) {
+        menu_back(nopen - 1);
+    } else if (outside_press || escape) {
         menus_close();
         return;
     }
@@ -1792,14 +1867,33 @@ void menus_frame(void)
     opened_now = 0;
     if (keyed_menu && (ui.mouse.x != keyed_mouse.x || ui.mouse.y != keyed_mouse.y || ui.pressed || ui.released))
         keyed_menu = 0;
+    if (ui.pressed) pressed_menu = NULL;
     for (int level = 0; level < nopen; level++) {
         ui_menu *m = open_menus[level];
         unsigned lid = ui_id(m, 7);
         ui_layer_begin(lid, m->r, 0);
         ui_shadow(m->r, MENU_RADIUS);
         ui_panel(m->r, pal.window, pal.border, MENU_RADIUS);
-        float y = m->r.y + 4;
+        float y = m->r.y + MENU_INSET;
         float sc_x = m->r.x + m->r.width - 12;
+        if (m->back && level > 0) {
+            Rectangle row = {m->r.x + MENU_INSET, y, m->r.width - 2 * MENU_INSET, MENU_ROW};
+            int pointed = ui_hover(row) && !keyed_menu;
+            if (pointed && ui.pressed) pressed_menu = m;
+            if (pointed) DrawRectangleRounded(row, 0.2f, 4, pal.highlight);
+            Color fg = pointed ? pal.highlighted_text : pal.window_text;
+            float ax = row.x + MENU_BACK_ARROW_X, cy = y + MENU_ROW / 2;
+            DrawTriangle((Vector2){ax + MENU_ARROW, cy - MENU_ARROW}, (Vector2){ax, cy},
+                         (Vector2){ax + MENU_ARROW, cy + MENU_ARROW}, fg);
+            draw_text_in(m->back, (Rectangle){row.x + MENU_LABEL_X, y, row.width, MENU_ROW}, FS_NORMAL, F_BOLD, fg, -1);
+            y += MENU_ROW;
+            ui_separator_h(m->r.x + 8, m->r.x + m->r.width - 8, y);
+            if (pointed && ui.released && pressed_menu == m) {
+                ui_layer_end();
+                menu_back(level);
+                return;
+            }
+        }
         for (int i = 0; i < m->items.n; i++) {
             menu_entry *e = &m->items.v[i];
             if (e->sep) {
@@ -1809,7 +1903,10 @@ void menus_frame(void)
             }
             Rectangle row = {m->r.x + 4, y, m->r.width - 8, MENU_ROW};
             int pointed = ui_hover(row) && e->enabled && !keyed_menu;
-            if (pointed) {
+            if (pointed && ui.pressed) pressed_menu = m;
+            int chosen = pointed && ui.released && !e->sub && pressed_menu == m;
+            int opens = pointed && (!MENU_TOUCH || ui.pressed);
+            if (opens) {
                 m->key_sel = -1;
                 if (m->open_sub != i) {
                     m->open_sub = i;
@@ -1846,19 +1943,19 @@ void menus_frame(void)
             if (e->sub) {
                 float ax = row.x + row.width - 12, cy = y + MENU_ROW / 2;
                 DrawTriangle((Vector2){ax, cy - 4}, (Vector2){ax, cy + 4}, (Vector2){ax + 4, cy}, fg);
-                if (pointed && !sub_open && nopen < 8) {
-                    place(e->sub, m->r.x + m->r.width - 4, y - 4, m->r.x + 4);
+                if (opens && !sub_open && nopen < 8) {
+                    place_sub(e->sub, m, e->label, y);
                     open_menus[level + 1] = e->sub;
                     nopen = level + 2;
                     key_level = level;
                 }
             }
-            if (pointed && ui.released && !e->sub && e->fn) {
+            if (chosen && e->fn) {
                 pending_fn = e->fn;
                 pending_ctx = e->ctx;
                 pending_arg = e->arg;
             }
-            if (pointed && ui.released && !e->sub) {
+            if (chosen) {
                 ui_layer_end();
                 menus_close();
                 return;
