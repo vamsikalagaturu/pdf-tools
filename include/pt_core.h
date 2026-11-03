@@ -795,6 +795,9 @@ void pt_settings_set_str(pt_settings *s, const char *key, const char *value);
 void pt_settings_set_int(pt_settings *s, const char *key, int value);
 void pt_settings_set_list(pt_settings *s, const char *key, const pt_strs *value);
 void pt_settings_add_recent(pt_settings *s, const char *path); /* to the front of recent_files, PT_RECENT_LIMIT kept */
+int pt_settings_is_starred(const pt_settings *s, const char *path);
+/* adds to the front of starred_files or removes; path must not point into that list, which this replaces */
+void pt_settings_toggle_starred(pt_settings *s, const char *path);
 int pt_settings_save(const pt_settings *s); /* nonzero when it cannot be written or keep_file is set */
 void pt_migrate_legacy(void);               /* copies the old pdf-redact folder's signatures when this one has none */
 /* The top-level `key = "string"` and `key = ["string", ...]` lines of a TOML text, the subset settings.toml uses: a

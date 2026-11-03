@@ -321,13 +321,14 @@ int ui_input_since_frame(void)
 
 /* ---- scale, insets and touch gestures ---- */
 
-/* The UI scale: PDF_TOOLS_SCALE, else the chosen interface size, else the window system's content scale when it
- * reports one (Wayland always does), else the physical DPI of the window's monitor over 96 (XWayland reports a
- * content scale of 1 even on fractionally scaled outputs) in quarter steps from 1 to 3. */
+/* The UI scale: PDF_TOOLS_SCALE until the user changes the interface size, else the chosen interface size, else the
+ * window system's content scale when it reports one (Wayland always does), else the physical DPI of the window's
+ * monitor over 96 (XWayland reports a content scale of 1 even on fractionally scaled outputs) in quarter steps from 1
+ * to 3. */
 float ui_detect_scale(void)
 {
     const char *env = getenv("PDF_TOOLS_SCALE");
-    if (env && atof(env) > 0.3) return (float)atof(env);
+    if (!ui.scale_chosen && env && atof(env) > 0.3) return (float)atof(env);
     if (ui.scale_choice > 0) return ui.scale_choice;
 #ifdef __APPLE__
     /* macOS lays windows out in points; a Retina screen shows up as ui.density instead */
@@ -454,6 +455,19 @@ int ui_touch_drags_at(float screen_x, float screen_y) { return touch_area_at(scr
 
 int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 1); }
 
+#ifndef __ANDROID__
+/* A larger interface needs a larger window, but never one larger than the monitor. */
+static void update_window_min_size(void)
+{
+    static float applied_scale;
+    if (ui.scale == applied_scale) return;
+    applied_scale = ui.scale;
+    int mon = GetCurrentMonitor();
+    SetWindowMinSize((int)fminf(WINDOW_MIN_W * ui.scale, GetMonitorWidth(mon)),
+                     (int)fminf(WINDOW_MIN_H * ui.scale, GetMonitorHeight(mon)));
+}
+#endif
+
 void ui_begin_frame(void)
 {
     static double checked;
@@ -461,6 +475,9 @@ void ui_begin_frame(void)
         ui.scale = ui_detect_scale();
         checked = GetTime();
     }
+#ifndef __ANDROID__
+    update_window_min_size();
+#endif
     ui.density = GetScreenWidth() > 0 ? fmaxf(1, (float)GetRenderWidth() / GetScreenWidth()) : 1;
     ui.w = (GetScreenWidth() - inset_l - inset_r) / ui.scale;
     ui.h = (GetScreenHeight() - inset_t - inset_b) / ui.scale;
@@ -1564,6 +1581,9 @@ struct ui_menu {
 };
 
 #define MENU_ROW 26
+#define MENU_DRILL_MAX_W 320.0f /* a long file name is shortened rather than widening a menu on a small window */
+#define MENU_LABEL_END 20.0f    /* room kept after a label for a submenu's arrow */
+#define MENU_SHORTCUT_GAP 12.0f
 #define MENU_SEP 9
 #define MENU_ICON 18 /* an item's icon */
 #define MENU_CHIP 24 /* the accent square behind an active item's icon */
@@ -1714,10 +1734,10 @@ static float tree_width(ui_menu *m, const char *back)
 static void choose_drill(void)
 {
     ui_menu *root = open_menus[0];
-    float w = fminf(tree_width(root, NULL), ui.w - 4);
-    drill = root->r.x + root->r.width + w > ui.w - 2 && root->r.x - w < 2;
+    float w = tree_width(root, NULL);
+    drill = root->r.x + root->r.width + fminf(w, ui.w - 4) > ui.w - 2 && root->r.x - fminf(w, ui.w - 4) < 2;
     if (!drill) return;
-    root->r.width = fmaxf(root->r.width, w);
+    root->r.width = fminf(fmaxf(root->r.width, fminf(w, MENU_DRILL_MAX_W)), ui.w - 4);
     if (root->r.x + root->r.width > ui.w - 2) root->r.x = fmaxf(2, ui.w - 2 - root->r.width);
 }
 
@@ -1905,7 +1925,8 @@ void menus_frame(void)
             int pointed = ui_hover(row) && e->enabled && !keyed_menu;
             if (pointed && ui.pressed) pressed_menu = m;
             int chosen = pointed && ui.released && !e->sub && pressed_menu == m;
-            int opens = pointed && (!MENU_TOUCH || ui.pressed);
+            /* a submenu over the menu hides the items the pointer is passing on its way: only a press opens one */
+            int opens = pointed && (!(MENU_TOUCH || drill) || ui.pressed);
             if (opens) {
                 m->key_sel = -1;
                 if (m->open_sub != i) {
@@ -1936,7 +1957,11 @@ void menus_frame(void)
                 DrawLineEx(a, b, MENU_CHECK_W, ink);
                 DrawLineEx(b, c, MENU_CHECK_W, ink);
             }
-            draw_text_in(e->label, (Rectangle){x + 26, y, row.width, MENU_ROW}, FS_NORMAL, F_REGULAR, fg, -1);
+            float label_w = row.x + row.width - (x + 26) - MENU_LABEL_END -
+                            (e->shortcut ? text_width(e->shortcut, FS_NORMAL, F_REGULAR) + MENU_SHORTCUT_GAP : 0);
+            char *label = elide_middle(e->label, label_w, FS_NORMAL, F_REGULAR);
+            draw_text_in(label, (Rectangle){x + 26, y, row.width, MENU_ROW}, FS_NORMAL, F_REGULAR, fg, -1);
+            free(label);
             if (e->shortcut)
                 draw_text_in(e->shortcut, (Rectangle){m->r.x, y, sc_x - m->r.x, MENU_ROW}, FS_NORMAL, F_REGULAR,
                              hover ? fg : pal.disabled_text, 1);
@@ -1976,6 +2001,9 @@ static dialog *fresh_dialog;
 
 void dialog_push(dialog *d)
 {
+    /* it may come between frames (Android's Back, a file chooser's answer) with the window idle and nothing else to
+     * wake it */
+    ui.dirty = 1;
     menus_close();
     palette_close();
     if (ndialogs == DIALOGS_MAX) {

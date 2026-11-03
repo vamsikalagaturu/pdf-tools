@@ -67,6 +67,7 @@ typedef struct {
 static const action_def ACTIONS[] = {
     {"new_window", "New window", "File", KS_APP, {"Ctrl+N"}},
     {"home", "Home", "File", KS_APP, {0}},
+    {"star_file", "Star or unstar this file", "File", KS_APP, {0}},
     {"open", "Open...", "File", KS_APP, {"Ctrl+O"}},
     {"close_tab", "Close tab", "File", KS_APP, {"Ctrl+W"}},
     {"close_window", "Close window", "File", KS_APP, {"Ctrl+Shift+W"}},
@@ -123,6 +124,7 @@ static const action_def ACTIONS[] = {
     {"continuous", "Continuous", "View", KS_DOC, {0}},
     {"two_pages", "Two pages", "View", KS_DOC, {0}},
     {"present", "Presentation", "View", KS_DOC, {"F5"}},
+    {"reading_mode", "Reading mode", "View", KS_DOC, {"F8"}},
     {"zoom_in", "Zoom in", "View", KS_DOC, {"Ctrl+Equal", "Ctrl+Shift+Equal", "Ctrl+NumPlus"}},
     {"zoom_out", "Zoom out", "View", KS_DOC, {"Ctrl+Minus", "Ctrl+NumMinus"}},
     {"fit_width", "Fit width", "View", KS_DOC, {"Ctrl+0"}},
@@ -133,6 +135,7 @@ static const action_def ACTIONS[] = {
     {"nav.forward", "Forward", "View", KS_DOC, {"Alt+Right", "Mouse5"}},
     {"bookmark", "Add bookmark...", "View", KS_DOC, {"Ctrl+B"}},
     {"goto", "Go to page...", "View", KS_DOC, {"Ctrl+G"}},
+    {"fullscreen", "Full screen", "View", KS_APP, {"F11"}},
     {"tab.next", "Next tab", "View", KS_APP, {"Ctrl+Tab"}},
     {"tab.prev", "Previous tab", "View", KS_APP, {"Ctrl+Shift+Tab"}},
     {"vim_keys", "Vim keys", "View", KS_APP, {0}},

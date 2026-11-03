@@ -1921,15 +1921,15 @@ void present_start(tab *t)
     presentation.page_changed_at = ui.now;
     menus_close();
 #ifndef __ANDROID__
-    presentation.made_fullscreen = !IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-    if (presentation.made_fullscreen) ToggleBorderlessWindowed();
+    presentation.made_fullscreen = !app_fullscreen();
+    if (presentation.made_fullscreen) app_toggle_fullscreen();
 #endif
 }
 
 static void present_stop(void)
 {
 #ifndef __ANDROID__
-    if (presentation.made_fullscreen && IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) ToggleBorderlessWindowed();
+    if (presentation.made_fullscreen && app_fullscreen()) app_toggle_fullscreen();
 #endif
     tab_goto(presentation.document, presentation.document->st.order.v[presentation.position]);
     presentation.document = NULL;

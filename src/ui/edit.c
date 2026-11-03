@@ -16,6 +16,7 @@
 #define OPTS_H 40.0f
 /* "100%" with a few pixels each side, so it sits close to the zoom buttons */
 #define ZOOM_LABEL_W 42.0f
+#define ZOOM_BUTTON_W 24.0f /* narrower than the other buttons, to keep their glyphs close to the percentage */
 
 static unsigned bid(tab *t, int k) { return ui_id(t, 60000 + k); }
 
@@ -133,6 +134,7 @@ enum {
     A_ZOOM_OUT,
     A_FIT,
     A_FIT_HEIGHT,
+    A_STAR,
     A_PREV,
     A_NEXT,
     A_BACK,
@@ -152,6 +154,8 @@ enum {
     A_SPLIT_VIEW, /* + split_mode */
     A_SPLIT_VIEW_LAST = A_SPLIT_VIEW + SPLIT_STACKED,
     A_PRESENT,
+    A_READING,
+    A_FULLSCREEN,
     A_COMPARE,
     A_OCR,
     A_CERT,
@@ -250,6 +254,7 @@ static void run(void *ctx, intptr_t a)
     case A_ZOOM_OUT: zoom_by(t, 1 / ZOOM_STEP); break;
     case A_FIT: zoom_to(t, 0, FIT_WIDTH); break;
     case A_FIT_HEIGHT: zoom_to(t, 0, FIT_HEIGHT); break;
+    case A_STAR: app_star_current_doc(); break;
     case A_PREV: tab_step_page(t, -1); break;
     case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
@@ -284,6 +289,10 @@ static void run(void *ctx, intptr_t a)
         break;
     }
     case A_PRESENT: present_start(t); break;
+    case A_READING: app_toggle_reading(); break;
+#ifndef __ANDROID__
+    case A_FULLSCREEN: app_toggle_fullscreen(); break;
+#endif
     case A_COMPARE: compare_start(t); break;
     case A_OCR: ocr_dialog(t); break;
     case A_CERT: cert_sign_start(t); break;
@@ -431,6 +440,7 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(ln, "Smaller numbers", "zoom-out", keymap_label("line_numbers.smaller"), run, t, A_NUMBERS_SMALLER,
                   on && size > PT_LINE_NUMBERS_MIN_PT, 0);
         menu_item(view, "Presentation", "presentation", keymap_label("present"), run, t, A_PRESENT, doc, 0);
+        menu_item(view, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", keymap_label("zoom_in"), run, t, A_ZOOM_IN, doc, 0);
         menu_item(view, "Zoom out", "zoom-out", keymap_label("zoom_out"), run, t, A_ZOOM_OUT, doc, 0);
@@ -576,6 +586,7 @@ static const struct {
     {"page.prev", A_PREV},
     {"page.next", A_NEXT},
     {"present", A_PRESENT},
+    {"reading_mode", A_READING},
     {"bookmark", A_BOOKMARK},
     {"nav.back", A_BACK},
     {"nav.forward", A_FORWARD},
@@ -2446,7 +2457,8 @@ void tab_shortcuts(tab *t)
     if (keymap_pressed("context_menu")) context_menu(t);
     vim_keys(t);
     if (ui_shortcut(0, 0, KEY_ESCAPE)) {
-        if (t->side_focus) t->side_focus = 0;
+        if (app_reading() && !tab_escape_pending(t)) app_toggle_reading();
+        else if (t->side_focus) t->side_focus = 0;
         else if (t->pop.kind != POP_NONE) close_popover(t, 0);
         else if (t->caret > CARET_ON) t->caret = CARET_ON;
         else if (t->find_open) hide_find(t);
@@ -2680,7 +2692,15 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, "Fit height", "fit-height", keymap_label("fit_height"), run, t, A_FIT_HEIGHT, doc, 0);
         menu_item(m, "Continuous scroll", "continuous", keymap_label("continuous"), run, t, A_CONTINUOUS, doc,
                   continuous());
+        int starred = t->path && pt_settings_is_starred(&app.settings, t->path);
+        menu_item(m, starred ? "Unstar this file" : "Star this file", starred ? "star-filled" : "star",
+                  keymap_label("star_file"), run, t, A_STAR, t->path != NULL, 0);
+        menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+#ifndef __ANDROID__
+        menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
+#endif
         menu_sep(m);
+        menu_item(m, "Save (overwrite original)", "save", keymap_label("save"), run, t, A_SAVE, n > 0, 0);
         menu_item(m, "Save As...", "save", keymap_label("save_as"), run, t, A_SAVE_AS, n > 0, 0);
         menu_item(m, "Save optimized copy...", "save", keymap_label("save_optimized"), run, t, A_OPTIMIZE, doc, 0);
         menu_item(m, "Export pages...", "export", keymap_label("export"), run, t, A_EXPORT, doc, 0);
@@ -2695,10 +2715,6 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_open_below(m, more);
     }
     rx -= 34;
-    if (ui_button(bid(t, 25), (Rectangle){rx, y, 32, h}, NULL, "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
-                  keymap_tip("Save (overwrite original)", "save")))
-        run(t, A_SAVE);
-    rx -= 34;
     if (ui_button(bid(t, 24), (Rectangle){rx, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis,
                   keymap_tip("Find", "find"))) {
         if (t->find_open) hide_find(t);
@@ -2709,8 +2725,7 @@ static void narrow_toolbar(tab *t, Rectangle area)
 void tab_toolbar(tab *t, Rectangle area)
 {
     /* right side, laid out first so the tools know how much room they have */
-    float save_w = button_width("Save", "save", 0) + 22;
-    float right = 34 * 4 + ZOOM_LABEL_W + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
+    float right = 2 * ZOOM_BUTTON_W + 2 + ZOOM_LABEL_W + 34 * 2 + UI_SEP_W + 34 * 3 + UI_SEP_W + 34;
     /* narrower than this the tools, even as bare icons, run into the right side */
     float wide_min = 34 * 3 + UI_SEP_W + T_COUNT * 34 + 20 + right;
     t->narrow = ui.w < NARROW_W || area.width < wide_min;
@@ -2759,18 +2774,18 @@ void tab_toolbar(tab *t, Rectangle area)
     }
 
     x = area.x + area.width - right;
-    if (ui_button(bid(t, 20), (Rectangle){x, y, 32, h}, NULL, "zoom-out", B_FLAT | dis,
+    if (ui_button(bid(t, 20), (Rectangle){x, y, ZOOM_BUTTON_W, h}, NULL, "zoom-out", B_FLAT | dis,
                   keymap_tip("Zoom out", "zoom_out")))
         run(t, A_ZOOM_OUT);
-    x += 34;
+    x += ZOOM_BUTTON_W;
     char zoom[16];
     snprintf(zoom, sizeof zoom, "%d%%", doc ? (int)lroundf(t->zoom * 100) : 0);
     if (doc) draw_text_in(zoom, (Rectangle){x, y, ZOOM_LABEL_W, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     x += ZOOM_LABEL_W;
-    if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis,
+    if (ui_button(bid(t, 21), (Rectangle){x, y, ZOOM_BUTTON_W, h}, NULL, "zoom-in", B_FLAT | dis,
                   keymap_tip("Zoom in", "zoom_in")))
         run(t, A_ZOOM_IN);
-    x += 34;
+    x += ZOOM_BUTTON_W + 2;
     if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit",
                   (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis, keymap_tip("Fit width", "fit_width")))
         run(t, A_FIT);
@@ -2790,15 +2805,23 @@ void tab_toolbar(tab *t, Rectangle area)
         else run(t, A_FIND);
     }
     x += 34;
+    int starred = t->path && pt_settings_is_starred(&app.settings, t->path);
+    if (ui_button(bid(t, 28), (Rectangle){x, y, 32, h}, NULL, starred ? "star-filled" : "star",
+                  B_FLAT | (t->path ? 0 : B_DISABLED),
+                  keymap_tip(starred ? "Remove the star" : "Star this file", "star_file")))
+        run(t, A_STAR);
+    x += 34;
     x = separator(x, y, h);
 
-    Rectangle save = {x, y, save_w - 20, h}, arrow = {x + save_w - 20, y, 20, h};
-    if (ui_button(bid(t, 25), save, "Save", "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
-                  keymap_tip("Save (overwrite original)", "save")))
-        run(t, A_SAVE);
-    if (ui_button(bid(t, 26), arrow, NULL, NULL, B_FLAT | B_MENU | dis, NULL)) {
+    Rectangle more = {x, y, 32, h};
+    if (ui_button(bid(t, 26), more, NULL, "more", B_FLAT | dis, "More")) {
         ui_menu *m = menu_new();
         int n = tab_edit_count(t);
+        menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+#ifndef __ANDROID__
+        menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
+#endif
+        menu_sep(m);
         menu_item(m, "Save (overwrite original)", "save", keymap_label("save"), run, t, A_SAVE, n > 0, 0);
         menu_item(m, "Save As...", "save", keymap_label("save_as"), run, t, A_SAVE_AS, n > 0, 0);
         menu_item(m, "Save optimized copy...", "save", keymap_label("save_optimized"), run, t, A_OPTIMIZE, doc, 0);
@@ -2810,7 +2833,7 @@ void tab_toolbar(tab *t, Rectangle area)
         menu_sep(m);
         menu_item(m, "Print...", "print", keymap_label("print"), run, t, A_PRINT, doc, 0);
         menu_item(m, "Print preview...", "print", keymap_label("print_preview"), run, t, A_PREVIEW, doc, 0);
-        menu_open_below(m, (Rectangle){save.x, arrow.y, save_w, arrow.height});
+        menu_open_below(m, more);
     }
 }
 
@@ -2918,12 +2941,13 @@ void tab_frame(tab *t, Rectangle area)
 {
     tab_poll(t);
     Rectangle full = area;
-    int shown = pt_settings_int(&app.settings, "show_sidebar");
+    int reading = app_reading();
+    int shown = !reading && pt_settings_int(&app.settings, "show_sidebar");
     if (t->narrow != t->was_narrow) {
         t->was_narrow = t->narrow;
         if (t->narrow) show_sidebar(t, 0, 0);
     }
-    if (!t->narrow && shown != t->side_target) show_sidebar(t, shown, 0);
+    if ((!t->narrow || reading) && shown != t->side_target) show_sidebar(t, shown, 1);
 
     float side = sidebar_width(t);
     if (!t->narrow && side > 1) {
@@ -2953,7 +2977,7 @@ void tab_frame(tab *t, Rectangle area)
         area.height -= fh;
     }
 
-    if ((t->narrow || t->options_row) && t->doc && tool_has_options(t)) {
+    if (!reading && (t->narrow || t->options_row) && t->doc && tool_has_options(t)) {
         Rectangle row = {area.x, area.y, area.width, OPTS_H};
         DrawRectangleRec(row, pal.window);
         ui_separator_h(row.x, row.x + row.width, row.y + row.height - 1);

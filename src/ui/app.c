@@ -253,6 +253,7 @@ int app_new_window(const char *adopt_file)
     return -1;
 }
 
+#ifndef __ANDROID__
 /* Hand a document tab (with its edits and undo history) to a new window. */
 static void move_to_new_window(tab *t)
 {
@@ -269,6 +270,7 @@ static void move_to_new_window(tab *t)
     else unlink(file);
     free(file);
 }
+#endif
 
 /* ---- appearance ---- */
 
@@ -317,13 +319,14 @@ static void set_interface_size(float size)
     if (size > 0) snprintf(value, sizeof value, "%g", size);
     pt_settings_set_str(&app.settings, "ui_scale", size > 0 ? value : "auto");
     ui.scale_choice = size;
+    ui.scale_chosen = 1;
     ui.scale = 0;
     ui.dirty = 1;
 }
 
 static void step_interface_size(int dir)
 {
-    float now = ui.scale_choice > 0 ? ui.scale_choice : ui.scale;
+    float now = ui.scale;
     float next = (floorf(now * 4 + 0.01f) + dir) / 4;
     set_interface_size(fminf(3, fmaxf(0.75f, next)));
 }
@@ -429,6 +432,42 @@ void app_about(void)
                 NULL, NULL);
 }
 
+#ifndef __ANDROID__
+static int fullscreen_pending;
+
+int app_fullscreen(void) { return IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE); }
+
+void app_toggle_fullscreen(void)
+{
+    fullscreen_pending = !fullscreen_pending;
+    ui.dirty = 1;
+}
+
+/* Between frames only: the resize it causes can arrive at once and reset the matrices a frame is drawing with, which
+ * leaves the interface's scale applied twice. */
+static void fullscreen_apply(void)
+{
+    if (!fullscreen_pending) return;
+    fullscreen_pending = 0;
+    ToggleBorderlessWindowed();
+    ui.dirty = 1;
+}
+#endif
+
+#define STAR_STATUS_S 2.0
+
+static void toggle_star(const char *path)
+{
+    pt_settings_toggle_starred(&app.settings, path);
+    status(pt_settings_is_starred(&app.settings, path) ? "Starred" : "Removed from starred", STAR_STATUS_S);
+}
+
+void app_star_current_doc(void)
+{
+    tab *t = app_current_doc();
+    if (t && t->path) toggle_star(t->path);
+}
+
 static void m_action(void *ctx, intptr_t a)
 {
     (void)ctx;
@@ -458,6 +497,10 @@ static void m_action(void *ctx, intptr_t a)
     case 18:
         pt_settings_set_int(&app.settings, "vim_key_hints", !pt_settings_int(&app.settings, "vim_key_hints"));
         break;
+    case 19: app_star_current_doc(); break;
+#ifndef __ANDROID__
+    case 20: app_toggle_fullscreen(); break;
+#endif
     }
 }
 
@@ -476,7 +519,9 @@ ui_menu *app_build_menu(tab *t)
 {
     ui_menu *m = menu_new();
     ui_menu *f = menu_sub(m, "File", "file");
+#ifndef __ANDROID__
     menu_item(f, "New window", "window", keymap_label("new_window"), m_action, NULL, 0, 1, 0);
+#endif
     menu_item(f, "Home", "home", keymap_label("home"), m_action, NULL, 1, 1, 0);
     menu_item(f, "Open...", "open", keymap_label("open"), m_action, NULL, 2, 1, 0);
     ui_menu *r = menu_sub(f, "Open recent", "recent");
@@ -484,6 +529,11 @@ ui_menu *app_build_menu(tab *t)
     for (int i = 0; recent && i < recent->n; i++)
         if (pt_exists(recent->v[i])) menu_item(r, pt_basename(recent->v[i]), "file", NULL, m_recent, NULL, i, 1, 0);
     if (menu_empty(r)) menu_item(r, "No recent files", "file", NULL, NULL, NULL, 0, 0, 0);
+    if (t && t->path) {
+        int starred = pt_settings_is_starred(&app.settings, t->path);
+        menu_item(f, starred ? "Unstar this file" : "Star this file", starred ? "star-filled" : "star",
+                  keymap_label("star_file"), m_action, NULL, 19, 1, 0);
+    }
     menu_item(f, "Close tab", "close", keymap_label("close_tab"), m_action, NULL, 3, 1, 0);
     menu_item(f, "Close window", "close", keymap_label("close_window"), m_action, NULL, 4, 1, 0);
     ui_menu *e = NULL, *tools = NULL, *pages = NULL;
@@ -503,6 +553,9 @@ ui_menu *app_build_menu(tab *t)
     menu_item(v, "Next tab", "next", keymap_label("tab.next"), m_action, NULL, 7, 1, 0);
     menu_item(v, "Previous tab", "prev", keymap_label("tab.prev"), m_action, NULL, 8, 1, 0);
     menu_sep(v);
+#ifndef __ANDROID__
+    menu_item(v, "Full screen", "maximize", keymap_label("fullscreen"), m_action, NULL, 20, 1, app_fullscreen());
+#endif
     menu_item(v, "Vim keys", "keyboard", keymap_label("vim_keys"), m_action, NULL, 17, 1, vim_keys_on());
     menu_item(v, "Vim key hints", "keyboard", NULL, m_action, NULL, 18, vim_keys_on(),
               pt_settings_int(&app.settings, "vim_key_hints"));
@@ -537,11 +590,13 @@ ui_menu *app_build_menu(tab *t)
 
 /* ---- the tab strip ---- */
 
+#ifndef __ANDROID__
 static void t_move(void *ctx, intptr_t a)
 {
     (void)a;
     move_to_new_window(ctx);
 }
+#endif
 
 static void t_close(void *ctx, intptr_t a)
 {
@@ -762,7 +817,9 @@ static void tab_strip(Rectangle r)
         }
         if (hover && ui.rpressed && w->kind == TAB_DOC) {
             ui_menu *m = menu_new();
+#ifndef __ANDROID__
             menu_item(m, "Move to new window", "new-window", NULL, t_move, w->doc, 0, 1, 0);
+#endif
             menu_item(m, "Close", "close", NULL, t_close, w->doc, 0, 1, 0);
             menu_open(m, ui.mouse);
         }
@@ -805,6 +862,8 @@ static void tab_strip(Rectangle r)
 
 /* ---- frame ---- */
 
+static ui_text home_search;
+
 static void global_shortcuts(void)
 {
     if (dialogs_open() || menu_is_open()) return;
@@ -812,12 +871,15 @@ static void global_shortcuts(void)
     if (keymap_pressed("close_tab")) app_close_tab(app.current);
     if (keymap_pressed("combine")) app_open_workspace(NULL);
     if (keymap_pressed("quit")) ipc_quit_all(), app_quit_request();
+#ifndef __ANDROID__
     if (keymap_pressed("new_window")) app_new_window(NULL);
+#endif
     if (keymap_pressed("palette")) palette_open();
     if (keymap_pressed("close_window")) app_quit_request();
     if (keymap_pressed("tab.next") && app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
     if (keymap_pressed("tab.prev") && app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
     if (keymap_pressed("home")) app_go_home();
+    if (keymap_pressed("star_file")) app_star_current_doc();
     if (keymap_pressed("shortcuts")) keymap_dialog();
     if (keymap_pressed("vim_keys")) m_action(NULL, 17);
     if (keymap_pressed("vim.command")) cmdline_open();
@@ -826,6 +888,7 @@ static void global_shortcuts(void)
         menu_keyboard();
     }
 #ifndef __ANDROID__
+    if (keymap_pressed("fullscreen")) app_toggle_fullscreen();
     if (keymap_pressed("ui.bigger")) step_interface_size(1);
     if (keymap_pressed("ui.smaller")) step_interface_size(-1);
     if (keymap_pressed("ui.auto")) set_interface_size(0);
@@ -858,6 +921,98 @@ static void handle_drops(void)
     pt_strs_free(&paths);
 }
 
+/* ---- reading mode: only the document, until the pointer reaches the top edge or a finger taps the page ---- */
+
+#define READING_REVEAL_H 8.0f
+#define READING_HINT_S 4.0
+#define READING_ANIM_S 0.2f
+#define READING_MAX_STEP_S 0.05f /* a frame after an idle wait moves the bars no further than this */
+#define READING_NOTE_H 28.0f
+#define READING_NOTE_PAD 12.0f
+#define READING_NOTE_MARGIN 12.0f
+
+static int reading_mode, reading_revealed;
+/* 1 = shown, 0 = hidden: the bars as part of the layout, and as revealed over the page */
+static float reading_layout = 1, reading_overlay;
+
+int app_reading(void) { return reading_mode && app_current_doc(); }
+
+void app_toggle_reading(void)
+{
+    reading_mode = !reading_mode;
+    reading_revealed = 0;
+    ui.dirty = 1;
+    if (!reading_mode) return;
+#ifdef __ANDROID__
+    status("Reading mode: tap the page for the toolbar", READING_HINT_S);
+#else
+    const char *key = keymap_label("reading_mode");
+    char *hint =
+        pt_format("Reading mode: move to the top edge for the toolbar%s%s", key ? ", leave with " : "", key ? key : "");
+    status(hint, READING_HINT_S);
+    free(hint);
+#endif
+}
+
+static void reading_update(int reading, float chrome_h)
+{
+    int blocked = menu_is_open() || dialogs_open();
+    if (!reading) reading_revealed = 0;
+    else if (!blocked) {
+#ifdef __ANDROID__
+        if (ui.pressed && ui.mouse.y > chrome_h) reading_revealed = !reading_revealed;
+#else
+        if (!ui.down) reading_revealed = ui.mouse.y < (reading_revealed ? chrome_h : READING_REVEAL_H);
+#endif
+    }
+    static double last;
+    float step = fminf((float)(ui.now - last), READING_MAX_STEP_S) / READING_ANIM_S;
+    last = ui.now;
+    float layout = reading ? fmaxf(0, reading_layout - step) : fminf(1, reading_layout + step);
+    float overlay = reading_revealed ? fminf(1, reading_overlay + step) : fmaxf(0, reading_overlay - step);
+    if (layout != reading_layout || overlay != reading_overlay) ui.dirty = 1;
+    reading_layout = layout, reading_overlay = overlay;
+}
+
+static float reading_ease(float v) { return v * v * (3 - 2 * v); }
+
+/* A message while the bars are hidden, so that it does not bring the footer back. */
+static void reading_note(void)
+{
+    float w =
+        fminf(text_width(app.status, FS_NORMAL, F_REGULAR) + 2 * READING_NOTE_PAD, ui.w - 2 * READING_NOTE_MARGIN);
+    Rectangle r = {(ui.w - w) / 2, ui.h - READING_NOTE_H - READING_NOTE_MARGIN, w, READING_NOTE_H};
+    DrawRectangleRounded(r, 0.3f, 6, pal.window);
+    char *e = elide_right(app.status, w - 2 * READING_NOTE_PAD, FS_NORMAL, F_REGULAR);
+    draw_text_in(e, r, FS_NORMAL, F_REGULAR, pal.window_text, 0);
+    free(e);
+}
+
+/* header, tabs and update bar with their top at y; returns their height */
+static float frame_chrome(tab *t, win_tab *cur, float y)
+{
+    Rectangle header = {0, y, ui.w, HEADER_H};
+    DrawRectangleRec(header, pal.window);
+    Rectangle menu_b = MENU_BUTTON;
+    menu_b.y += y;
+    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, keymap_tip("Menu", "app_menu")))
+        menu_open_below(app_build_menu(t), menu_b);
+    /* every header button: 32x32 on a 34 px step, glyphs (and the logo) 18 px, as in the toolbars */
+    Rectangle logo = {40, y + 6, 32, 32};
+    if (ui_hover(logo)) set_cursor(CUR_HAND);
+    if (ui_button(ui_id_str("logo", 0), logo, NULL, NULL, B_FLAT, "Home")) app_go_home();
+    draw_logo((Rectangle){logo.x + 7, logo.y + 7, 18, 18});
+    Rectangle tools = {74, y, ui.w - 80, HEADER_H};
+    if (t) tab_toolbar(t, tools);
+    else if (cur && cur->kind == TAB_WORKSPACE) workspace_toolbar(app.ws, tools);
+    else if (cur && cur->kind == TAB_COMPARE) compare_toolbar(cur->cmp, tools);
+
+    tab_strip((Rectangle){0, y + HEADER_H, ui.w, TABS_H});
+    float update_h = update_bar_height();
+    update_bar((Rectangle){0, y + HEADER_H + TABS_H, ui.w, update_h});
+    return HEADER_H + TABS_H + update_h;
+}
+
 static void frame(void)
 {
     ui_begin_frame();
@@ -871,47 +1026,56 @@ static void frame(void)
     tab *t = app_current_doc();
     win_tab *cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
 
-    /* header */
-    Rectangle header = {0, 0, ui.w, HEADER_H};
-    DrawRectangleRec(header, pal.window);
-    Rectangle menu_b = MENU_BUTTON;
-    if (ui_button(ui_id_str("menu", 0), menu_b, NULL, "menu", B_FLAT, keymap_tip("Menu", "app_menu")))
-        menu_open_below(app_build_menu(t), menu_b);
-    /* every header button: 32x32 on a 34 px step, glyphs (and the logo) 18 px, as in the toolbars */
-    Rectangle logo = {40, 6, 32, 32};
-    if (ui_hover(logo)) set_cursor(CUR_HAND);
-    if (ui_button(ui_id_str("logo", 0), logo, NULL, NULL, B_FLAT, "Home")) app_go_home();
-    draw_logo((Rectangle){logo.x + 7, logo.y + 7, 18, 18});
-    Rectangle tools = {74, 0, ui.w - 80, HEADER_H};
-    if (t) tab_toolbar(t, tools);
-    else if (cur && cur->kind == TAB_WORKSPACE) workspace_toolbar(app.ws, tools);
-    else if (cur && cur->kind == TAB_COMPARE) compare_toolbar(cur->cmp, tools);
-
-    tab_strip((Rectangle){0, HEADER_H, ui.w, TABS_H});
-    float update_h = update_bar_height();
-    update_bar((Rectangle){0, HEADER_H + TABS_H, ui.w, update_h});
-    Rectangle content = {0, HEADER_H + TABS_H + update_h, ui.w, ui.h - HEADER_H - TABS_H - update_h - STATUS_H};
+    float chrome_h = HEADER_H + TABS_H + update_bar_height();
+    reading_update(app_reading(), chrome_h);
+    float layout = reading_ease(reading_layout), bars = fmaxf(layout, reading_ease(reading_overlay));
+    int sliding = reading_layout < 1;
+    float top = sliding ? chrome_h * layout : frame_chrome(t, cur, 0);
+    Rectangle content = {0, top, ui.w, ui.h - top - STATUS_H * layout};
     cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
     t = app_current_doc();
+    /* a focused field takes the keys, and this one is not drawn on the other tabs to give them back */
+    if (!(cur && cur->kind == TAB_HOME) && ui.focus == &home_search) ui.focus = NULL;
     if (cur && cur->kind == TAB_HOME) home_frame(content);
     else if (cur && cur->kind == TAB_WORKSPACE) workspace_frame(app.ws, content);
     else if (cur && cur->kind == TAB_COMPARE) compare_frame(cur->cmp, content);
     else if (t) tab_frame(t, content);
 
+    /* while sliding or in reading mode the bars lie over the page, drawn after it and owning the mouse there */
+    if (sliding && bars > 0) {
+        float y = (bars - 1) * chrome_h;
+        ui_layer_begin(ui_id_str("reading-chrome", 0), (Rectangle){0, y, ui.w, chrome_h}, 0);
+        frame_chrome(t, cur, y);
+        ui_layer_end();
+        /* a button there may have closed or switched the tab */
+        t = app_current_doc();
+        cur = app.current >= 0 && app.current < app.tabs.n ? &app.tabs.v[app.current] : NULL;
+    }
+
     /* status line */
-    Rectangle bar = {0, ui.h - STATUS_H, ui.w, STATUS_H};
-    DrawRectangleRec(bar, pal.window);
-    ui_separator_h(0, ui.w, bar.y);
-    float msg_x = t ? tab_status(t, bar) : bar.x;
-    if (*app.status && ui.now < app.status_until) {
-        float w = text_width(app.status, FS_NORMAL, F_REGULAR) + 16;
-        Rectangle s = {msg_x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) - msg_x : ui.w),
-                       bar.height - 1};
-        DrawRectangleRec(s, pal.window);
-        char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
-        draw_text_in(e, (Rectangle){s.x + 8, s.y, s.width, s.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
-        free(e);
+    float bar_shown = cmdline_is_open() ? 1 : bars;
+    Rectangle bar = {0, ui.h - STATUS_H * bar_shown, ui.w, STATUS_H};
+    int message = *app.status && ui.now < app.status_until;
+    if (message && bar_shown <= 0) {
+        reading_note();
         ui_redraw_at(app.status_until);
+    }
+    if (bar_shown > 0) {
+        if (sliding) ui_layer_begin(ui_id_str("reading-status", 0), bar, 0);
+        DrawRectangleRec(bar, pal.window);
+        ui_separator_h(0, ui.w, bar.y);
+        float msg_x = t ? tab_status(t, bar) : bar.x;
+        if (message) {
+            float w = text_width(app.status, FS_NORMAL, F_REGULAR) + 16;
+            Rectangle s = {msg_x, bar.y + 1, fminf(w, t ? fmaxf(ui.w - PATH_WIDTH - 220, ui.w * 0.6f) - msg_x : ui.w),
+                           bar.height - 1};
+            DrawRectangleRec(s, pal.window);
+            char *e = elide_right(app.status, s.width - 16, FS_NORMAL, F_REGULAR);
+            draw_text_in(e, (Rectangle){s.x + 8, s.y, s.width, s.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+            free(e);
+            ui_redraw_at(app.status_until);
+        }
+        if (sliding) ui_layer_end();
     }
 
     /* keys: the current tab's, then the window's */
@@ -1239,6 +1403,9 @@ int pt_app_main(int argc, char **argv)
         gestures_poll();
         update_poll();
         file_dialogs_poll();
+#ifndef __ANDROID__
+        fullscreen_apply();
+#endif
         handle_drops();
         int focused = IsWindowFocused();
         if (focused && !was_focused) {
@@ -1297,6 +1464,7 @@ int pt_app_main(int argc, char **argv)
         if (app.tabs.v[i].kind == TAB_DOC) tab_free(app.tabs.v[i].doc);
         else if (app.tabs.v[i].kind == TAB_COMPARE) compare_free(app.tabs.v[i].cmp);
     if (app.ws) workspace_free(app.ws);
+    text_free(&home_search);
     render_stop();
     ipc_stop();
     update_stop();
@@ -1307,31 +1475,109 @@ int pt_app_main(int argc, char **argv)
     return 0;
 }
 
-/* ---- the Home tab: open a PDF, start Combine & split, or reopen a recent file (two-line rows) ---- */
+/* ---- the Home tab: open a PDF, start Combine & split, or reopen a starred or recent file (two-line rows) ---- */
 
 #define ROW_HEIGHT 48.0f
+#define HOME_ROWS_MAX 8
+#define HOME_HEADER_H (88.0f + 10 + 40 + 10 + 22 + 26) /* logo, name and tagline, down to the buttons */
+#define HOME_HINT_H 22.0f
+#define HOME_LIST_MIN_H (HOME_SECTION_H + 2 * ROW_HEIGHT)
+#define HOME_SECTIONS 2
+#define HOME_SECTION_H 30.0f
+#define HOME_SEARCH_H 30.0f
+#define HOME_SEARCH_GAP 10.0f
+#define HOME_LIST_PAD 2.0f
+#define HOME_LIST_GAP 10.0f
+#define HOME_MARGIN 20.0f
+#define HOME_SCROLLBAR_W 12.0f
+#define HOME_STAR 22.0f
+#define HOME_STAR_X 10.0f
+#define HOME_STAR_HIT_W 44.0f /* the full height of the row and wide enough for a finger */
+#define HOME_ROW_PAD 10.0f
 
-static float recent_scroll;
+enum { HOME_ROW_NONE, HOME_ROW_OPEN, HOME_ROW_STAR };
+
+static float home_scroll;
+
+/* The part of a path the row shows, so that searching for the home folder's name does not match every file. */
+static const char *home_shown_path(const char *path)
+{
+    const char *home = getenv("HOME");
+    size_t n = home ? strlen(home) : 0;
+    return n && !strncmp(path, home, n) ? path + n : path;
+}
+
+static void home_filter(pt_ints *rows, const pt_strs *list, const char *needle)
+{
+    int kept = 0;
+    for (int i = 0; i < rows->n; i++)
+        if (contains_nocase(home_shown_path(list->v[rows->v[i]]), needle)) rows->v[kept++] = rows->v[i];
+    rows->n = kept;
+}
+
+static int home_row(Rectangle r, Rectangle list, const char *path, int starred)
+{
+    int hover = ui_hover(r) && ui_hover(list);
+    Rectangle star = {r.x, r.y, HOME_STAR_HIT_W, r.height};
+    int on_star = hover && ui_hover(star);
+    if (hover) {
+        DrawRectangleRounded(r, 0.2f, 6, with_alpha(pal.highlight, 60));
+        set_cursor(CUR_HAND);
+    }
+    Rectangle glyph = {r.x + HOME_STAR_X, r.y + (r.height - HOME_STAR) / 2, HOME_STAR, HOME_STAR};
+    if (starred) draw_icon("star-filled", glyph, pal.highlight);
+    else draw_icon("star", glyph, on_star ? pal.text : pal.disabled_text);
+    float tx = r.x + HOME_STAR_HIT_W, tw = r.width - HOME_STAR_HIT_W - HOME_ROW_PAD;
+    char *name = elide_middle(pt_basename(path), tw, FS_NORMAL, F_BOLD);
+    draw_text_in(name, (Rectangle){tx, r.y + 3, tw, r.height / 2}, FS_NORMAL, F_BOLD, pal.text, -1);
+    free(name);
+    const char *home = getenv("HOME");
+    char *dir = pt_dirname(path), *folder = dir;
+    if (home && !strncmp(dir, home, strlen(home)))
+        folder = pt_format("~%s", dir + strlen(home)), free(dir), dir = folder;
+    char *f = elide_middle(folder, tw, FS_NORMAL * 0.9f, F_REGULAR);
+    draw_text_in(f, (Rectangle){tx, r.y + r.height / 2, tw, r.height / 2 - 3}, FS_NORMAL * 0.9f, F_REGULAR,
+                 pal.disabled_text, -1);
+    free(f);
+    free(dir);
+    if (on_star) ui_tooltip(ui_id_str(path, 2), star, starred ? "Remove the star" : "Star this file");
+    else if (hover) ui_tooltip(ui_id_str(path, 1), r, path);
+    if (!hover || !ui.released) return HOME_ROW_NONE;
+    return on_star ? HOME_ROW_STAR : HOME_ROW_OPEN;
+}
 
 void home_frame(Rectangle area)
 {
     DrawRectangleRec(area, pal.window);
-    const pt_strs *recent = pt_settings_list(&app.settings, "recent_files");
-    pt_ints shown = {0};
-    for (int i = 0; recent && i < recent->n; i++)
-        if (pt_exists(recent->v[i])) pt_push(shown, i);
+    const pt_strs *lists[HOME_SECTIONS] = {pt_settings_list(&app.settings, "starred_files"),
+                                           pt_settings_list(&app.settings, "recent_files")};
+    static const char *const headings[HOME_SECTIONS] = {"Starred", "Recent"};
+    pt_ints shown[HOME_SECTIONS] = {{0}, {0}};
+    for (int s = 0; s < HOME_SECTIONS; s++)
+        for (int i = 0; lists[s] && i < lists[s]->n; i++)
+            if (pt_exists(lists[s]->v[i]) && (s == 0 || !pt_settings_is_starred(&app.settings, lists[s]->v[i])))
+                pt_push(shown[s], i);
+    /* sized before filtering, so that the search field stays put under the caret while typing */
+    int total = shown[0].n + shown[1].n, sections = (shown[0].n > 0) + (shown[1].n > 0);
+    int rows = total < HOME_ROWS_MAX ? total : HOME_ROWS_MAX;
+    float full_h = rows * ROW_HEIGHT + sections * HOME_SECTION_H + HOME_LIST_PAD;
     float w = fminf(620, area.width - 40);
-    int rows = shown.n < 8 ? shown.n : 8;
-    float list_h = rows ? rows * ROW_HEIGHT + 2 : 0;
-    float h = 88 + 10 + 40 + 10 + 22 + 26 + 44 + 26 + (rows ? 30 + list_h + 10 : 0) + 22;
-    float x = area.x + (area.width - w) / 2, y = area.y + fmaxf(20, (area.height - h) / 3);
-    draw_logo((Rectangle){x + (w - 88) / 2, y, 88, 88});
-    y += 98;
-    draw_text_in(APP_NAME, (Rectangle){x, y, w, 40}, FS_NORMAL * 1.8f, F_BOLD, pal.window_text, 0);
-    y += 50;
-    draw_text_in("View, fill, annotate, redact, sign and merge PDFs", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR,
-                 pal.disabled_text, 0);
-    y += 48;
+    float fixed_h = 44 + 26 + (total ? HOME_SEARCH_H + HOME_SEARCH_GAP + HOME_LIST_GAP : 0);
+    /* the files matter more than the logo and the hint when the window is too short for all of them */
+    int header = !total || area.height - 2 * HOME_MARGIN - fixed_h - HOME_HEADER_H - HOME_HINT_H >= HOME_LIST_MIN_H;
+    if (header) fixed_h += HOME_HEADER_H + HOME_HINT_H;
+    float list_h = total ? fmaxf(ROW_HEIGHT, fminf(full_h, area.height - 2 * HOME_MARGIN - fixed_h)) : 0;
+    float h = fixed_h + list_h;
+    float x = area.x + (area.width - w) / 2, y = area.y + fmaxf(HOME_MARGIN, (area.height - h) / 3);
+    if (header) {
+        draw_logo((Rectangle){x + (w - 88) / 2, y, 88, 88});
+        y += 98;
+        draw_text_in(APP_NAME, (Rectangle){x, y, w, 40}, FS_NORMAL * 1.8f, F_BOLD, pal.window_text, 0);
+        y += 50;
+        draw_text_in("View, fill, annotate, redact, sign and merge PDFs", (Rectangle){x, y, w, 22}, FS_NORMAL,
+                     F_REGULAR, pal.disabled_text, 0);
+        y += 48;
+    }
     float bw = fmaxf(170, button_width("Combine & split PDFs...", "merge", 0) + 20);
     float bx = x + (w - (bw * 2 + 12)) / 2;
     if (ui_button(ui_id_str("home-open", 0), (Rectangle){bx, y, bw, 44}, "Open PDF...", "open", 0, NULL))
@@ -1340,54 +1586,68 @@ void home_frame(Rectangle area)
                   0, NULL))
         app_open_workspace(NULL);
     y += 44 + 26;
-    if (shown.n) {
-        draw_text_in("Recent", (Rectangle){x, y, w, 24}, FS_NORMAL, F_BOLD, pal.window_text, -1);
-        y += 30;
+    if (total) {
+        home_search.placeholder = "Search starred and recent files";
+        home_search.size = FS_NORMAL;
+        int ev = ui_textfield(ui_id_str("home-search", 0), &home_search, (Rectangle){x, y, w, HOME_SEARCH_H}, 1);
+        if (ev & TE_CANCEL) text_set(&home_search, ""), ev |= TE_CHANGED;
+        if (ev & TE_CHANGED) home_scroll = 0;
+        y += HOME_SEARCH_H + HOME_SEARCH_GAP;
+        for (int s = 0; s < HOME_SECTIONS; s++) home_filter(&shown[s], lists[s], text_get(&home_search));
+        int matches = shown[0].n + shown[1].n, matching_sections = (shown[0].n > 0) + (shown[1].n > 0);
+        float content = matches * ROW_HEIGHT + matching_sections * HOME_SECTION_H + HOME_LIST_PAD;
         Rectangle list = {x, y, w, list_h};
-        if (ui_hover(list) && ui.wheel) recent_scroll -= ui.wheel * ROW_HEIGHT;
-        recent_scroll = fminf(fmaxf(recent_scroll, 0), fmaxf(0, shown.n * ROW_HEIGHT - list_h));
+        if (ui_hover(list) && ui.wheel) home_scroll -= ui.wheel * ROW_HEIGHT;
+        home_scroll = fminf(fmaxf(home_scroll, 0), fmaxf(0, content - list_h));
+        float row_w = content > list_h ? w - HOME_SCROLLBAR_W : w;
+        ui_scrollbar(ui_id_str("home-list", 0), (Rectangle){x + w - HOME_SCROLLBAR_W, y, HOME_SCROLLBAR_W, list_h},
+                     content, list_h, &home_scroll);
+        char *picked = NULL;
+        int action = HOME_ROW_NONE;
+        if ((ev & TE_SUBMIT) && matches) {
+            int s = shown[0].n ? 0 : 1;
+            picked = pt_strdup(lists[s]->v[shown[s].v[0]]);
+            action = HOME_ROW_OPEN;
+        }
         ui_scissor_begin(list);
-        const char *home = getenv("HOME");
-        for (int k = 0; k < shown.n; k++) {
-            const char *path = recent->v[shown.v[k]];
-            Rectangle r = {x + 2, y + 2 + k * ROW_HEIGHT - recent_scroll, w - 4, ROW_HEIGHT - 4};
-            if (r.y + r.height < list.y || r.y > list.y + list.height) continue;
-            int hover = ui_hover(r);
-            if (hover) {
-                DrawRectangleRounded(r, 0.2f, 6, with_alpha(pal.highlight, 60));
-                set_cursor(CUR_HAND);
-            }
-            draw_icon("file", (Rectangle){r.x + 10, r.y + (r.height - 22) / 2, 22, 22}, pal.text);
-            float tx = r.x + 10 + 22 + 12, tw = r.width - (tx - r.x) - 10;
-            char *name = elide_middle(pt_basename(path), tw, FS_NORMAL, F_BOLD);
-            draw_text_in(name, (Rectangle){tx, r.y + 3, tw, r.height / 2}, FS_NORMAL, F_BOLD, pal.text, -1);
-            free(name);
-            char *dir = pt_dirname(path), *folder = dir;
-            if (home && !strncmp(dir, home, strlen(home)))
-                folder = pt_format("~%s", dir + strlen(home)), free(dir), dir = folder;
-            char *f = elide_middle(folder, tw, FS_NORMAL * 0.9f, F_REGULAR);
-            draw_text_in(f, (Rectangle){tx, r.y + r.height / 2, tw, r.height / 2 - 3}, FS_NORMAL * 0.9f, F_REGULAR,
-                         pal.disabled_text, -1);
-            free(f);
-            free(dir);
-            ui_tooltip(ui_id_str(path, 1), r, path);
-            if (hover && ui.released) {
-                pt_strs paths = {0};
-                pt_push(paths, pt_strdup(path));
-                app_open_paths(&paths);
-                pt_strs_free(&paths);
-                break;
+        if (!matches)
+            draw_text_in("No matching files", (Rectangle){x, y, w, ROW_HEIGHT}, FS_NORMAL, F_REGULAR, pal.disabled_text,
+                         0);
+        float cy = y + HOME_LIST_PAD / 2 - home_scroll;
+        for (int s = 0; s < HOME_SECTIONS; s++) {
+            if (!shown[s].n) continue;
+            draw_text_in(headings[s], (Rectangle){x, cy, row_w, HOME_SECTION_H}, FS_NORMAL, F_BOLD, pal.window_text,
+                         -1);
+            cy += HOME_SECTION_H;
+            for (int k = 0; k < shown[s].n; k++, cy += ROW_HEIGHT) {
+                Rectangle r = {x + HOME_LIST_PAD, cy + HOME_LIST_PAD, row_w - 2 * HOME_LIST_PAD,
+                               ROW_HEIGHT - 2 * HOME_LIST_PAD};
+                if (r.y + r.height < list.y || r.y > list.y + list.height) continue;
+                const char *path = lists[s]->v[shown[s].v[k]];
+                int hit = home_row(r, list, path, s == 0);
+                if (hit && !picked) picked = pt_strdup(path), action = hit;
             }
         }
         ui_scissor_end();
-        y += list_h + 10;
+        y += list_h + HOME_LIST_GAP;
+        if (action == HOME_ROW_STAR) toggle_star(picked);
+        else if (action == HOME_ROW_OPEN) {
+            text_set(&home_search, "");
+            home_scroll = 0;
+            pt_strs paths = {0};
+            pt_push(paths, pt_strdup(picked));
+            app_open_paths(&paths);
+            pt_strs_free(&paths);
+        }
+        free(picked);
     }
 #ifndef __ANDROID__
     /* files cannot be dropped onto a phone's window */
-    draw_text_in("or drop a PDF anywhere in this window", (Rectangle){x, y, w, 22}, FS_NORMAL, F_REGULAR,
-                 pal.disabled_text, 0);
+    if (header)
+        draw_text_in("or drop a PDF anywhere in this window", (Rectangle){x, y, w, HOME_HINT_H}, FS_NORMAL, F_REGULAR,
+                     pal.disabled_text, 0);
 #endif
-    pt_vec_free(shown);
+    for (int s = 0; s < HOME_SECTIONS; s++) pt_vec_free(shown[s]);
 }
 
 /* ---- macOS: documents opened from Finder ----

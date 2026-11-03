@@ -11,6 +11,9 @@
 #define REPO_URL "https://github.com/vamsikalagaturu/pdf-tools"
 /* logical width below which toolbars collapse and the sidebar overlays the page (phones) */
 #define NARROW_W 760.0f
+/* logical window size below which the narrow toolbar and the compact Home page no longer fit */
+#define WINDOW_MIN_W 360.0f
+#define WINDOW_MIN_H 400.0f
 
 /* ---- theme ---- */
 typedef struct {
@@ -82,6 +85,7 @@ typedef struct {
     float scale, w, h;  /* logical window size */
     float density;      /* framebuffer pixels per screen unit: 2 on a Retina Mac, else 1 */
     float scale_choice; /* interface size from the settings; 0 = automatic */
+    int scale_chosen;   /* the user changed the interface size in this run, which outranks PDF_TOOLS_SCALE */
     Vector2 mouse;
     int pressed, released, down, rpressed, rreleased, dclick, mpressed;
     float wheel, wheel_x;
@@ -406,6 +410,13 @@ int app_new_window(const char *adopt_file); /* 0 when the new window process sta
 void app_set_theme(const char *mode);
 void app_about(void);
 tab *app_current_doc(void);
+void app_star_current_doc(void);
+int app_reading(void); /* reading mode is on and a document is showing */
+void app_toggle_reading(void);
+#ifndef __ANDROID__
+int app_fullscreen(void);
+void app_toggle_fullscreen(void);
+#endif
 /* t's pages were rebuilt (an edit, a save): the window keeps showing its last frame until they are sharp again,
  * briefly, so the change appears at once instead of through blurred or white pages */
 void app_hold_frames(tab *t);

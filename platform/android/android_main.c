@@ -662,11 +662,12 @@ void pt_android_frame(void)
     /* typed text is not input raylib knows about: it needs a frame of its own */
     if (nchars) ui.dirty = 1;
 
-    /* Back closes what is open (as Escape does); with nothing open it offers to close the app */
+    /* Back closes what is open (as Escape does), reading mode too; with nothing open it offers to close the app */
     if (back_pressed) {
         back_pressed = 0;
         tab *t = app_current_doc();
-        if (dialogs_open() || menu_is_open() || ui.focus || (t && tab_escape_pending(t))) send_key(KEY_ESCAPE, 0);
+        if (dialogs_open() || menu_is_open() || ui.focus || app_reading() || (t && tab_escape_pending(t)))
+            send_key(KEY_ESCAPE, 0);
         else question_box("Close PDF Tools", "Close PDF Tools?", "Close", "Cancel", close_answered, NULL);
     }
     int want = ui.focus != NULL;

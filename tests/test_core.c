@@ -388,6 +388,15 @@ static void test_settings(void)
     pt_settings_load(&s, path);
     const pt_strs *back = pt_settings_list(&s, "favourite_colours");
     CHECK(back && back->n == 2 && !strcmp(back->v[1], "#d93025"));
+    pt_settings_toggle_starred(&s, "/a.pdf");
+    pt_settings_toggle_starred(&s, "/b.pdf");
+    CHECK(pt_settings_is_starred(&s, "/a.pdf") && pt_settings_is_starred(&s, "/b.pdf"));
+    pt_settings_free(&s);
+    pt_settings_load(&s, path);
+    const pt_strs *starred = pt_settings_list(&s, "starred_files");
+    CHECK(starred && starred->n == 2 && !strcmp(starred->v[0], "/b.pdf"));
+    pt_settings_toggle_starred(&s, "/b.pdf");
+    CHECK(!pt_settings_is_starred(&s, "/b.pdf") && pt_settings_is_starred(&s, "/a.pdf"));
     pt_settings_free(&s);
     pt_strs_free(&fav);
     free(path);
