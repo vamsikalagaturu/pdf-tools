@@ -12,9 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#ifdef _WIN32
-#include "pt_win32.h"
-#else
+#ifndef _WIN32
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>

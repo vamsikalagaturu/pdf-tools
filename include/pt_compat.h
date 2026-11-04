@@ -77,5 +77,8 @@ void pt_win_init(void);                      /* HOME from USERPROFILE when unset
 void pt_win_detach_console(void);            /* drops the console when no shell shares it (started from Explorer) */
 int pt_win_same_file(const char *a, const char *b); /* 1 same file, 0 different, -1 when either cannot be opened */
 char *pt_win_font_file(const char *family, int bold, int italic); /* an installed .ttf/.otf (malloc'd), or NULL */
+/* argv[0] searched on PATH, without a console window; wait: its exit code once it ends, else 0 as soon as it started;
+ * -1 when it could not start */
+int pt_win_run(char *const argv[], int wait);
 #endif
 #endif
