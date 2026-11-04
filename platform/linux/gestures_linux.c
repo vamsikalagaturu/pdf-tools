@@ -19,6 +19,18 @@ Display *glfwGetX11Display(void);
 Window glfwGetX11Window(void *window);
 #define GLFW_PLATFORM_WAYLAND 0x00060003
 #define GLFW_PLATFORM_X11 0x00060004
+#define GLFW_WAYLAND_APP_ID 0x00026001
+
+void glfwWindowHintString(int hint, const char *value);
+void __real_glfwDefaultWindowHints(void);
+
+/* Compositors match a window to its desktop entry, for its name and icon, by this id. raylib resets the hints right
+ * before creating the window, so the only place to set it is the reset itself (linked with --wrap). */
+void __wrap_glfwDefaultWindowHints(void)
+{
+    __real_glfwDefaultWindowHints();
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "pdf-tools");
+}
 
 /* both report the scale since the pinch began; ui_add_pinch takes the change since its last call. The events come
  * while GLFW reads the display, and ui_add_pinch marks the frame dirty, so the main loop does not sleep past them. */

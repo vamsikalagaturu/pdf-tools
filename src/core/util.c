@@ -267,7 +267,7 @@ char *pt_stem(const char *path)
     return s;
 }
 
-char *pt_exe_dir(void)
+char *pt_exe_path(void)
 {
     char path[PATH_MAX] = "";
 #ifdef __APPLE__
@@ -280,7 +280,14 @@ char *pt_exe_dir(void)
     if (n <= 0) return NULL;
     path[n] = 0;
 #endif
-    return pt_dirname(path);
+    return pt_strdup(path);
+}
+
+char *pt_exe_dir(void)
+{
+    char *path = pt_exe_path(), *dir = path ? pt_dirname(path) : NULL;
+    free(path);
+    return dir;
 }
 
 char *pt_dirname(const char *path)

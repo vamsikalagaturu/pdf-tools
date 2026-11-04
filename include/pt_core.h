@@ -64,6 +64,7 @@ char *pt_realpath(const char *path);       /* absolute; links resolved when the 
 const char *pt_basename(const char *path); /* points into path */
 char *pt_stem(const char *path);
 char *pt_dirname(const char *path); /* "." for a bare name */
+char *pt_exe_path(void);            /* the running program, or NULL */
 char *pt_exe_dir(void);             /* the folder of the running program, or NULL */
 char *pt_join(const char *dir, const char *name);
 
@@ -921,7 +922,10 @@ extern const int pt_asset_logo_svg_size;
 extern const unsigned char pt_asset_desktop[];
 extern const int pt_asset_desktop_size;
 
-/* ---- release.c: what the window's update check reads from a GitHub release (no network here) ---- */
+#define APP_NAME "PDF Tools"
+#define REPO_URL "https://github.com/vamsikalagaturu/pdf-tools"
+
+/* ---- release.c: what an update check reads from a GitHub release (no network here) ---- */
 /* <0, 0 or >0 as a is older than, the same as or newer than b: dot-separated numbers, a leading v ignored, a
  * missing part counting as 0 ("1.2" == "1.2.0") */
 int pt_version_compare(const char *a, const char *b);
@@ -952,6 +956,51 @@ typedef enum {
 /* the release asset that updates such an install on `arch` ("x86_64", "aarch64"); NULL when releases have none */
 char *pt_update_asset(pt_install_kind kind, const char *arch);
 int pt_sha256_file(const char *path, char hex[65]); /* lowercase hex; 0, or -1 when the file cannot be read */
+
+/* ---- update.c: checking for and installing a release; the check and the install block ---- */
+typedef enum { PT_UPDATE_DOWNLOADING, PT_UPDATE_INSTALLING } pt_update_phase;
+
+typedef struct {
+    fz_context *ctx; /* for the check */
+    pt_install_kind install;
+    char *asset;
+    char *target; /* the AppImage, the tarball's folder or prefix, the Windows folder, the .app; Android: cache/share */
+    pt_release rel;
+    char *part; /* the download, beside its destination */
+    int failed;
+    char error[1024];
+    char *exe;   /* the installed program */
+    char *stage; /* Windows: the unpacked folder, for pt_update_windows_swap */
+    /* another thread goes through pt_update_cancel and pt_update_phase_of */
+    int cancel;
+    long pid;
+    pt_update_phase phase;
+} pt_update;
+
+const char *pt_update_arch(void); /* this build's architecture, for pt_update_asset */
+/* a test hook: GitHub's releases/latest answer from elsewhere (a local server), which may then be plain http; NULL or
+ * empty for GitHub */
+void pt_update_use_url(const char *url);
+/* What the install of `exe` is and the file or folder an update replaces (*where, malloc'd); PT_INSTALL_NONE when the
+ * program cannot replace itself. A folder is swapped whole, so it qualifies only when it holds nothing but the
+ * package's files; a shared prefix (~/.local, /usr/local) gets its files replaced one by one instead, when the user
+ * may. */
+pt_install_kind pt_update_detect(const char *exe, char **where);
+const char *pt_update_page(const pt_release *rel); /* the release's web page, or the releases page */
+void pt_update_check(pt_update *u);                /* needs ctx, and asset unless none fits; fills rel, or failed */
+/* sets up u to install rel, whose url and sha256 are given */
+void pt_update_prepare(pt_update *u, pt_install_kind kind, const char *asset, const char *target,
+                       const pt_release *rel);
+void pt_update_install(pt_update *u); /* sets exe or stage, or failed */
+void pt_update_cancel(pt_update *u);
+pt_update_phase pt_update_phase_of(pt_update *u);
+void pt_update_clear(pt_update *u);    /* frees what u holds, except ctx */
+void pt_remove_tree(const char *path); /* links are removed, not followed */
+#ifdef _WIN32
+/* starts the helper that swaps u's stage in once this process has exited, and optionally starts the new program; 0 or
+ * -1 */
+int pt_update_windows_swap(pt_update *u, int restart);
+#endif
 
 #ifndef _WIN32
 /* PT_INSTALL_PREFIX: PREFIX (malloc'd) when `exe` is PREFIX/bin/pdf-tools beside a PREFIX/share/pdf-tools folder,

@@ -680,6 +680,21 @@ static void test_comments(const char *statement)
     free(h), free(n), free(r), free(md), free(js);
 }
 
+#ifndef _WIN32
+static void test_update_errors(void)
+{
+    CHECK(run("update", "--bogus", NULL) == FAILED && has("{\"error\":\"usage:"));
+    CHECK(run("update", "extra", NULL) == FAILED && has("{\"error\":\"usage:"));
+    setenv("XDG_DATA_HOME", tmpdir, 1);
+    setenv("PDF_TOOLS_UPDATE_URL", "ftp://localhost/latest", 1);
+    CHECK(run("update", "--check", NULL) == FAILED && one_object() && has("Refusing"));
+    setenv("PDF_TOOLS_UPDATE_URL", "http://127.0.0.1:1/latest", 1);
+    CHECK(run("update", "--check", NULL) == FAILED && one_object() && has("\"error\":"));
+    unsetenv("PDF_TOOLS_UPDATE_URL");
+    unsetenv("XDG_DATA_HOME");
+}
+#endif
+
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw)
 {
     (void)st, (void)flag, (void)ftw;
@@ -722,6 +737,9 @@ int main(int argc, char **argv)
     test_owner_only_encryption(statement);
     test_other_formats(statement);
     test_comments(statement);
+#ifndef _WIN32
+    test_update_errors();
+#endif
     free(statement), free(form);
     fz_drop_context(ctx);
     if (nftw(tmpdir, remove_entry, 8, FTW_DEPTH | FTW_PHYS)) failures++;
