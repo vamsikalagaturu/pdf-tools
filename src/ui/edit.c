@@ -16,6 +16,7 @@
 #define OPTS_H 40.0f
 /* "100%" with a few pixels each side, so it sits close to the zoom buttons */
 #define ZOOM_LABEL_W 42.0f
+#define ZOOM_BUTTON_W 24.0f /* narrower than the other buttons, to keep their glyphs close to the percentage */
 
 static unsigned bid(tab *t, int k) { return ui_id(t, 60000 + k); }
 
@@ -133,6 +134,7 @@ enum {
     A_ZOOM_OUT,
     A_FIT,
     A_FIT_HEIGHT,
+    A_STAR,
     A_PREV,
     A_NEXT,
     A_BACK,
@@ -152,6 +154,9 @@ enum {
     A_SPLIT_VIEW, /* + split_mode */
     A_SPLIT_VIEW_LAST = A_SPLIT_VIEW + SPLIT_STACKED,
     A_PRESENT,
+    A_READING,
+    A_DOCUMENT_DARK,
+    A_FULLSCREEN,
     A_COMPARE,
     A_OCR,
     A_CERT,
@@ -250,6 +255,7 @@ static void run(void *ctx, intptr_t a)
     case A_ZOOM_OUT: zoom_by(t, 1 / ZOOM_STEP); break;
     case A_FIT: zoom_to(t, 0, FIT_WIDTH); break;
     case A_FIT_HEIGHT: zoom_to(t, 0, FIT_HEIGHT); break;
+    case A_STAR: app_star_current_doc(); break;
     case A_PREV: tab_step_page(t, -1); break;
     case A_GOTO: ask_goto(t); break;
     case A_NEXT: tab_step_page(t, 1); break;
@@ -284,6 +290,11 @@ static void run(void *ctx, intptr_t a)
         break;
     }
     case A_PRESENT: present_start(t); break;
+    case A_READING: app_toggle_reading(); break;
+    case A_DOCUMENT_DARK: app_toggle_document_dark(); break;
+#ifndef __ANDROID__
+    case A_FULLSCREEN: app_toggle_fullscreen(); break;
+#endif
     case A_COMPARE: compare_start(t); break;
     case A_OCR: ocr_dialog(t); break;
     case A_CERT: cert_sign_start(t); break;
@@ -292,6 +303,7 @@ static void run(void *ctx, intptr_t a)
         int pt = pt_settings_int(&app.settings, "line_numbers_size") + (a == A_NUMBERS_BIGGER ? 1 : -1);
         if (pt < PT_LINE_NUMBERS_MIN_PT || pt > PT_LINE_NUMBERS_MAX_PT) break;
         pt_settings_set_int(&app.settings, "line_numbers_size", pt);
+        line_numbers_changed();
         char msg[48];
         snprintf(msg, sizeof msg, "Line numbers %d pt", pt);
         status(msg, 2);
@@ -431,6 +443,9 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         menu_item(ln, "Smaller numbers", "zoom-out", keymap_label("line_numbers.smaller"), run, t, A_NUMBERS_SMALLER,
                   on && size > PT_LINE_NUMBERS_MIN_PT, 0);
         menu_item(view, "Presentation", "presentation", keymap_label("present"), run, t, A_PRESENT, doc, 0);
+        menu_item(view, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(view, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
         menu_sep(view);
         menu_item(view, "Zoom in", "zoom-in", keymap_label("zoom_in"), run, t, A_ZOOM_IN, doc, 0);
         menu_item(view, "Zoom out", "zoom-out", keymap_label("zoom_out"), run, t, A_ZOOM_OUT, doc, 0);
@@ -576,6 +591,8 @@ static const struct {
     {"page.prev", A_PREV},
     {"page.next", A_NEXT},
     {"present", A_PRESENT},
+    {"reading_mode", A_READING},
+    {"document_dark", A_DOCUMENT_DARK},
     {"bookmark", A_BOOKMARK},
     {"nav.back", A_BACK},
     {"nav.forward", A_FORWARD},
@@ -1450,6 +1467,51 @@ static int caret_motion(tab *t, int key, int mods, int g, int count)
     return 1;
 }
 
+/* The top line of the column beside `from` towards dir on a page's lines, or of the page's first or last column with
+ * from NULL. Columns lie wholly apart: an indented block in a single column is no column of its own. -1 when none. */
+static int column_top(const pt_text_lines *l, const pt_text_line *from, int dir)
+{
+    const pt_text_line *column = NULL;
+    for (int i = 0; i < l->n; i++) {
+        const pt_text_line *c = &l->v[i];
+        if (from && (dir > 0 ? c->col_x0 < from->col_x1 : c->col_x1 > from->col_x0)) continue;
+        if (!column || (dir > 0 ? c->col_x0 < column->col_x0 : c->col_x0 > column->col_x0)) column = c;
+    }
+    int top = -1;
+    for (int i = 0; column && i < l->n; i++) {
+        const pt_text_line *c = &l->v[i];
+        int same = c->col_x0 < column->col_x1 && c->col_x1 > column->col_x0;
+        if (same && (top < 0 || c->r.y0 < l->v[top].r.y0)) top = i;
+    }
+    return top;
+}
+
+/* ]c, [c: to the top of the next or previous column, on to the next page's first or the previous page's last */
+static void caret_column_step(tab *t, int dir, int times)
+{
+    if (!caret_ready(t)) return;
+    pt_text_lines lines = {0};
+    caret_spot s = t->at;
+    for (int n = 0; n < times; n++) {
+        caret_lines(t, s.page, &lines);
+        int i = lines.n ? spot_line(t, &lines, s) : -1, top = i >= 0 ? column_top(&lines, &lines.v[i], dir) : -1;
+        int page = s.page;
+        for (int o = order_index(t, page) + dir; top < 0 && o >= 0 && o < t->st.order.n; o += dir) {
+            page = t->st.order.v[o];
+            caret_lines(t, page, &lines);
+            top = column_top(&lines, NULL, dir);
+        }
+        if (top < 0) break;
+        s = nearest_in_line(t, page, lines.v[top].r, lines.v[top].r.x0, s);
+        line_hint.t = t, line_hint.at = s, line_hint.line = top;
+    }
+    pt_vec_free(lines);
+    if (s.page != t->at.page) vim_page(t, order_index(t, s.page));
+    t->at = s;
+    keep_caret_x(t);
+    caret_follow(t);
+}
+
 /* v, V and Ctrl+V start (or end) a selection from the caret; y and a end one; H/J/K/L grow a block; 0 for other keys */
 static int caret_mode_key(tab *t, int key, int mods, int count)
 {
@@ -2196,6 +2258,7 @@ static int vim_key(tab *t, int key, int mods)
         int dir = vim.bracket;
         vim_reset();
         if (keymap_is("vim.item", key, mods)) select_item(t, dir, times);
+        else if (keymap_is("vim.column", key, mods)) caret_column_step(t, dir, times);
         return 0;
     }
     if (vim.d) {
@@ -2446,7 +2509,8 @@ void tab_shortcuts(tab *t)
     if (keymap_pressed("context_menu")) context_menu(t);
     vim_keys(t);
     if (ui_shortcut(0, 0, KEY_ESCAPE)) {
-        if (t->side_focus) t->side_focus = 0;
+        if (app_reading() && !tab_escape_pending(t)) app_toggle_reading();
+        else if (t->side_focus) t->side_focus = 0;
         else if (t->pop.kind != POP_NONE) close_popover(t, 0);
         else if (t->caret > CARET_ON) t->caret = CARET_ON;
         else if (t->find_open) hide_find(t);
@@ -2680,7 +2744,17 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_item(m, "Fit height", "fit-height", keymap_label("fit_height"), run, t, A_FIT_HEIGHT, doc, 0);
         menu_item(m, "Continuous scroll", "continuous", keymap_label("continuous"), run, t, A_CONTINUOUS, doc,
                   continuous());
+        int starred = t->path && pt_settings_is_starred(&app.settings, t->path);
+        menu_item(m, starred ? "Unstar this file" : "Star this file", starred ? "star-filled" : "star",
+                  keymap_label("star_file"), run, t, A_STAR, t->path != NULL, 0);
+        menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(m, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
+#ifndef __ANDROID__
+        menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
+#endif
         menu_sep(m);
+        menu_item(m, "Save (overwrite original)", "save", keymap_label("save"), run, t, A_SAVE, n > 0, 0);
         menu_item(m, "Save As...", "save", keymap_label("save_as"), run, t, A_SAVE_AS, n > 0, 0);
         menu_item(m, "Save optimized copy...", "save", keymap_label("save_optimized"), run, t, A_OPTIMIZE, doc, 0);
         menu_item(m, "Export pages...", "export", keymap_label("export"), run, t, A_EXPORT, doc, 0);
@@ -2695,10 +2769,6 @@ static void narrow_toolbar(tab *t, Rectangle area)
         menu_open_below(m, more);
     }
     rx -= 34;
-    if (ui_button(bid(t, 25), (Rectangle){rx, y, 32, h}, NULL, "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
-                  keymap_tip("Save (overwrite original)", "save")))
-        run(t, A_SAVE);
-    rx -= 34;
     if (ui_button(bid(t, 24), (Rectangle){rx, y, 32, h}, NULL, "find", (t->find_open ? B_CHECKED : B_FLAT) | dis,
                   keymap_tip("Find", "find"))) {
         if (t->find_open) hide_find(t);
@@ -2709,8 +2779,7 @@ static void narrow_toolbar(tab *t, Rectangle area)
 void tab_toolbar(tab *t, Rectangle area)
 {
     /* right side, laid out first so the tools know how much room they have */
-    float save_w = button_width("Save", "save", 0) + 22;
-    float right = 34 * 4 + ZOOM_LABEL_W + UI_SEP_W + 34 * 2 + UI_SEP_W + save_w;
+    float right = 2 * ZOOM_BUTTON_W + 2 + ZOOM_LABEL_W + 34 * 2 + UI_SEP_W + 34 * 3 + UI_SEP_W + 34;
     /* narrower than this the tools, even as bare icons, run into the right side */
     float wide_min = 34 * 3 + UI_SEP_W + T_COUNT * 34 + 20 + right;
     t->narrow = ui.w < NARROW_W || area.width < wide_min;
@@ -2759,18 +2828,18 @@ void tab_toolbar(tab *t, Rectangle area)
     }
 
     x = area.x + area.width - right;
-    if (ui_button(bid(t, 20), (Rectangle){x, y, 32, h}, NULL, "zoom-out", B_FLAT | dis,
+    if (ui_button(bid(t, 20), (Rectangle){x, y, ZOOM_BUTTON_W, h}, NULL, "zoom-out", B_FLAT | dis,
                   keymap_tip("Zoom out", "zoom_out")))
         run(t, A_ZOOM_OUT);
-    x += 34;
+    x += ZOOM_BUTTON_W;
     char zoom[16];
     snprintf(zoom, sizeof zoom, "%d%%", doc ? (int)lroundf(t->zoom * 100) : 0);
     if (doc) draw_text_in(zoom, (Rectangle){x, y, ZOOM_LABEL_W, h}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     x += ZOOM_LABEL_W;
-    if (ui_button(bid(t, 21), (Rectangle){x, y, 32, h}, NULL, "zoom-in", B_FLAT | dis,
+    if (ui_button(bid(t, 21), (Rectangle){x, y, ZOOM_BUTTON_W, h}, NULL, "zoom-in", B_FLAT | dis,
                   keymap_tip("Zoom in", "zoom_in")))
         run(t, A_ZOOM_IN);
-    x += 34;
+    x += ZOOM_BUTTON_W + 2;
     if (ui_button(bid(t, 22), (Rectangle){x, y, 32, h}, NULL, "fit",
                   (doc && t->fit == FIT_WIDTH ? B_CHECKED : B_FLAT) | dis, keymap_tip("Fit width", "fit_width")))
         run(t, A_FIT);
@@ -2790,15 +2859,25 @@ void tab_toolbar(tab *t, Rectangle area)
         else run(t, A_FIND);
     }
     x += 34;
+    int starred = t->path && pt_settings_is_starred(&app.settings, t->path);
+    if (ui_button(bid(t, 28), (Rectangle){x, y, 32, h}, NULL, starred ? "star-filled" : "star",
+                  B_FLAT | (t->path ? 0 : B_DISABLED),
+                  keymap_tip(starred ? "Remove the star" : "Star this file", "star_file")))
+        run(t, A_STAR);
+    x += 34;
     x = separator(x, y, h);
 
-    Rectangle save = {x, y, save_w - 20, h}, arrow = {x + save_w - 20, y, 20, h};
-    if (ui_button(bid(t, 25), save, "Save", "save", B_FLAT | (tab_edit_count(t) ? 0 : B_DISABLED),
-                  keymap_tip("Save (overwrite original)", "save")))
-        run(t, A_SAVE);
-    if (ui_button(bid(t, 26), arrow, NULL, NULL, B_FLAT | B_MENU | dis, NULL)) {
+    Rectangle more = {x, y, 32, h};
+    if (ui_button(bid(t, 26), more, NULL, "more", B_FLAT | dis, "More")) {
         ui_menu *m = menu_new();
         int n = tab_edit_count(t);
+        menu_item(m, "Reading mode", "eye", keymap_label("reading_mode"), run, t, A_READING, doc, app_reading());
+        menu_item(m, "Dark document", "dark", keymap_label("document_dark"), run, t, A_DOCUMENT_DARK, doc,
+                  app_document_dark());
+#ifndef __ANDROID__
+        menu_item(m, "Full screen", "maximize", keymap_label("fullscreen"), run, t, A_FULLSCREEN, 1, app_fullscreen());
+#endif
+        menu_sep(m);
         menu_item(m, "Save (overwrite original)", "save", keymap_label("save"), run, t, A_SAVE, n > 0, 0);
         menu_item(m, "Save As...", "save", keymap_label("save_as"), run, t, A_SAVE_AS, n > 0, 0);
         menu_item(m, "Save optimized copy...", "save", keymap_label("save_optimized"), run, t, A_OPTIMIZE, doc, 0);
@@ -2810,7 +2889,7 @@ void tab_toolbar(tab *t, Rectangle area)
         menu_sep(m);
         menu_item(m, "Print...", "print", keymap_label("print"), run, t, A_PRINT, doc, 0);
         menu_item(m, "Print preview...", "print", keymap_label("print_preview"), run, t, A_PREVIEW, doc, 0);
-        menu_open_below(m, (Rectangle){save.x, arrow.y, save_w, arrow.height});
+        menu_open_below(m, more);
     }
 }
 
@@ -2918,12 +2997,13 @@ void tab_frame(tab *t, Rectangle area)
 {
     tab_poll(t);
     Rectangle full = area;
-    int shown = pt_settings_int(&app.settings, "show_sidebar");
+    int reading = app_reading();
+    int shown = !reading && pt_settings_int(&app.settings, "show_sidebar");
     if (t->narrow != t->was_narrow) {
         t->was_narrow = t->narrow;
         if (t->narrow) show_sidebar(t, 0, 0);
     }
-    if (!t->narrow && shown != t->side_target) show_sidebar(t, shown, 0);
+    if ((!t->narrow || reading) && shown != t->side_target) show_sidebar(t, shown, 1);
 
     float side = sidebar_width(t);
     if (!t->narrow && side > 1) {
@@ -2953,7 +3033,7 @@ void tab_frame(tab *t, Rectangle area)
         area.height -= fh;
     }
 
-    if ((t->narrow || t->options_row) && t->doc && tool_has_options(t)) {
+    if (!reading && (t->narrow || t->options_row) && t->doc && tool_has_options(t)) {
         Rectangle row = {area.x, area.y, area.width, OPTS_H};
         DrawRectangleRec(row, pal.window);
         ui_separator_h(row.x, row.x + row.width, row.y + row.height - 1);
@@ -2996,10 +3076,10 @@ void tab_frame(tab *t, Rectangle area)
 
 #define STATUS_EDGE 8.0f /* between the status line's right end and the page number */
 #define STATUS_PAD 6.0f  /* around the page number inside its hover box */
-#define STATUS_GAP 12.0f /* between the status line's pieces */
-#define POS_GAP 24.0f    /* between the line:column and the page, so the two numbers read apart */
+#define STATUS_GAP 14.0f /* between the status line's pieces */
 #define COPY_BUTTON 22.0f
-#define LINE_COL_WIDEST "00000 : 000" /* the line:column slot fits this */
+#define COPY_ICON_INSET 2.0f    /* of the button's glyph, left out of the gaps beside it */
+#define LINE_COL_MIN "000 : 00" /* the line:column slot's width until the numbers outgrow it */
 
 float tab_status(tab *t, Rectangle area)
 {
@@ -3035,13 +3115,11 @@ float tab_status(tab *t, Rectangle area)
         DrawRectangleRounded(pos_r, 0.3f, 4, pal.button);
         set_cursor(CUR_HAND);
     }
-    draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 1);
+    draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     ui_tooltip(bid(t, 302), pos_r, keymap_tip("Go to page", "goto"));
     if (ui_clicked(pos_r)) ask_goto(t);
-    rx -= pw + STATUS_PAD + POS_GAP;
+    rx -= pw + STATUS_GAP;
     if (vim_keys_on()) {
-        float lw = text_width(LINE_COL_WIDEST, FS_NORMAL, F_REGULAR);
-
         /* worked out again only when the caret moves or the text changes */
         static struct {
             const tab *t;
@@ -3056,17 +3134,19 @@ float tab_status(tab *t, Rectangle area)
             shown.col = shown.line ? caret_column(t) : 0;
         }
         int line = t->caret ? shown.line : 0;
-        if (line) {
-            char lc[32];
-            snprintf(lc, sizeof lc, "%d : %d", line, shown.col);
-            draw_text_in(lc, (Rectangle){rx - lw, area.y, lw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
-        }
+        /* centred in a slot, so the gaps on both sides match and the pieces beside it hold still */
+        char lc[32] = "";
+        if (line) snprintf(lc, sizeof lc, "%d : %d", line, shown.col);
+        float lw = fmaxf(text_width(LINE_COL_MIN, FS_NORMAL, F_REGULAR), text_width(lc, FS_NORMAL, F_REGULAR));
+        if (line)
+            draw_text_in(lc, (Rectangle){rx - lw, area.y, lw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
         rx -= lw + STATUS_GAP;
     }
 #ifndef __ANDROID__
-    Rectangle copy = {rx - COPY_BUTTON, area.y + (area.height - COPY_BUTTON) / 2, COPY_BUTTON, COPY_BUTTON};
+    Rectangle copy = {rx - COPY_BUTTON + COPY_ICON_INSET, area.y + (area.height - COPY_BUTTON) / 2, COPY_BUTTON,
+                      COPY_BUTTON};
     if (ui_button(bid(t, 300), copy, NULL, "copy", B_FLAT, "Copy path")) tab_copy_path(t);
-    rx -= COPY_BUTTON + STATUS_PAD;
+    rx -= COPY_BUTTON - 2 * COPY_ICON_INSET + STATUS_GAP;
     float path_w = fminf(PATH_WIDTH, (rx - area.x - STATUS_GAP) * 0.6f);
     if (path_w >= 60) {
         char *path = elide_middle(t->path, path_w, FS_NORMAL, F_REGULAR);
@@ -4666,6 +4746,8 @@ void text_box_frame(tab *t)
                 copy.text = (char *)text;
                 copy.size = size;
                 copy.rect = fz_make_rect(0, 0, w, h);
+                Color ink = document_colour(b->obj.rgb, DOCUMENT_INK);
+                copy.rgb[0] = ink.r, copy.rgb[1] = ink.g, copy.rgb[2] = ink.b;
                 pt_draw_text(CTX, tmp, page, &copy, t->pdf);
                 fz_drop_page(CTX, (fz_page *)page);
                 page = pdf_load_page(CTX, tmp, 0);
@@ -4738,7 +4820,7 @@ void text_box_frame(tab *t)
             Rectangle c =
                 scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(x, top, x, top + size * (asc - desc))));
             DrawLineEx((Vector2){c.x, c.y}, (Vector2){c.x + (c.width > 1 ? c.width : 0), c.y + c.height}, 1.5f,
-                       rgb3(b->obj.rgb));
+                       document_colour(b->obj.rgb, DOCUMENT_INK));
         }
     }
     pt_vec_free(lines);

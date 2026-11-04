@@ -43,6 +43,22 @@ int item_resizable(const pt_item *it) { return resizable(it); }
 /* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
  * one strip so its joints do not darken; the highlighter multiplies a light tint into the page, as the saved
  * annotation does. */
+/* Multiply darkens like a highlighter on paper; on dark paper its opposite, Screen, shows the same way. */
+static void begin_highlight_blend(void)
+{
+    if (!app_document_dark()) {
+        BeginBlendMode(BLEND_MULTIPLIED);
+        return;
+    }
+    rlSetBlendFactors(RL_ONE, RL_ONE_MINUS_SRC_COLOR, RL_FUNC_ADD);
+    BeginBlendMode(BLEND_CUSTOM);
+}
+
+static Color pen_colour(const unsigned char rgb[3], pt_pen pen)
+{
+    return document_colour(rgb, pen == PT_PEN_HIGHLIGHTER ? DOCUMENT_MARK : DOCUMENT_INK);
+}
+
 static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
 {
     w = fmaxf(1, w);
@@ -54,7 +70,9 @@ static void draw_ink(const Vector2 *v, int n, float w, Color c, pt_pen pen)
         float o = pt_pen_opacity(pen);
         Color tint = {(unsigned char)(255 - (255 - c.r) * o), (unsigned char)(255 - (255 - c.g) * o),
                       (unsigned char)(255 - (255 - c.b) * o), 255};
-        BeginBlendMode(BLEND_MULTIPLIED);
+        if (app_document_dark())
+            tint = (Color){(unsigned char)(c.r * o), (unsigned char)(c.g * o), (unsigned char)(c.b * o), 255};
+        begin_highlight_blend();
         DrawSplineLinear(v, n, w, tint);
         EndBlendMode();
     } else if (pen == PT_PEN_MARKER) {
@@ -222,9 +240,9 @@ static cached_tex *image_texture(const pt_bytes *data)
  * the cache; NULL when it cannot be drawn. */
 static cached_tex *text_texture(tab *t, const pt_item *it)
 {
+    Color ink = document_colour(it->rgb, DOCUMENT_INK);
     char *k = pt_format("%s|%s|%g|%d,%d,%d|%g|%g,%g", it->text ? it->text : "", it->font ? it->font : "", it->size,
-                        it->rgb[0], it->rgb[1], it->rgb[2], it->box_width, it->rect.x1 - it->rect.x0,
-                        it->rect.y1 - it->rect.y0);
+                        ink.r, ink.g, ink.b, it->box_width, it->rect.x1 - it->rect.x0, it->rect.y1 - it->rect.y0);
     uint64_t key = str_key(k);
     free(k);
     cached_tex *c = cache_find(key);
@@ -245,6 +263,7 @@ static cached_tex *text_texture(tab *t, const pt_item *it)
         pdf_page *page = pdf_load_page(CTX, tmp, 0);
         pt_item copy = *it;
         copy.rect = fz_make_rect(0, 0, w, h);
+        copy.rgb[0] = ink.r, copy.rgb[1] = ink.g, copy.rgb[2] = ink.b;
         pt_draw_text(CTX, tmp, page, &copy, t->pdf);
         fz_drop_page(CTX, (fz_page *)page);
         page = pdf_load_page(CTX, tmp, 0);
@@ -374,16 +393,17 @@ static Rectangle handle_rect(Rectangle r)
 /* The text markup preview, the way the saved annotation renders (fill, line or wave per line rect). */
 static void draw_mark(tab *t, int page, const pt_item *it)
 {
-    Color c = rgb3(it->rgb);
+    Color c = document_colour(it->rgb, it->style == PT_MARK_HIGHLIGHT ? DOCUMENT_MARK : DOCUMENT_INK);
     for (int i = 0; i < it->rects.n; i++) {
         Rectangle r = scene_rect_to_screen(t, to_scene(t, page, it->rects.v[i]));
         float h = r.height;
         if (it->style == PT_MARK_HIGHLIGHT || it->style == PT_MARK_TEXTCOLOUR) {
-            /* Multiply darkens like a highlighter; Lighten (max) recolours dark glyphs only, as the PDF's blend does */
+            /* Lighten (max) recolours dark glyphs only, as the PDF's blend does; on dark paper the glyphs are the light
+             * part, so its opposite (min) */
             if (it->style == PT_MARK_TEXTCOLOUR) {
-                rlSetBlendFactors(RL_ONE, RL_ONE, RL_MAX);
+                rlSetBlendFactors(RL_ONE, RL_ONE, app_document_dark() ? RL_MIN : RL_MAX);
                 BeginBlendMode(BLEND_CUSTOM);
-            } else BeginBlendMode(BLEND_MULTIPLIED);
+            } else begin_highlight_blend();
             DrawRectangleRec(r, c);
             EndBlendMode();
         } else if (it->style == PT_MARK_UNDERLINE) {
@@ -446,7 +466,7 @@ static void draw_item(tab *t, int index)
     }
     switch (it->kind) {
     case PT_REDACT:
-        DrawRectangleRec(r, rgb3(it->rgb));
+        DrawRectangleRec(r, document_colour(it->rgb, DOCUMENT_FILL));
         dashed_rect(r, pal.danger);
         break;
     case PT_HIGHLIGHT: draw_mark(t, page, it); break;
@@ -468,7 +488,7 @@ static void draw_item(tab *t, int index)
             a = scene_to_screen(t, (fz_point){s0.x0, s0.y0}), b = scene_to_screen(t, (fz_point){s1.x0, s1.y0});
             a.x += shift.x, a.y += shift.y, b.x += shift.x, b.y += shift.y;
         }
-        draw_shape(it->shape, a, b, w, rgb3(it->rgb));
+        draw_shape(it->shape, a, b, w, document_colour(it->rgb, DOCUMENT_INK));
         break;
     }
     case PT_INK:
@@ -480,7 +500,7 @@ static void draw_item(tab *t, int index)
                 v[k] = scene_to_screen(t, (fz_point){a.x0, a.y0});
                 v[k].x += shift.x, v[k].y += shift.y;
             }
-            draw_ink(v, pts->n, pt_pen_width(it->pen, it->pen_width) * t->zoom, rgb3(it->rgb), it->pen);
+            draw_ink(v, pts->n, pt_pen_width(it->pen, it->pen_width) * t->zoom, pen_colour(it->rgb, it->pen), it->pen);
             free(v);
         }
         break;
@@ -1046,7 +1066,7 @@ static void draw_page(tab *t, int p)
         return;
     }
     if (t->tool == T_VIEW || t->tool == T_HIGHLIGHT || t->tool == T_REDACT) words_prefetch(t, p);
-    DrawRectangleRec(r, pal.paper);
+    DrawRectangleRec(r, app_document_paper());
     float px = UI_PX, base = base_scale(t, p, t->shown_zoom);
     Texture2D *tex = page_render(t, p, base);
     if (tex) {
@@ -1222,6 +1242,9 @@ static void stage_renders(tab *t, Rectangle area)
  * Resting on a link to a place in the document shows that place: a strip of the target page from just above the
  * link's target, full page width, drawn from the page's render (asked for when not there yet). */
 
+#define FLOW_PREVIEW_ALPHA 120
+#define MIDDLE_NUMBER_PAD_PT 1.0f /* between a middle column's numbers and the text on either side */
+#define LINE_NUMBER_PAGES_AWAY 2
 #define PREVIEW_DELAY_S 0.35
 #define PREVIEW_LEAVE_S 0.2 /* a hover gap longer than this starts the delay again */
 #define PREVIEW_W 520.0f
@@ -1268,7 +1291,7 @@ static void draw_link_preview(tab *t)
     draw_text_in(label, (Rectangle){r.x + PREVIEW_MARGIN, r.y, r.width - 2 * PREVIEW_MARGIN, PREVIEW_HEAD}, FS_SMALL,
                  F_BOLD, pal.window_text, -1);
     Rectangle paper = {r.x + 1, r.y + PREVIEW_HEAD, r.width - 2, h - 1};
-    DrawRectangleRec(paper, pal.paper);
+    DrawRectangleRec(paper, app_document_paper());
     Texture2D *tex = page_texture(t, lp.page, base_scale(t, lp.page, t->stage_zoom), 0, 1);
     if (!tex || tex->width <= 0) return;
     float ts = tex->width / pw;
@@ -1281,11 +1304,20 @@ static void draw_link_preview(tab *t)
  * two columns: in the left margin for a column in the page's left half, in the right margin for one in its right
  * half. One size for all (line_numbers_size), scaled with the page like its text. */
 
-#define LINE_NUMBER_GAP_PT 7.0f /* between a column and its numbers */
 #define RIGHT_COLUMN_FROM 0.45f /* a column starting past this share of the page width is numbered on its right */
 
 /* caret_n > 0: relative numbers, the distance to the caret's line (number caret_n through the document), which shows
  * its own number in the accent colour */
+/* the width between a column starting at x0 and the column before it; negative when none lies wholly to its left, as
+ * with an indented block in a single column */
+static float gutter_before(const pt_text_lines *lines, float x0)
+{
+    float end = -1;
+    for (int i = 0; i < lines->n; i++)
+        if (lines->v[i].col_x1 <= x0 && lines->v[i].col_x1 > end) end = lines->v[i].col_x1;
+    return end < 0 ? -1 : x0 - end;
+}
+
 static void number_page(tab *t, int p, const pt_text_lines *lines, int caret_n)
 {
     int pt = pt_settings_int(&app.settings, "line_numbers_size");
@@ -1302,6 +1334,7 @@ static void number_page(tab *t, int p, const pt_text_lines *lines, int caret_n)
     }
     float left_x = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(left, 0, left, 1))).x;
     float right_x = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(right, 0, right, 1))).x;
+    float seen_x0 = -1, seen_gutter = -1; /* lines of a column follow one another: its gutter is worked out once */
     for (int i = 0; i < lines->n; i++) {
         const pt_text_line *l = &lines->v[i];
         Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, p, l->r));
@@ -1310,9 +1343,19 @@ static void number_page(tab *t, int p, const pt_text_lines *lines, int caret_n)
         char num[16];
         snprintf(num, sizeof num, "%d", caret_n > 0 && !here ? abs(l->n - caret_n) : l->n);
         font_kind f = here ? F_BOLD : F_REGULAR;
-        float w = text_width(num, size, f), gap = LINE_NUMBER_GAP_PT * t->zoom;
-        float x = l->col_x0 > page_w * RIGHT_COLUMN_FROM ? right_x + gap : left_x - gap - w;
-        draw_text(num, x, r.y + (r.height - size) / 2, size, f, here ? pal.highlight : GRAY);
+        float w = text_width(num, size, f), gap = LINE_NUMBER_GAP_PT * t->zoom, line_size = size, x;
+        if (l->col_x0 != seen_x0) seen_x0 = l->col_x0, seen_gutter = gutter_before(lines, l->col_x0);
+        if (l->col_x0 > page_w * RIGHT_COLUMN_FROM) x = right_x + gap;
+        else if (seen_gutter < 0) x = left_x - gap - w;
+        else {
+            /* a column in the middle: its numbers in the narrow gutter on its left, small enough to fit, since the
+             * page's left side holds the first column's */
+            float room = (seen_gutter - 2 * MIDDLE_NUMBER_PAD_PT) * t->zoom;
+            if (w > room && room > 0) line_size = size * room / w, w = room;
+            float column_x = scene_rect_to_screen(t, disp_to_scene(t, p, fz_make_rect(l->col_x0, 0, l->col_x0, 1))).x;
+            x = column_x - MIDDLE_NUMBER_PAD_PT * t->zoom - w;
+        }
+        draw_text(num, x, r.y + (r.height - line_size) / 2, line_size, f, here ? pal.highlight : GRAY);
     }
 }
 
@@ -1331,6 +1374,9 @@ static void draw_line_numbers(tab *t)
         Rectangle pr = t->off_y[p] < -1e8f ? (Rectangle){0} : scene_rect_to_screen(t, page_scene_rect(t, p));
         int shown = pr.width > 0 && CheckCollisionRecs(pr, t->view);
         if (pr.width > 0 && pr.y > t->view.y + t->view.height) break;
+        /* the pages around a shown one tell its running heads and feet from its text */
+        for (int away = -LINE_NUMBER_PAGES_AWAY; shown && away <= LINE_NUMBER_PAGES_AWAY; away++)
+            if (p + away >= 0 && p + away < t->npages) words_prefetch(t, p + away);
         /* the pages before those in view are counted too (except per page), from their words, extracted in the
          * background */
         if (!t->words_ok[p] && (shown || mode != PT_NUMBER_PAGE)) {
@@ -1459,8 +1505,9 @@ static void pane_frame(tab *t, Rectangle area)
     ui_touch_zoom_area(area);
     if (t->fit_pending && area.width > 100) {
         tab_fit(t, t->fit_pending);
+        t->scroll_x = t->fit_pending == FIT_WIDTH ? tab_fit_scroll_x(t, t->zoom) : 0;
+        t->scroll_y = 0;
         t->fit_pending = FIT_NONE;
-        t->scroll_x = t->scroll_y = 0;
         t->want_scroll_page = -1;
     }
 
@@ -1476,7 +1523,9 @@ static void pane_frame(tab *t, Rectangle area)
         float cy = anchor.y + (t->zanim_cy1 - t->zanim_cy0) * (e - t->zanim_e);
         t->zanim_e = e;
         t->scroll_y = (cy + PAGE_GAP) * t->zoom - area.height / 2;
-        if (t->scene_w * t->zoom > area.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
+        if (t->zanim_fit == FIT_WIDTH)
+            t->scroll_x = t->zanim_sx0 + (tab_fit_scroll_x(t, t->zanim_to) - t->zanim_sx0) * e;
+        else if (t->scene_w * t->zoom > area.width) t->scroll_x += (anchor.x + PAGE_GAP) * (t->zoom - old);
         else t->scroll_x = 0;
         if (k >= 1) {
             t->zanim_t0 = 0;
@@ -1495,6 +1544,7 @@ static void pane_frame(tab *t, Rectangle area)
         float old = t->zoom;
         tab_fit(t, FIT_WIDTH);
         t->want_scroll_page = -1;
+        t->scroll_x = tab_fit_scroll_x(t, t->zoom);
         t->scroll_y += (anchor.y + PAGE_GAP) * (t->zoom - old);
     }
     /* not while a field has focus: a soft keyboard opening shortens the view */
@@ -1606,7 +1656,8 @@ static void pane_frame(tab *t, Rectangle area)
         if (!c.a) {
             unsigned char rgb[3];
             mark_colour(mark_style(), rgb);
-            c = (Color){rgb[0], rgb[1], rgb[2], 120};
+            c = with_alpha(document_colour(rgb, mark_style() == PT_MARK_HIGHLIGHT ? DOCUMENT_MARK : DOCUMENT_INK),
+                           FLOW_PREVIEW_ALPHA);
         }
         for (int i = 0; i < t->flow_preview.n; i++)
             DrawRectangleRec(scene_rect_to_screen(t, to_scene(t, t->flow_page, t->flow_preview.v[i])), c);
@@ -1628,11 +1679,12 @@ static void pane_frame(tab *t, Rectangle area)
     }
     if (t->gesture == G_SHAPE && t->stroke.n == 2)
         draw_shape(t->shape, scene_to_screen(t, t->stroke.v[0]), scene_to_screen(t, t->stroke.v[1]),
-                   fmaxf(1, t->pen_width * t->zoom), rgb3(t->pen_rgb));
+                   fmaxf(1, t->pen_width * t->zoom), document_colour(t->pen_rgb, DOCUMENT_INK));
     if (t->gesture == G_STROKE && t->stroke.n) {
         Vector2 *v = malloc(sizeof *v * (size_t)t->stroke.n);
         for (int k = 0; k < t->stroke.n; k++) v[k] = scene_to_screen(t, t->stroke.v[k]);
-        draw_ink(v, t->stroke.n, pt_pen_width(pen_style(), t->pen_width) * t->zoom, rgb3(t->pen_rgb), pen_style());
+        draw_ink(v, t->stroke.n, pt_pen_width(pen_style(), t->pen_width) * t->zoom, pen_colour(t->pen_rgb, pen_style()),
+                 pen_style());
         free(v);
     }
 
@@ -1652,7 +1704,8 @@ static void pane_frame(tab *t, Rectangle area)
     float content_h = t->scene_h * t->zoom, content_w = t->scene_w * t->zoom;
     if (content_h > area.height)
         ui_scrollbar(ui_id(t, 70),
-                     (Rectangle){area.x + area.width - 12, area.y, 12, area.height - (content_w > area.width ? 12 : 0)},
+                     (Rectangle){area.x + area.width - PAGE_SCROLLBAR_W, area.y, PAGE_SCROLLBAR_W,
+                                 area.height - (content_w > area.width ? PAGE_SCROLLBAR_W : 0)},
                      content_h, area.height, &t->scroll_y);
     if (content_w > area.width) {
         float sx = t->scroll_x;
@@ -1921,15 +1974,15 @@ void present_start(tab *t)
     presentation.page_changed_at = ui.now;
     menus_close();
 #ifndef __ANDROID__
-    presentation.made_fullscreen = !IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE);
-    if (presentation.made_fullscreen) ToggleBorderlessWindowed();
+    presentation.made_fullscreen = !app_fullscreen();
+    if (presentation.made_fullscreen) app_toggle_fullscreen();
 #endif
 }
 
 static void present_stop(void)
 {
 #ifndef __ANDROID__
-    if (presentation.made_fullscreen && IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE)) ToggleBorderlessWindowed();
+    if (presentation.made_fullscreen && app_fullscreen()) app_toggle_fullscreen();
 #endif
     tab_goto(presentation.document, presentation.document->st.order.v[presentation.position]);
     presentation.document = NULL;

@@ -597,6 +597,7 @@ typedef struct {
     int table;        /* the ruled table it is in (between a table's top and bottom rule), -1 none */
     fz_point dir;     /* that line's baseline direction, (1, 0) for level text */
     float size;       /* its first character's font size */
+    int running;      /* in a running head or foot, or a page number: not a line of the text (pt_mark_running_lines) */
 } pt_word;
 
 PT_VEC(pt_words, pt_word);
@@ -637,6 +638,13 @@ typedef struct {
  * for none) and their labels are no lines */
 void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_w, pt_numbering mode,
                      pt_numbering_state *state, pt_text_lines *out);
+/* Two pages' top and bottom rows at one height, alike but for their numbers, are running heads and feet: their words
+ * get `running`, which numbers skip. Returns how many words that newly marked. */
+int pt_mark_running_lines(pt_words *a, pt_words *b);
+/* a document of one page has nothing to compare: a top or bottom row of only a number is its page number */
+int pt_mark_lone_page_number(pt_words *words);
+/* pt_mark_running_lines on page `page`'s words against the pages around it, read from the document */
+void pt_mark_running_in_doc(fz_context *ctx, fz_document *doc, int page, pt_words *words);
 /* the page's figures: drawings and images (st from pt_stext, with its vectors) */
 void pt_page_figures(fz_stext_page *st, pt_rects *out);
 pt_numbering pt_numbering_from(const char *name); /* "page", else document */
@@ -661,6 +669,7 @@ PT_VEC(pt_captions, pt_caption);
  * "(2a)" at its column's right edge with a wide gap before it. One whose kind and number `out` already holds is
  * left out, so pages appended in order keep the first, the caption rather than a later mention. */
 void pt_page_captions(fz_context *ctx, fz_stext_page *st, pt_captions *out);
+int pt_is_caption_word(const char *word); /* "Figure", "Fig.", "Table", ... in any language they are matched in */
 void pt_captions_free(pt_captions *c);
 
 /* ---- comments.c: exporting the annotations readers wrote ---- */
@@ -795,6 +804,9 @@ void pt_settings_set_str(pt_settings *s, const char *key, const char *value);
 void pt_settings_set_int(pt_settings *s, const char *key, int value);
 void pt_settings_set_list(pt_settings *s, const char *key, const pt_strs *value);
 void pt_settings_add_recent(pt_settings *s, const char *path); /* to the front of recent_files, PT_RECENT_LIMIT kept */
+int pt_settings_is_starred(const pt_settings *s, const char *path);
+/* adds to the front of starred_files or removes; path must not point into that list, which this replaces */
+void pt_settings_toggle_starred(pt_settings *s, const char *path);
 int pt_settings_save(const pt_settings *s); /* nonzero when it cannot be written or keep_file is set */
 void pt_migrate_legacy(void);               /* copies the old pdf-redact folder's signatures when this one has none */
 /* The top-level `key = "string"` and `key = ["string", ...]` lines of a TOML text, the subset settings.toml uses: a

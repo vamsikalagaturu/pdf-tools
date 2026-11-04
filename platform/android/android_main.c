@@ -242,9 +242,27 @@ static struct {
     double t;
     float x, y, cx, cy;
     float spread; /* distance between the first two fingers, for pinch zoom; 0 with one finger */
+    int rail;
+    float rail_dx, rail_dy; /* the scroll's movement until its rail is decided */
 } touch;
 
 #define LONG_PRESS_S 0.45 /* a finger held still this long right-clicks when lifted */
+
+/* A hand never drags quite straight: on a page wider than the view, a scroll that is mostly along one axis stays on
+ * it, as browsers' scrolling rails do, and one clearly diagonal stays free. */
+enum { RAIL_UNDECIDED, RAIL_FREE, RAIL_HORIZONTAL, RAIL_VERTICAL };
+
+#define RAIL_DECIDE_DP 10.0f /* of finger travel */
+#define RAIL_RATIO 2.0f      /* how much more along one axis than the other keeps to it */
+#define FLING_MAX_DP 3500.0f /* per second */
+#define FLING_DECAY 2.6f     /* per second */
+#define FLING_STOP_DP 40.0f  /* per second */
+
+static int rail_for(float dx, float dy)
+{
+    float ax = fabsf(dx), ay = fabsf(dy);
+    return ay >= RAIL_RATIO * ax ? RAIL_VERTICAL : ax >= RAIL_RATIO * ay ? RAIL_HORIZONTAL : RAIL_FREE;
+}
 
 /* recent finger samples (event time s, centroid px), batched ones included, for the release velocity */
 typedef struct {
@@ -365,11 +383,13 @@ static void on_touch(const AInputEvent *e, int action)
         /* a finger on a moving page stops it, and that touch is not a tap */
         if (fling.vx || fling.vy) touch.pending = 0, touch.scrolling = 1, touch.rebase = 1, touch.cx = x, touch.cy = y;
         fling.vx = fling.vy = 0;
+        touch.rail = RAIL_UNDECIDED, touch.rail_dx = touch.rail_dy = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
         touch.pending = touch.held = 0;
         if (touch.pressed) send_mouse(MOUSE_BUTTON_LEFT, GLFW_RELEASE), touch.pressed = 0;
         touch.scrolling = touch.rebase = 1;
+        touch.rail = RAIL_FREE; /* two fingers pan and pinch anywhere */
         nsamples = 0;
         break;
     case AMOTION_EVENT_ACTION_POINTER_UP:
@@ -433,8 +453,12 @@ static void on_touch(const AInputEvent *e, int action)
         touch.held = 0;
         float vx, vy;
         if (touch.scrolling && action == AMOTION_EVENT_ACTION_UP &&
-            release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) && hypotf(vx, vy) > 100 * dp())
-            fling.vx = vx, fling.vy = vy;
+            release_velocity(AMotionEvent_getEventTime(e) / 1e9, &vx, &vy) && hypotf(vx, vy) > 100 * dp()) {
+            int rail = touch.rail == RAIL_UNDECIDED ? rail_for(vx, vy) : touch.rail;
+            float speed = hypotf(vx, vy), most = FLING_MAX_DP * dp(), slow = speed > most ? most / speed : 1;
+            fling.vx = rail == RAIL_VERTICAL ? 0 : vx * slow;
+            fling.vy = rail == RAIL_HORIZONTAL ? 0 : vy * slow;
+        }
         touch.pending = touch.pressed = touch.scrolling = 0;
         touch.lifted = 1;
         break;
@@ -636,16 +660,22 @@ void pt_android_frame(void)
     if (touch.scrolling && nsamples) {
         float x, y;
         resample(event_clock() - 0.005, &x, &y);
-        wheel_acc.x += (x - touch.cx) / (60 * dp());
-        wheel_acc.y += (y - touch.cy) / (60 * dp());
+        float dx = x - touch.cx, dy = y - touch.cy;
+        if (touch.rail == RAIL_UNDECIDED) {
+            touch.rail_dx += dx, touch.rail_dy += dy;
+            if (hypotf(touch.rail_dx, touch.rail_dy) >= RAIL_DECIDE_DP * dp())
+                touch.rail = rail_for(touch.rail_dx, touch.rail_dy);
+        }
+        if (touch.rail != RAIL_VERTICAL) wheel_acc.x += dx / (60 * dp());
+        if (touch.rail != RAIL_HORIZONTAL) wheel_acc.y += dy / (60 * dp());
         touch.cx = x, touch.cy = y;
     }
     if (fling.vx || fling.vy) {
         wheel_acc.x += (float)(fling.vx * dt) / (60 * dp());
         wheel_acc.y += (float)(fling.vy * dt) / (60 * dp());
-        float k = expf(-1.6f * (float)dt);
+        float k = expf(-FLING_DECAY * (float)dt);
         fling.vx *= k, fling.vy *= k;
-        if (hypotf(fling.vx, fling.vy) < 40 * dp()) fling.vx = fling.vy = 0;
+        if (hypotf(fling.vx, fling.vy) < FLING_STOP_DP * dp()) fling.vx = fling.vy = 0;
     }
     wheel_frame = wheel_acc;
     wheel_acc = (Vector2){0, 0};
@@ -662,11 +692,12 @@ void pt_android_frame(void)
     /* typed text is not input raylib knows about: it needs a frame of its own */
     if (nchars) ui.dirty = 1;
 
-    /* Back closes what is open (as Escape does); with nothing open it offers to close the app */
+    /* Back closes what is open (as Escape does), reading mode too; with nothing open it offers to close the app */
     if (back_pressed) {
         back_pressed = 0;
         tab *t = app_current_doc();
-        if (dialogs_open() || menu_is_open() || ui.focus || (t && tab_escape_pending(t))) send_key(KEY_ESCAPE, 0);
+        if (dialogs_open() || menu_is_open() || ui.focus || app_reading() || (t && tab_escape_pending(t)))
+            send_key(KEY_ESCAPE, 0);
         else question_box("Close PDF Tools", "Close PDF Tools?", "Close", "Cancel", close_answered, NULL);
     }
     int want = ui.focus != NULL;

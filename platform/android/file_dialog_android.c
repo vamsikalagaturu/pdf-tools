@@ -107,15 +107,15 @@ static doc *remember(const char *path, const char *uri)
     return d;
 }
 
-static int in_recent(const char *path)
+static int on_home_lists(const char *path)
 {
     const pt_strs *recent = pt_settings_list(&app.settings, "recent_files");
     for (int i = 0; recent && i < recent->n; i++)
         if (!strcmp(recent->v[i], path)) return 1;
-    return 0;
+    return pt_settings_is_starred(&app.settings, path);
 }
 
-/* Copies the system dropped from the cache are fetched again for the recent list, through the kept permission. */
+/* Copies the system dropped from the cache are fetched again for the Home lists, through the kept permission. */
 static void load_docs(void)
 {
     docs_loaded = 1;
@@ -132,7 +132,7 @@ static void load_docs(void)
         doc *d = remember(path, uri);
         d->mtime = atoll(m), d->size = atoll(s);
         stamp(d->path, &d->seen_mtime, &d->seen_size);
-        if (d->seen_mtime < 0 && in_recent(d->path)) {
+        if (d->seen_mtime < 0 && on_home_lists(d->path)) {
             char *dir = pt_dirname(d->path), *err;
             pt_mkdirs(dir);
             free(dir);

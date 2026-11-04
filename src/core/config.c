@@ -33,6 +33,7 @@ const pt_setting_def pt_settings_defs[] = {
     {"last_folder", PT_SET_STR, "", 0, "Folder the Open dialog starts in"},
     {"last_signature", PT_SET_STR, "", 0, "Signature preselected in the Sign dialog"},
     {"recent_files", PT_SET_LIST, NULL, 0, "Recently opened PDFs, newest first"},
+    {"starred_files", PT_SET_LIST, NULL, 0, "Starred files, newest first, listed first on the Home tab"},
     {"favourite_colours", PT_SET_LIST, NULL, 0, "Favourite colours (#rrggbb), offered wherever a colour is picked"},
     {"accent_colour_dark", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the dark theme; empty: the default blue"},
     {"accent_colour_light", PT_SET_STR, "", 0, "Accent colour (#rrggbb) of the light theme; empty: the default blue"},
@@ -435,6 +436,25 @@ void pt_settings_add_recent(pt_settings *s, const char *path)
     for (int i = 0; i < old->n && list.n < PT_RECENT_LIMIT; i++)
         if (strcmp(old->v[i], path)) pt_push(list, pt_strdup(old->v[i]));
     pt_settings_set_list(s, "recent_files", &list);
+    pt_strs_free(&list);
+}
+
+int pt_settings_is_starred(const pt_settings *s, const char *path)
+{
+    const pt_strs *starred = pt_settings_list(s, "starred_files");
+    for (int i = 0; starred && i < starred->n; i++)
+        if (!strcmp(starred->v[i], path)) return 1;
+    return 0;
+}
+
+void pt_settings_toggle_starred(pt_settings *s, const char *path)
+{
+    const pt_strs *old = pt_settings_list(s, "starred_files");
+    pt_strs list = {0};
+    if (!pt_settings_is_starred(s, path)) pt_push(list, pt_strdup(path));
+    for (int i = 0; i < old->n; i++)
+        if (strcmp(old->v[i], path)) pt_push(list, pt_strdup(old->v[i]));
+    pt_settings_set_list(s, "starred_files", &list);
     pt_strs_free(&list);
 }
 

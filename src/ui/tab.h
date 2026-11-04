@@ -10,6 +10,8 @@
 #include "ui.h"
 
 #define PAGE_GAP 12.0f
+#define PAGE_SCROLLBAR_W 12.0f
+#define LINE_NUMBER_GAP_PT 7.0f /* between a column and its numbers */
 /* whole-page textures stop at this many device pixels on the long side; zoomed further, tiles of TILE_PX draw over
  * them, so no single upload stalls a frame. Tiles render at fixed zoom levels TILE_LEVELS per octave apart (the level
  * just above the zoom, drawn slightly smaller), so nearby zooms share them. All of a tab's page textures together
@@ -158,6 +160,7 @@ enum { SIDE_PAGES, SIDE_ANNOTATIONS, SIDE_EDITS, SIDE_OUTLINE, SIDE_RESULTS, SID
     X(double, zanim_t0)      \
     X(float, zanim_cy0)      \
     X(float, zanim_cy1)      \
+    X(float, zanim_sx0)      \
     X(float, zanim_e)        \
     X(float, last_view_h)    \
     X(int, restore_pending)  \
@@ -331,6 +334,7 @@ struct tab {
     float zanim_from, zanim_to; /* a zoom gliding from one value to another since zanim_t0 (0: none) */
     fit_mode zanim_fit;
     double zanim_t0;
+    float zanim_sx0;            /* the sideways scroll when the glide began */
     float zanim_cy0, zanim_cy1; /* the scene y in the middle of the view at the glide's start and end */
     float zanim_e;              /* how far along the glide the last frame was, 0 to 1 */
     float last_view_h;
@@ -367,7 +371,9 @@ struct tab {
     float *tiles_on;
     double *tiles_wait;
     float scene_w, scene_h;
-    int want_scroll_page; /* scroll to this page once laid out, -1 none */
+    int content_known;
+    float content_x0, content_x1; /* the side edges of what the document shows, in scene units */
+    int want_scroll_page;         /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;
     int want_center;
     /* Back and Forward: where a link or outline jump left from, and where Back came from */
@@ -561,6 +567,8 @@ void set_zoom(tab *t, float z);
  * the tab lands in that mode (nothing happens while the fitting zoom is not known yet) */
 void zoom_to(tab *t, float target, fit_mode fit);
 void tab_fit(tab *t, fit_mode fit);
+void tab_mark_running(tab *t, int page);
+float tab_fit_scroll_x(tab *t, float zoom); /* the sideways scroll that shows the content when fitted to its width */
 void zoom_by(tab *t, float factor);
 /* the scale page `page` is rendered at whole at `zoom`; above it, tiles draw over that render */
 float base_scale(tab *t, int page, float zoom);

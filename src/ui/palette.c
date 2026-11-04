@@ -506,6 +506,8 @@ void line_numbers_changed(void)
     for (int i = 0; i < app.tabs.n; i++) {
         tab *t = app.tabs.v[i].kind == TAB_DOC ? app.tabs.v[i].doc : NULL;
         if (t && t->line_info) memset(t->line_info, 0, sizeof(page_lines_info) * (size_t)t->npages);
+        /* a fit to the width leaves room for the numbers: taken up again on the next frame */
+        if (t) t->fit_w = 0, t->other.fit_w = 0;
     }
 }
 

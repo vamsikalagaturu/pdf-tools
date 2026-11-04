@@ -214,6 +214,7 @@ void pt_collect_comments(fz_context *ctx, fz_document *doc, pt_numbering mode, c
             st = pt_stext(ctx, page);
             pt_reading_order_words(st, &words);
             pt_page_figures(st, &figures);
+            pt_mark_running_in_doc(ctx, doc, p, &words);
             pt_number_lines(&words, &figures, bounds.x1 - bounds.x0, mode, &state, &lines);
             for (; t < tops.n && raw.v[tops.v[t]].c.page == p; t++) {
                 raw_annot *r = &raw.v[tops.v[t]];

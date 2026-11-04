@@ -388,6 +388,15 @@ static void test_settings(void)
     pt_settings_load(&s, path);
     const pt_strs *back = pt_settings_list(&s, "favourite_colours");
     CHECK(back && back->n == 2 && !strcmp(back->v[1], "#d93025"));
+    pt_settings_toggle_starred(&s, "/a.pdf");
+    pt_settings_toggle_starred(&s, "/b.pdf");
+    CHECK(pt_settings_is_starred(&s, "/a.pdf") && pt_settings_is_starred(&s, "/b.pdf"));
+    pt_settings_free(&s);
+    pt_settings_load(&s, path);
+    const pt_strs *starred = pt_settings_list(&s, "starred_files");
+    CHECK(starred && starred->n == 2 && !strcmp(starred->v[0], "/b.pdf"));
+    pt_settings_toggle_starred(&s, "/b.pdf");
+    CHECK(!pt_settings_is_starred(&s, "/b.pdf") && pt_settings_is_starred(&s, "/a.pdf"));
     pt_settings_free(&s);
     pt_strs_free(&fav);
     free(path);
@@ -548,6 +557,7 @@ static void test_ex(void)
     CHECK(!pt_ex_parse("tool.highlight", &e) && e.kind == PT_EX_ACTION && !strcmp(e.name, "tool.highlight"));
     pt_ex_free(&e);
     CHECK(!pt_ex_parse("tabn", &e) && e.kind == PT_EX_ACTION && !strcmp(e.name, "tab.next"));
+    CHECK(!pt_ex_parse("tabs", &e) && e.kind == PT_EX_ACTION && !strcmp(e.name, "tab.list"));
     pt_ex_free(&e);
     CHECK(ex_fails("rotate_right now") && ex_fails("a-b") && pt_ex_parse("  ", &e) == -1 && !*e.error);
     pt_ex_free(&e);
@@ -1012,6 +1022,158 @@ static void test_ruled_tables(void)
     CHECK(name && two && label && name->table == 0 && two->table == 0 && label->table == -1);
     pt_vec_free(l);
     pt_words_free(&w);
+}
+
+static void words_of_lines(const char *name, const page_line *lines, int n, pt_words *w)
+{
+    char *path = lines_pdf(name, lines, n);
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_reading_order_words(st, w);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+}
+
+static int numbered_lines(const pt_words *w)
+{
+    pt_numbering_state state = {1};
+    pt_text_lines l = {0};
+    pt_number_lines(w, NULL, 595, PT_NUMBER_PAGE, &state, &l);
+    int n = l.n;
+    pt_vec_free(l);
+    return n;
+}
+
+/* a head and a page number repeat from page to page and are not numbered; a heading at a page's top is text */
+static void test_running_lines(void)
+{
+    const page_line one[] = {
+        {1, 72, 770, "A Running Head 12"},
+        {1, 72, 700, "the text of the first page goes on"},
+        {1, 72, 686, "and on down the page"},
+        {1, 300, 60, "7"},
+    };
+    const page_line two[] = {
+        {1, 72, 770, "A Running Head 13"},
+        {1, 72, 700, "the text of the next page is another"},
+        {1, 72, 686, "one that also goes on"},
+        {1, 300, 60, "8"},
+    };
+    const page_line plain_a[] = {
+        {2, 72, 770, "Introduction"},
+        {1, 72, 700, "text under a heading at the top of the page"},
+        {1, 72, 60, "the last line of this page"},
+    };
+    const page_line plain_b[] = {
+        {2, 72, 770, "Method"},
+        {1, 72, 700, "other text under another heading at the top"},
+        {1, 72, 60, "and another last line here"},
+    };
+    pt_words a = {0}, b = {0}, c = {0}, d = {0};
+    words_of_lines("run1.pdf", one, 4, &a);
+    words_of_lines("run2.pdf", two, 4, &b);
+    words_of_lines("run3.pdf", plain_a, 3, &c);
+    words_of_lines("run4.pdf", plain_b, 3, &d);
+    CHECK(numbered_lines(&a) == 4 && pt_mark_running_lines(&a, &b) > 0);
+    CHECK(numbered_lines(&a) == 2 && numbered_lines(&b) == 2);
+    CHECK(pt_mark_running_lines(&c, &d) == 0 && numbered_lines(&c) == 3);
+    pt_words lone = {0};
+    words_of_lines("run5.pdf", one, 4, &lone);
+    CHECK(pt_mark_lone_page_number(&lone) == 1 && numbered_lines(&lone) == 3);
+    pt_words_free(&a), pt_words_free(&b), pt_words_free(&c), pt_words_free(&d), pt_words_free(&lone);
+}
+
+/* a left column cut short by figures has fewer lines than the right one, but is a column, not margin notes */
+static void test_short_left_column(void)
+{
+    const page_line lines[] = {
+        {1, 72, 760, "the left column has a few lines before its figures"},
+        {1, 72, 746, "and they run as wide as the column on the right"},
+        {1, 72, 732, "short last line"},
+        {1, 320, 760, "the right column runs all the way down the page"},
+        {1, 320, 746, "the right column runs all the way down the page"},
+        {1, 320, 732, "the right column runs all the way down the page"},
+        {1, 320, 718, "the right column runs all the way down the page"},
+        {1, 320, 704, "the right column runs all the way down the page"},
+        {1, 320, 690, "the right column runs all the way down the page"},
+        {1, 320, 676, "the right column runs all the way down the page"},
+        {1, 320, 662, "the right column runs all the way down the page"},
+        {1, 320, 648, "the right column runs all the way down the page"},
+        {1, 320, 634, "the right column runs all the way down the page"},
+    };
+    char *path = lines_pdf("short-column.pdf", lines, (int)(sizeof lines / sizeof *lines));
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_words w = {0};
+    pt_reading_order_words(st, &w);
+    pt_numbering_state state = {1};
+    pt_text_lines l = {0};
+    pt_number_lines(&w, NULL, 595, PT_NUMBER_DOCUMENT, &state, &l);
+    CHECK(l.n == 13);
+    const pt_text_line *first = line_at(&l, 75, 760), *last = line_at(&l, 75, 732), *right = line_at(&l, 325, 760);
+    CHECK(first && last && right && first->n == 1 && last->n == 3 && right->n == 4);
+    CHECK(first && right && first->col_x0 < 80 && right->col_x0 > 300);
+    pt_vec_free(l);
+    pt_words_free(&w);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+}
+
+static int numbered_with_figures(const char *name, const char *ops)
+{
+    char *path = content_pdf(name, ops, NULL);
+    fz_document *doc = fz_open_document(ctx, path);
+    fz_page *p = fz_load_page(ctx, doc, 0);
+    fz_stext_page *st = pt_stext(ctx, p);
+    pt_words w = {0};
+    pt_rects skip = {0};
+    pt_text_lines l = {0};
+    pt_numbering_state state = {1};
+    pt_reading_order_words(st, &w);
+    pt_page_figures(st, &skip);
+    pt_number_lines(&w, &skip, 595, PT_NUMBER_PAGE, &state, &l);
+    int n = l.n;
+    pt_vec_free(l);
+    pt_vec_free(skip);
+    pt_words_free(&w);
+    fz_drop_stext_page(ctx, st);
+    fz_drop_page(ctx, p);
+    fz_drop_document(ctx, doc);
+    free(path);
+    return n;
+}
+
+/* footnotes and captions are text and get numbers, a short caption right under its figure too; a figure's own label
+ * does not */
+static void test_captions_footnotes_numbered(void)
+{
+    const char *body = "BT /F1 10 Tf 100 700 Td (the first line of the text runs on across the page to here) Tj ET\n"
+                       "BT /F1 10 Tf 100 686 Td (the second line of the text runs on across the page to here) Tj ET\n"
+                       "BT /F1 10 Tf 100 672 Td (the third line of the text runs on across the page to here) Tj ET\n";
+
+    const struct {
+        const char *name, *ops;
+        int lines;
+    } cases[] = {
+        {"foot.pdf", "100 120 120 0.4 re f\nBT /F1 8 Tf 100 108 Td (1 A footnote under its rule) Tj ET\n", 4},
+        {"long-cap.pdf",
+         "100 400 m 300 550 l S\nBT /F1 10 Tf 100 360 Td (Figure 1: A caption under the drawing that runs on) Tj ET\n",
+         4},
+        {"short-cap.pdf", "100 400 m 300 550 l S\nBT /F1 10 Tf 100 360 Td (Fig. 2: A plot.) Tj ET\n", 4},
+        {"label.pdf", "100 400 m 300 550 l S\nBT /F1 10 Tf 150 360 Td (time in s) Tj ET\n", 3},
+    };
+
+    for (int i = 0; i < (int)(sizeof cases / sizeof *cases); i++) {
+        char *ops = pt_format("%s%s", body, cases[i].ops);
+        CHECK(numbered_with_figures(cases[i].name, ops) == cases[i].lines);
+        free(ops);
+    }
 }
 
 /* a note in the left margin comes after the page's text in reading order, and is not numbered */
@@ -1643,6 +1805,9 @@ int main(void)
     test_line_numbers_table_columns();
     test_line_numbers_hung_labels();
     test_ruled_tables();
+    test_running_lines();
+    test_captions_footnotes_numbered();
+    test_short_left_column();
     test_margin_note_last();
     test_slanted_headers();
     test_stamps();
