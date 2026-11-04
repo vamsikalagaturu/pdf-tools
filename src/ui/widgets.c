@@ -201,6 +201,8 @@ glfw_char_fn glfwSetCharCallback(void *window, glfw_char_fn fn);
 void *glfwGetCurrentContext(void);
 int glfwGetPlatform(void);
 void glfwGetWindowContentScale(void *window, float *x, float *y);
+void glfwSetWindowSize(void *window, int width, int height);
+int wayland_smallest_output(int *logical_w, int *logical_h, float *scale);
 #define GLFW_PLATFORM_WAYLAND 0x00060003
 #define GLFW_RELEASE 0
 #define GLFW_PRESS 1
@@ -321,15 +323,22 @@ int ui_input_since_frame(void)
 
 /* ---- scale, insets and touch gestures ---- */
 
+/* PDF_TOOLS_SCALE until the user changes the interface size, else the chosen interface size, else 0 for Auto. */
+static float chosen_scale(void)
+{
+    const char *env = getenv("PDF_TOOLS_SCALE");
+    if (!ui.scale_chosen && env && atof(env) > 0.3) return (float)atof(env);
+    return ui.scale_choice > 0 ? ui.scale_choice : 0;
+}
+
 /* The UI scale: PDF_TOOLS_SCALE until the user changes the interface size, else the chosen interface size, else the
  * window system's content scale when it reports one (Wayland always does), else the physical DPI of the window's
  * monitor over 96 (XWayland reports a content scale of 1 even on fractionally scaled outputs) in quarter steps from 1
  * to 3. */
 float ui_detect_scale(void)
 {
-    const char *env = getenv("PDF_TOOLS_SCALE");
-    if (!ui.scale_chosen && env && atof(env) > 0.3) return (float)atof(env);
-    if (ui.scale_choice > 0) return ui.scale_choice;
+    float chosen = chosen_scale();
+    if (chosen > 0) return chosen;
 #ifdef __APPLE__
     /* macOS lays windows out in points; a Retina screen shows up as ui.density instead */
     return 1;
@@ -350,6 +359,38 @@ float ui_detect_scale(void)
     float dpi = sqrtf(wpx * wpx + hpx * hpx) / (sqrtf(wmm * wmm + hmm * hmm) / 25.4f);
     float scale = roundf(dpi / 96 * 4) / 4;
     return scale < 1 ? 1 : scale > 3 ? 3 : scale;
+}
+
+/* Wayland reports the pointer and takes window sizes in logical units while the layout counts framebuffer pixels. */
+static float pixels_per_pointer_unit(void)
+{
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        float x = 1, y = 1;
+        glfwGetWindowContentScale(glfwGetCurrentContext(), &x, &y);
+        return x > 0 ? x : 1;
+    }
+#endif
+    return 1;
+}
+
+void ui_size_first_window(float w, float h)
+{
+#if defined(__linux__) && !defined(__ANDROID__)
+    int out_w, out_h;
+    float out_scale;
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND && wayland_smallest_output(&out_w, &out_h, &out_scale)) {
+        /* On Auto a logical unit is one UI unit at any scale, so only a chosen size depends on the output's scale.
+         * raylib's SetWindowSize would store logical units as the screen's pixels. */
+        float chosen = chosen_scale(), units = chosen > 0 ? chosen / out_scale : 1;
+        glfwSetWindowSize(glfwGetCurrentContext(), (int)fminf(w * units, out_w * WINDOW_FIT_MONITOR),
+                          (int)fminf(h * units, out_h * WINDOW_FIT_MONITOR));
+        return;
+    }
+#endif
+    int mon = GetCurrentMonitor();
+    SetWindowSize((int)fminf(w * ui.scale, GetMonitorWidth(mon) * WINDOW_FIT_MONITOR),
+                  (int)fminf(h * ui.scale, GetMonitorHeight(mon) * WINDOW_FIT_MONITOR));
 }
 
 /* screen pixels covered by system bars (Android); the UI is laid out inside them */
@@ -458,21 +499,26 @@ int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(scr
 #ifndef __ANDROID__
 static void update_window_min_size(void)
 {
-    static float applied_scale;
-    if (ui.scale == applied_scale) return;
+    static float applied_scale, applied_px;
+    float px = pixels_per_pointer_unit();
+    if (ui.scale == applied_scale && px == applied_px) return;
     applied_scale = ui.scale;
+    applied_px = px;
     int mon = GetCurrentMonitor();
-    SetWindowMinSize((int)fminf(WINDOW_MIN_W * ui.scale, GetMonitorWidth(mon)),
-                     (int)fminf(WINDOW_MIN_H * ui.scale, GetMonitorHeight(mon)));
+    SetWindowMinSize((int)(fminf(WINDOW_MIN_W * ui.scale, GetMonitorWidth(mon)) / px),
+                     (int)(fminf(WINDOW_MIN_H * ui.scale, GetMonitorHeight(mon)) / px));
 }
 #endif
 
 void ui_begin_frame(void)
 {
     static double checked;
-    if (!ui.scale || GetTime() - checked > 1) {
+    static float checked_px;
+    float pointer_px = pixels_per_pointer_unit();
+    if (!ui.scale || GetTime() - checked > 1 || pointer_px != checked_px) {
         ui.scale = ui_detect_scale();
         checked = GetTime();
+        checked_px = pointer_px;
     }
 #ifndef __ANDROID__
     update_window_min_size();
@@ -481,7 +527,7 @@ void ui_begin_frame(void)
     ui.w = (GetScreenWidth() - inset_l - inset_r) / ui.scale;
     ui.h = (GetScreenHeight() - inset_t - inset_b) / ui.scale;
     SetMouseOffset((int)-inset_l, (int)-inset_t);
-    SetMouseScale(1 / ui.scale, 1 / ui.scale);
+    SetMouseScale(pointer_px / ui.scale, pointer_px / ui.scale);
 
     ui.mouse = GetMousePosition();
     take_events();
@@ -489,7 +535,8 @@ void ui_begin_frame(void)
     ui.wheel = wheel.y;
     ui.wheel_x = wheel.x;
     ui.pinch = pinch_acc;
-    ui.pinch_at = (Vector2){(pinch_screen.x - inset_l) / ui.scale, (pinch_screen.y - inset_t) / ui.scale};
+    ui.pinch_at = (Vector2){(pinch_screen.x * pointer_px - inset_l) / ui.scale,
+                            (pinch_screen.y * pointer_px - inset_t) / ui.scale};
     pinch_acc = 1;
     ui.double_tap = double_tap;
     ui.double_tap_at =

@@ -1394,9 +1394,7 @@ int pt_app_main(int argc, char **argv)
     mac_install_open_handler();
 #endif
     ui.scale = ui_detect_scale();
-    int mon = GetCurrentMonitor();
-    float fit_w = GetMonitorWidth(mon) * 0.9f, fit_h = GetMonitorHeight(mon) * 0.9f;
-    SetWindowSize((int)fminf(1280 * ui.scale, fit_w), (int)fminf(1100 * ui.scale, fit_h));
+    ui_size_first_window(1280, 1100);
     ui_fonts_load();
     icons_init(app.ctx);
     cursors_init();
