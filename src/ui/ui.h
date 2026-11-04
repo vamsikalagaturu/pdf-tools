@@ -14,6 +14,7 @@
 /* logical window size below which the narrow toolbar and the compact Home page no longer fit */
 #define WINDOW_MIN_W 360.0f
 #define WINDOW_MIN_H 400.0f
+#define WINDOW_FIT_MONITOR 0.9f
 
 /* ---- theme ---- */
 typedef struct {
@@ -113,6 +114,7 @@ typedef struct {
 extern ui_state ui;
 
 float ui_detect_scale(void);
+void ui_size_first_window(float w, float h); /* in UI units, kept on the monitor; before the window shows */
 #ifdef __APPLE__
 void mac_install_open_handler(void); /* app.c: documents opened from Finder */
 void mac_take_opened(pt_strs *out);

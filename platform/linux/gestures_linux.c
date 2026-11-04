@@ -6,6 +6,7 @@
 #include <string.h>
 #include <wayland-client.h>
 #include "pointer-gestures-unstable-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-client-protocol.h"
 
 void ui_add_pinch(float factor, float screen_x, float screen_y);
 void gestures_init(void);
@@ -81,6 +82,107 @@ static void registry_global(void *data, struct wl_registry *r, uint32_t name, co
 static void registry_global_remove(void *data, struct wl_registry *r, uint32_t name) {}
 
 static const struct wl_registry_listener registry_listener = {registry_global, registry_global_remove};
+
+/* ---- Wayland outputs ---- */
+
+#define MAX_OUTPUTS 16
+
+static struct {
+    struct wl_output *output;
+    struct zxdg_output_v1 *xdg;
+    int mode_w, mode_h, logical_w, logical_h;
+} outputs[MAX_OUTPUTS];
+
+static int noutputs;
+static struct zxdg_output_manager_v1 *output_manager;
+
+static void output_geometry(void *data, struct wl_output *o, int32_t x, int32_t y, int32_t mm_w, int32_t mm_h,
+                            int32_t subpixel, const char *make, const char *model, int32_t transform)
+{
+}
+
+static void output_mode(void *data, struct wl_output *o, uint32_t flags, int32_t w, int32_t h, int32_t refresh)
+{
+    if (!(flags & WL_OUTPUT_MODE_CURRENT)) return;
+    int i = (int)(intptr_t)data;
+    outputs[i].mode_w = w, outputs[i].mode_h = h;
+}
+
+static void output_done(void *data, struct wl_output *o) {}
+
+static void output_scale(void *data, struct wl_output *o, int32_t factor) {}
+
+/* version 3: no name or description events */
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry, .mode = output_mode, .done = output_done, .scale = output_scale};
+
+static void xdg_position(void *data, struct zxdg_output_v1 *o, int32_t x, int32_t y) {}
+
+static void xdg_size(void *data, struct zxdg_output_v1 *o, int32_t w, int32_t h)
+{
+    int i = (int)(intptr_t)data;
+    outputs[i].logical_w = w, outputs[i].logical_h = h;
+}
+
+static void xdg_done(void *data, struct zxdg_output_v1 *o) {}
+
+/* version 1: no name or description events */
+static const struct zxdg_output_v1_listener xdg_listener = {
+    .logical_position = xdg_position, .logical_size = xdg_size, .done = xdg_done};
+
+static void outputs_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
+{
+    if (!strcmp(iface, wl_output_interface.name) && noutputs < MAX_OUTPUTS) {
+        outputs[noutputs].output = wl_registry_bind(r, name, &wl_output_interface, version < 3 ? version : 3);
+        wl_output_add_listener(outputs[noutputs].output, &output_listener, (void *)(intptr_t)noutputs);
+        noutputs++;
+    } else if (!output_manager && !strcmp(iface, zxdg_output_manager_v1_interface.name))
+        output_manager = wl_registry_bind(r, name, &zxdg_output_manager_v1_interface, 1);
+}
+
+static const struct wl_registry_listener outputs_registry_listener = {outputs_global, registry_global_remove};
+
+/* The logical size and scale of the smallest output, or 0 when the compositor does not tell. A new window's output is
+ * unknown until it shows, and only the smallest is sure to hold it. */
+int wayland_smallest_output(int *logical_w, int *logical_h, float *scale)
+{
+    struct wl_display *d = glfwGetWaylandDisplay();
+    struct wl_registry *r = wl_display_get_registry(d);
+    wl_registry_add_listener(r, &outputs_registry_listener, NULL);
+    wl_display_roundtrip(d);
+    for (int i = 0; output_manager && i < noutputs; i++) {
+        outputs[i].xdg = zxdg_output_manager_v1_get_xdg_output(output_manager, outputs[i].output);
+        zxdg_output_v1_add_listener(outputs[i].xdg, &xdg_listener, (void *)(intptr_t)i);
+    }
+    wl_display_roundtrip(d);
+
+    int best = -1;
+    for (int i = 0; i < noutputs; i++) {
+        if (outputs[i].logical_w <= 0 || outputs[i].logical_h <= 0) continue;
+        if (best < 0 || outputs[i].logical_w * outputs[i].logical_h < outputs[best].logical_w * outputs[best].logical_h)
+            best = i;
+    }
+    if (best >= 0) {
+        *logical_w = outputs[best].logical_w, *logical_h = outputs[best].logical_h;
+        /* longest sides, so that a rotated output compares like with like */
+        int mode = outputs[best].mode_w > outputs[best].mode_h ? outputs[best].mode_w : outputs[best].mode_h;
+        int logical = *logical_w > *logical_h ? *logical_w : *logical_h;
+        *scale = mode > 0 ? (float)mode / (float)logical : 1;
+    }
+
+    for (int i = 0; i < noutputs; i++) {
+        if (outputs[i].xdg) zxdg_output_v1_destroy(outputs[i].xdg);
+        /* an output the compositor still counts as bound comes back in surface events, where GLFW cannot take a
+         * destroyed one, and before version 3 only the compositor can end the binding */
+        if (wl_output_get_version(outputs[i].output) >= WL_OUTPUT_RELEASE_SINCE_VERSION)
+            wl_output_release(outputs[i].output);
+    }
+    if (output_manager) zxdg_output_manager_v1_destroy(output_manager);
+    output_manager = NULL;
+    noutputs = 0;
+    wl_registry_destroy(r);
+    return best >= 0;
+}
 
 /* ---- X11 ---- */
 

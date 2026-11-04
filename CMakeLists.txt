@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pdf_tools VERSION 0.5.4 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
+project(pdf_tools VERSION 0.5.5 DESCRIPTION "PDF viewer and editor: redact, fill, annotate, sign, merge" LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -200,22 +200,26 @@ else()
       "-framework CoreVideo" "-framework CoreAudio" "-framework AudioToolbox")
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # touchpad pinch: Wayland's pointer-gestures protocol, XInput 2.4 gesture events
+    # touchpad pinch: Wayland's pointer-gestures protocol, XInput 2.4 gesture events; the first window's size:
+    # xdg-output's logical output sizes
     pkg_check_modules(PT_GESTURES REQUIRED IMPORTED_TARGET wayland-client xi)
     pkg_get_variable(PT_WL_PROTOCOLS wayland-protocols pkgdatadir)
     find_program(PT_WAYLAND_SCANNER wayland-scanner REQUIRED)
-    set(PT_PG_XML ${PT_WL_PROTOCOLS}/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml)
-    if(NOT EXISTS ${PT_PG_XML})
-      message(FATAL_ERROR "missing ${PT_PG_XML} (wayland-protocols)")
-    endif()
-    add_custom_command(OUTPUT ${PT_GEN}/pointer-gestures-unstable-v1-client-protocol.h
-      COMMAND ${PT_WAYLAND_SCANNER} client-header ${PT_PG_XML} ${PT_GEN}/pointer-gestures-unstable-v1-client-protocol.h
-      DEPENDS ${PT_PG_XML})
-    add_custom_command(OUTPUT ${PT_GEN}/pointer-gestures-unstable-v1-protocol.c
-      COMMAND ${PT_WAYLAND_SCANNER} private-code ${PT_PG_XML} ${PT_GEN}/pointer-gestures-unstable-v1-protocol.c
-      DEPENDS ${PT_PG_XML})
-    target_sources(pdf-tools PRIVATE platform/linux/gestures_linux.c
-      ${PT_GEN}/pointer-gestures-unstable-v1-client-protocol.h ${PT_GEN}/pointer-gestures-unstable-v1-protocol.c)
+    target_sources(pdf-tools PRIVATE platform/linux/gestures_linux.c)
+    foreach(PT_PROTOCOL pointer-gestures xdg-output)
+      set(PT_XML ${PT_WL_PROTOCOLS}/unstable/${PT_PROTOCOL}/${PT_PROTOCOL}-unstable-v1.xml)
+      if(NOT EXISTS ${PT_XML})
+        message(FATAL_ERROR "missing ${PT_XML} (wayland-protocols)")
+      endif()
+      add_custom_command(OUTPUT ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-client-protocol.h
+        COMMAND ${PT_WAYLAND_SCANNER} client-header ${PT_XML} ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-client-protocol.h
+        DEPENDS ${PT_XML})
+      add_custom_command(OUTPUT ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-protocol.c
+        COMMAND ${PT_WAYLAND_SCANNER} private-code ${PT_XML} ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-protocol.c
+        DEPENDS ${PT_XML})
+      target_sources(pdf-tools PRIVATE ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-client-protocol.h
+        ${PT_GEN}/${PT_PROTOCOL}-unstable-v1-protocol.c)
+    endforeach()
     target_include_directories(pdf-tools PRIVATE ${PT_GEN})
     target_link_libraries(pdf-tools PRIVATE PkgConfig::PT_GESTURES)
   endif()
