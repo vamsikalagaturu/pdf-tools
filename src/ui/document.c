@@ -4,6 +4,7 @@
  * watching, and the state file that moves a tab to another window. Everything here runs on the main thread. */
 #include "tab.h"
 #include "dialogs.h"
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,6 +87,7 @@ static void free_history(pt_state **v, int *n)
 void tab_invalidate_pages(tab *t)
 {
     render_release(t);
+    t->content_known = 0;
 
     for (int p = 0; p < t->npages; p++) {
         if (t->thumb_ok && t->thumb_ok[p]) UnloadTexture(t->thumbs[p]);
@@ -872,7 +874,10 @@ int page_at(tab *t, fz_point pt)
 static float content_x(tab *t)
 {
     float content = t->scene_w * t->zoom;
-    return content < t->view.width ? (t->view.width - content) / 2 : -t->scroll_x;
+    if (content >= t->view.width) return -t->scroll_x;
+    /* centred in what the vertical scrollbar leaves, so the page's two side gaps look the same */
+    float room = t->view.width - (t->scene_h * t->zoom > t->view.height ? PAGE_SCROLLBAR_W : 0);
+    return fmaxf(0, (room - content) / 2);
 }
 
 Vector2 scene_to_screen(tab *t, fz_point p)
@@ -1166,8 +1171,239 @@ void toggle_continuous(tab *t)
     if (t->doc) t->want_scroll_page = t->pno;
 }
 
-/* the zoom at which the widest page fills the view's width (the tallest its height, gaps included), or 0 when
- * that is not known yet */
+/* ---- the side edges of what a document shows, for fitting the width: text, images, drawings and comments ---- */
+
+#define FIT_MARGIN 12.0f    /* screen px beside the content */
+#define FIT_SAMPLE_PAGES 16 /* reading every page of a long document would hold up the window */
+#define FIT_CLIP_DEPTH 32
+#define FIT_WIDEST_LINE_NUMBER "00000"
+#define FIT_BACKGROUND_WIDE 0.9f /* of the page: what is this wide is its background or a border */
+#define FIT_WHITE 0.98f          /* a fill this light is blank paper */
+#define FIT_MIN_CONTENT_W 20.0f  /* points: less than this is no column of content to fit */
+
+typedef struct {
+    fz_device super;
+    float page_w, x0, x1;
+    fz_rect clips[FIT_CLIP_DEPTH];
+    int depth, mask_depth;
+} extent_device;
+
+static fz_rect extent_clip(const extent_device *d)
+{
+    return d->clips[d->depth < FIT_CLIP_DEPTH ? d->depth : FIT_CLIP_DEPTH - 1];
+}
+
+static void extent_add(extent_device *d, fz_rect r)
+{
+    if (d->mask_depth) return;
+    r = fz_intersect_rect(r, extent_clip(d));
+    if (fz_is_empty_rect(r)) return;
+    d->x0 = fminf(d->x0, r.x0), d->x1 = fmaxf(d->x1, r.x1);
+}
+
+static void extent_add_drawing(extent_device *d, fz_rect r)
+{
+    if (r.x1 - r.x0 < FIT_BACKGROUND_WIDE * d->page_w) extent_add(d, r);
+}
+
+static void extent_push(extent_device *d, fz_rect r)
+{
+    fz_rect top = extent_clip(d);
+    d->depth++;
+    if (d->depth < FIT_CLIP_DEPTH) d->clips[d->depth] = fz_intersect_rect(top, r);
+}
+
+static void extent_fill_path(fz_context *ctx, fz_device *dev, const fz_path *path, int even_odd, fz_matrix ctm,
+                             fz_colorspace *cs, const float *color, float alpha, fz_color_params params)
+{
+    (void)even_odd, (void)alpha;
+    float rgb[3] = {0, 0, 0};
+    if (cs && color) fz_convert_color(ctx, cs, color, fz_device_rgb(ctx), rgb, NULL, params);
+    if (fminf(rgb[0], fminf(rgb[1], rgb[2])) >= FIT_WHITE) return;
+    extent_add_drawing((extent_device *)dev, fz_bound_path(ctx, path, NULL, ctm));
+}
+
+static void extent_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke,
+                               fz_matrix ctm, fz_colorspace *cs, const float *color, float alpha,
+                               fz_color_params params)
+{
+    (void)cs, (void)color, (void)alpha, (void)params;
+    extent_add_drawing((extent_device *)dev, fz_bound_path(ctx, path, stroke, ctm));
+}
+
+static void extent_fill_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm, fz_colorspace *cs,
+                             const float *color, float alpha, fz_color_params params)
+{
+    (void)cs, (void)color, (void)alpha, (void)params;
+    extent_add((extent_device *)dev, fz_bound_text(ctx, text, NULL, ctm));
+}
+
+static void extent_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text, const fz_stroke_state *stroke,
+                               fz_matrix ctm, fz_colorspace *cs, const float *color, float alpha,
+                               fz_color_params params)
+{
+    (void)cs, (void)color, (void)alpha, (void)params;
+    extent_add((extent_device *)dev, fz_bound_text(ctx, text, stroke, ctm));
+}
+
+static void extent_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *shade, fz_matrix ctm, float alpha,
+                              fz_color_params params)
+{
+    (void)alpha, (void)params;
+    extent_add_drawing((extent_device *)dev, fz_bound_shade(ctx, shade, ctm));
+}
+
+static void extent_fill_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, float alpha,
+                              fz_color_params params)
+{
+    (void)ctx, (void)image, (void)alpha, (void)params;
+    extent_add((extent_device *)dev, fz_transform_rect(fz_unit_rect, ctm));
+}
+
+static void extent_fill_image_mask(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, fz_colorspace *cs,
+                                   const float *color, float alpha, fz_color_params params)
+{
+    (void)ctx, (void)image, (void)cs, (void)color, (void)alpha, (void)params;
+    extent_add((extent_device *)dev, fz_transform_rect(fz_unit_rect, ctm));
+}
+
+static void extent_clip_path(fz_context *ctx, fz_device *dev, const fz_path *path, int even_odd, fz_matrix ctm,
+                             fz_rect scissor)
+{
+    (void)even_odd, (void)scissor;
+    extent_push((extent_device *)dev, fz_bound_path(ctx, path, NULL, ctm));
+}
+
+static void extent_clip_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke,
+                                    fz_matrix ctm, fz_rect scissor)
+{
+    (void)scissor;
+    extent_push((extent_device *)dev, fz_bound_path(ctx, path, stroke, ctm));
+}
+
+static void extent_clip_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm, fz_rect scissor)
+{
+    (void)scissor;
+    extent_push((extent_device *)dev, fz_bound_text(ctx, text, NULL, ctm));
+}
+
+static void extent_clip_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text, const fz_stroke_state *stroke,
+                                    fz_matrix ctm, fz_rect scissor)
+{
+    (void)scissor;
+    extent_push((extent_device *)dev, fz_bound_text(ctx, text, stroke, ctm));
+}
+
+static void extent_clip_image_mask(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix ctm, fz_rect scissor)
+{
+    (void)ctx, (void)image, (void)scissor;
+    extent_push((extent_device *)dev, fz_transform_rect(fz_unit_rect, ctm));
+}
+
+static void extent_pop_clip(fz_context *ctx, fz_device *dev)
+{
+    (void)ctx;
+    extent_device *d = (extent_device *)dev;
+    if (d->depth > 0) d->depth--;
+}
+
+/* what paints inside a soft mask only decides what shows of something else */
+static void extent_begin_mask(fz_context *ctx, fz_device *dev, fz_rect area, int luminosity, fz_colorspace *cs,
+                              const float *bc, fz_color_params params)
+{
+    (void)ctx, (void)luminosity, (void)cs, (void)bc, (void)params;
+    extent_device *d = (extent_device *)dev;
+    extent_push(d, area);
+    d->mask_depth++;
+}
+
+static void extent_end_mask(fz_context *ctx, fz_device *dev, fz_function *fn)
+{
+    (void)ctx, (void)fn;
+    ((extent_device *)dev)->mask_depth--;
+}
+
+/* widens [*x0, *x1], in scene units, by what page p shows */
+static void page_content_extent(tab *t, int p, float *x0, float *x1)
+{
+    fz_context *ctx = CTX; /* fz_new_derived_device names it */
+    fz_page *page = NULL;
+    extent_device *d = NULL;
+    fz_var(page);
+    fz_var(d);
+    fz_try(CTX)
+    {
+        page = fz_load_page(CTX, (fz_document *)t->doc, p);
+        fz_rect bounds = fz_bound_page(CTX, page);
+        d = fz_new_derived_device(ctx, extent_device);
+        d->page_w = bounds.x1 - bounds.x0;
+        d->x0 = FLT_MAX, d->x1 = -FLT_MAX;
+        d->clips[0] = bounds;
+        d->super.fill_path = extent_fill_path;
+        d->super.stroke_path = extent_stroke_path;
+        d->super.fill_text = extent_fill_text;
+        d->super.stroke_text = extent_stroke_text;
+        d->super.fill_shade = extent_fill_shade;
+        d->super.fill_image = extent_fill_image;
+        d->super.fill_image_mask = extent_fill_image_mask;
+        d->super.clip_path = extent_clip_path;
+        d->super.clip_stroke_path = extent_clip_stroke_path;
+        d->super.clip_text = extent_clip_text;
+        d->super.clip_stroke_text = extent_clip_stroke_text;
+        d->super.clip_image_mask = extent_clip_image_mask;
+        d->super.pop_clip = extent_pop_clip;
+        d->super.begin_mask = extent_begin_mask;
+        d->super.end_mask = extent_end_mask;
+        fz_run_page(CTX, page, &d->super, fz_identity, NULL);
+        fz_close_device(CTX, &d->super);
+        if (d->x0 <= d->x1) {
+            *x0 = fminf(*x0, t->off_x[p] + d->x0 - bounds.x0);
+            *x1 = fmaxf(*x1, t->off_x[p] + d->x1 - bounds.x0);
+        }
+    }
+    fz_always(CTX)
+    {
+        fz_drop_device(CTX, d ? &d->super : NULL);
+        fz_drop_page(CTX, page);
+    }
+    fz_catch(CTX) pt_log(PT_LOG_WARN, "no content extent for page %d", p + 1);
+}
+
+/* the side edges of the document's content in scene units, from pages sampled evenly and the current one; 0 when it
+ * shows too little to fit to */
+static int content_extent(tab *t, float *x0, float *x1)
+{
+    if (!t->content_known) {
+        t->content_known = 1;
+        t->content_x0 = FLT_MAX, t->content_x1 = -FLT_MAX;
+        layout_scene(t);
+        int n = t->st.order.n, samples = n < FIT_SAMPLE_PAGES ? n : FIT_SAMPLE_PAGES;
+        for (int i = 0; i < samples; i++) {
+            int k = samples > 1 ? (int)((long long)i * (n - 1) / (samples - 1)) : 0;
+            page_content_extent(t, t->st.order.v[k], &t->content_x0, &t->content_x1);
+        }
+        if (t->pno >= 0 && t->pno < t->npages) page_content_extent(t, t->pno, &t->content_x0, &t->content_x1);
+    }
+    *x0 = t->content_x0, *x1 = t->content_x1;
+    int enough = t->content_x1 - t->content_x0 >= FIT_MIN_CONTENT_W;
+    /* the line numbers lie beside the text and scale with the page; both sides, so that the text stays centred */
+    if (enough && pt_settings_int(&app.settings, "line_numbers")) {
+        float size = (float)pt_settings_int(&app.settings, "line_numbers_size");
+        float room = LINE_NUMBER_GAP_PT + text_width(FIT_WIDEST_LINE_NUMBER, size, F_BOLD);
+        *x0 -= room, *x1 += room;
+    }
+    return enough;
+}
+
+float tab_fit_scroll_x(tab *t, float zoom)
+{
+    float x0, x1;
+    if (!content_extent(t, &x0, &x1)) return 0;
+    return fmaxf(0, (x0 + PAGE_GAP) * zoom - FIT_MARGIN);
+}
+
+/* the zoom at which the document's content fills the view's width (the tallest page its height, gaps included), or 0
+ * when that is not known yet */
 static float fit_zoom(tab *t, fit_mode fit)
 {
     float page_w = 0, page_h = 0;
@@ -1177,6 +1413,9 @@ static float fit_zoom(tab *t, fit_mode fit)
         if (spread_start(t, i) == i) page_w = fmaxf(page_w, spread_width(t, i));
     }
     if (fit == FIT_HEIGHT) return t->view.height > 100 && page_h > 0 ? t->view.height / (page_h + 2 * PAGE_GAP) : 0;
+    float x0, x1;
+    if (t->view.width > 100 && content_extent(t, &x0, &x1) && x1 - x0 < page_w)
+        return (t->view.width - PAGE_SCROLLBAR_W - 2 * FIT_MARGIN) / (x1 - x0);
     /* the gaps beside the pages scale with the zoom; 14 px stay for the vertical scrollbar */
     return t->view.width > 100 && page_w > 0 ? (t->view.width - 14) / (page_w + 2 * PAGE_GAP) : 0;
 }
@@ -1190,6 +1429,7 @@ void zoom_to(tab *t, float target, fit_mode fit)
     t->zanim_fit = fit;
     t->zanim_t0 = ui.now;
     t->zanim_e = 0;
+    t->zanim_sx0 = t->scroll_x;
     /* the scene point in the middle of the view glides to where it is once the zoom lands, so fitting the height
      * (which shows the current page from its top) ends without a jump */
     float h = t->view.height, z = t->zanim_to;
@@ -1219,6 +1459,26 @@ void tab_fit(tab *t, fit_mode fit)
 
 /* ---- per-page caches: words, form fields, annotations, links ---- */
 
+#define RUNNING_PAGES_AWAY 2 /* books alternate their heads between left and right pages */
+
+/* Page `page`'s words just came: compares its top and bottom rows with those of the pages around it already here. */
+void tab_mark_running(tab *t, int page)
+{
+    int marked = 0;
+    if (t->npages == 1) marked = pt_mark_lone_page_number(&t->words[page]);
+    for (int away = -RUNNING_PAGES_AWAY; away <= RUNNING_PAGES_AWAY; away++) {
+        int other = page + away;
+        if (away && other >= 0 && other < t->npages && t->words_ok[other])
+            marked += pt_mark_running_lines(&t->words[page], &t->words[other]);
+    }
+    if (!marked) return;
+    /* what was counted before these words were known to be no lines is counted again */
+    if (t->line_info) memset(t->line_info, 0, sizeof(page_lines_info) * (size_t)t->npages);
+    for (int p = 0; t->caret_lines_ok && p < t->npages; p++)
+        if (t->caret_lines_ok[p]) pt_vec_free(t->caret_lines[p]), t->caret_lines_ok[p] = 0;
+    ui.dirty = 1;
+}
+
 pt_words *page_words(tab *t, int page)
 {
     if (!t->words_ok[page]) {
@@ -1247,6 +1507,7 @@ pt_words *page_words(tab *t, int page)
             pt_vec_free(t->figures[page]);
         }
         t->words_ok[page] = 1;
+        tab_mark_running(t, page);
     }
     return &t->words[page];
 }

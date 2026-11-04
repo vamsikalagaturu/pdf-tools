@@ -321,6 +321,7 @@ const pt_ex_command pt_ex_commands[] = {
     {"help", 1, PT_EX_HELP, NULL, "", "The vim keys and these commands"},
     {"tabnext", 4, PT_EX_ACTION, "tab.next", "", "Next tab"},
     {"tabprevious", 4, PT_EX_ACTION, "tab.prev", "", "Previous tab"},
+    {"tabs", 4, PT_EX_ACTION, "tab.list", "", "Search the open tabs"},
 };
 const int pt_ex_count = sizeof pt_ex_commands / sizeof *pt_ex_commands;
 

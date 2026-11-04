@@ -1581,7 +1581,8 @@ struct ui_menu {
 };
 
 #define MENU_ROW 26
-#define MENU_DRILL_MAX_W 320.0f /* a long file name is shortened rather than widening a menu on a small window */
+#define MENU_MAX_W 420.0f       /* a long file name is shortened rather than widening its menu */
+#define MENU_DRILL_MAX_W 320.0f /* likewise on a small window, where every submenu opens at this width */
 #define MENU_LABEL_END 20.0f    /* room kept after a label for a submenu's arrow */
 #define MENU_SHORTCUT_GAP 12.0f
 #define MENU_SEP 9
@@ -1704,7 +1705,7 @@ static Rectangle menu_size(ui_menu *m)
         if (e->shortcut) shortcut_w = fmaxf(shortcut_w, text_width(e->shortcut, FS_NORMAL, F_REGULAR) + 24);
         if (lw > w) w = lw;
     }
-    return (Rectangle){0, 0, w + shortcut_w, h};
+    return (Rectangle){0, 0, fminf(w + shortcut_w, MENU_MAX_W), h};
 }
 
 static void place(ui_menu *m, float x, float y, float alt_x)
@@ -1728,14 +1729,26 @@ static float tree_width(ui_menu *m, const char *back)
     return w;
 }
 
-/* When a submenu has room on neither side of the open menu, every submenu opens over it instead, where it lies and
+/* how far a menu's deepest chain of submenus reaches beyond it, each opening beside the one before */
+static float submenus_reach(ui_menu *m)
+{
+    float reach = 0;
+    for (int i = 0; i < m->items.n; i++)
+        if (m->items.v[i].sub) {
+            ui_menu *sub = m->items.v[i].sub;
+            reach = fmaxf(reach, menu_size(sub).width - MENU_INSET + submenus_reach(sub));
+        }
+    return reach;
+}
+
+/* When the submenus have room on neither side of the open menu, every submenu opens over it instead, where it lies and
  * as wide as the widest of them, with a row back; the open menu takes that width at once, so nothing moves while
  * going in and out. */
 static void choose_drill(void)
 {
     ui_menu *root = open_menus[0];
-    float w = tree_width(root, NULL);
-    drill = root->r.x + root->r.width + fminf(w, ui.w - 4) > ui.w - 2 && root->r.x - fminf(w, ui.w - 4) < 2;
+    float w = tree_width(root, NULL), reach = submenus_reach(root);
+    drill = reach > 0 && root->r.x + root->r.width + reach > ui.w - 2 && root->r.x - reach < 2;
     if (!drill) return;
     root->r.width = fminf(fmaxf(root->r.width, fminf(w, MENU_DRILL_MAX_W)), ui.w - 4);
     if (root->r.x + root->r.width > ui.w - 2) root->r.x = fmaxf(2, ui.w - 2 - root->r.width);

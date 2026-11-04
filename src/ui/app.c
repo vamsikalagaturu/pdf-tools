@@ -728,6 +728,7 @@ static void tab_list_open(void)
 {
     dialog *d = calloc(1, sizeof *d);
     tab_list *l = calloc(1, sizeof *l);
+    l->sel = app.current; /* with nothing typed the rows are the tabs in order */
     l->filter.placeholder = "Search open tabs";
     l->filter.size = FS_NORMAL;
     *d = (dialog){"Go to tab", 520, 460, tab_list_frame, tab_list_free, l, 1};
@@ -904,6 +905,7 @@ static void global_shortcuts(void)
     if (keymap_pressed("close_window")) app_quit_request();
     if (keymap_pressed("tab.next") && app.tabs.n > 1) app.current = (app.current + 1) % app.tabs.n;
     if (keymap_pressed("tab.prev") && app.tabs.n > 1) app.current = (app.current - 1 + app.tabs.n) % app.tabs.n;
+    if (keymap_pressed("tab.list")) tab_list_open();
     if (keymap_pressed("home")) app_go_home();
     if (keymap_pressed("star_file")) app_star_current_doc();
     if (keymap_pressed("shortcuts")) keymap_dialog();

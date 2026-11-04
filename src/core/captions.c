@@ -50,6 +50,13 @@ static const caption_word WORDS[] = {
 };
 #define WORD_COUNT ((int)(sizeof WORDS / sizeof *WORDS))
 
+int pt_is_caption_word(const char *word)
+{
+    for (int i = 0; i < WORD_COUNT; i++)
+        if (!strcasecmp(word, WORDS[i].word)) return 1;
+    return 0;
+}
+
 /* a '.' after these ends no sentence */
 static const char *ABBREVIATIONS[] = {"al", "cf", "vs", "Fig",  "Figs", "Eq",  "Eqs", "Sec", "Tab",    "Ref", "Refs",
                                       "No", "Nr", "Dr", "Prof", "Abb",  "bzw", "ca",  "vgl", "approx", "resp"};

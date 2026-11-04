@@ -269,7 +269,7 @@ static void flush(pt_chars *cur, const fz_stext_line *line, int source_line, int
                   pt_words *out)
 {
     if (!cur->n) return;
-    pt_word w = {fz_empty_rect, NULL, 0, *cur, source_line, source_block, -1, line->dir, size};
+    pt_word w = {fz_empty_rect, NULL, 0, *cur, source_line, source_block, -1, line->dir, size, 0};
     pt_ints runes = {0};
     for (int i = 0; i < cur->n; i++) {
         w.rect = i ? fz_union_rect(w.rect, cur->v[i].r) : cur->v[i].r;
@@ -915,6 +915,8 @@ static int by_middle(const void *a, const void *b)
 
 /* lines starting (or ending) within this many points of each other share an edge */
 #define EDGE_BIN_PT 2.0f
+#define NOTE_COLUMN_SHARE 0.7f
+#define SHORT_COLUMN_MIN_LINES 2
 /* an edge shared by at least this share of the lines the most shared edge has is the main text's (both columns of
  * a two-column page), not a note's */
 #define MAIN_EDGE_SHARE 0.5f
@@ -977,19 +979,27 @@ static int crossing(const pt_text_lines *lines, float x)
 }
 
 /* the starts of the main text's columns, left to right: line starts shared by at least MAIN_EDGE_SHARE of the lines
- * the most shared start has, with a gutter left of them that fewer lines cross than half as many as start there */
+ * the most shared start has, with a gutter left of them that fewer lines cross than half as many as start there. A
+ * start with fewer lines counts too when a line as wide as the widest begins there: figures fill the rest of that
+ * column. */
 static int column_starts(const pt_text_lines *lines, float *starts)
 {
     int most = 0, n = 0;
+    float widest = 0;
     for (int i = 0; i < lines->n; i++) {
         int k = sharing_edge(lines, 0, lines->v[i].r.x0);
         if (k > most) most = k;
+        widest = fmaxf(widest, lines->v[i].r.x1 - lines->v[i].r.x0);
     }
     for (int i = 0; i < lines->n && n < COLUMNS_MAX; i++) {
         float x = lines->v[i].r.x0;
-        int known = 0, share = sharing_edge(lines, 0, x);
+        int known = 0, share = sharing_edge(lines, 0, x), wide = 0;
         for (int k = 0; k < n && !known; k++) known = fabsf(starts[k] - x) <= EDGE_BIN_PT;
-        if (known || share < MAIN_EDGE_SHARE * most || 2 * crossing(lines, x) >= share) continue;
+        for (int k = 0; k < lines->n && !wide; k++)
+            wide = fabsf(lines->v[k].r.x0 - x) <= EDGE_BIN_PT &&
+                   lines->v[k].r.x1 - lines->v[k].r.x0 >= NOTE_COLUMN_SHARE * widest;
+        int enough = share >= MAIN_EDGE_SHARE * most || (wide && share >= SHORT_COLUMN_MIN_LINES);
+        if (known || !enough || 2 * crossing(lines, x) >= share) continue;
         int at = n++;
         for (; at > 0 && starts[at - 1] > x; at--) starts[at] = starts[at - 1];
         starts[at] = x;
@@ -1127,6 +1137,24 @@ static void drop_margin_notes(pt_text_lines *lines)
         fz_rect r = lines->v[i].r;
         outside[i] = (has_left && r.x1 <= left - EDGE_BIN_PT) || (has_right && r.x0 >= right + EDGE_BIN_PT);
     }
+    /* a line about as wide as the main text is a column with few lines (figures fill the rest of it, so the other
+     * column set the main edges), and so are the lines within its width: notes are narrow */
+    if (has_left && has_right) {
+        char *in_column = calloc((size_t)lines->n + 1, 1);
+        if (!in_column) abort();
+        float column_w = NOTE_COLUMN_SHARE * (right - left);
+        for (int j = 0; j < lines->n; j++) {
+            fz_rect wide = lines->v[j].r;
+            if (!outside[j] || wide.x1 - wide.x0 < column_w) continue;
+            for (int i = 0; i < lines->n; i++) {
+                fz_rect r = lines->v[i].r;
+                if (outside[i] && r.x0 >= wide.x0 - EDGE_BIN_PT && r.x1 <= wide.x1 + EDGE_BIN_PT) in_column[i] = 1;
+            }
+        }
+        for (int i = 0; i < lines->n; i++)
+            if (in_column[i]) outside[i] = 0;
+        free(in_column);
+    }
     for (int i = 0; i < lines->n; i++)
         if (!outside[i] || hung_label(lines, outside, lines->v[i].r)) lines->v[n++] = lines->v[i];
     lines->n = n;
@@ -1152,10 +1180,144 @@ static int in_figure(fz_rect r, const pt_rects *figures, float narrow_w)
     return 0;
 }
 
+/* ---- running heads and feet: what repeats at one height from page to page ---- */
+
+#define RUNNING_ROW_PT 2.0f  /* the words of a row have their middles within this */
+#define RUNNING_SAME_PT 1.0f /* two pages' rows are at one height when within this */
+#define RUNNING_TEXT_MAX 256
+#define RUNNING_PAGES_AWAY 2 /* books alternate their heads between left and right pages */
+
+static float word_middle(const pt_word *w) { return (w->rect.y0 + w->rect.y1) / 2; }
+
+/* the middle of the page's top or bottom row; 0 when the page has no level words */
+static int extreme_row(const pt_words *w, int bottom, float *y)
+{
+    int found = 0;
+    for (int i = 0; i < w->n; i++) {
+        if (pt_word_slanted(&w->v[i])) continue;
+        float m = word_middle(&w->v[i]);
+        if (!found || (bottom ? m > *y : m < *y)) *y = m;
+        found = 1;
+    }
+    return found;
+}
+
+/* arabic or roman, as front matter is numbered */
+static int is_page_number(const char *s)
+{
+    int digits = 1, roman = 1;
+    for (const char *c = s; *c; c++) {
+        digits &= *c >= '0' && *c <= '9';
+        roman &= strchr("ivxlcdmIVXLCDM", *c) != NULL;
+    }
+    return *s && (digits || roman);
+}
+
+/* the row's text without its digits; *number when the row is one number alone */
+static void row_signature(const pt_words *w, float y, char *sig, size_t size, int *number)
+{
+    size_t n = 0;
+    int words = 0, numbers = 0;
+    for (int i = 0; i < w->n; i++) {
+        const pt_word *word = &w->v[i];
+        if (pt_word_slanted(word) || fabsf(word_middle(word) - y) > RUNNING_ROW_PT) continue;
+        words++;
+        numbers += is_page_number(word->text);
+        for (const char *c = word->text; *c && n + 1 < size; c++)
+            if (*c < '0' || *c > '9') sig[n++] = *c;
+    }
+    sig[n] = 0;
+    *number = words == 1 && numbers == 1;
+}
+
+static int mark_row(pt_words *w, float y)
+{
+    int marked = 0;
+    for (int i = 0; i < w->n; i++) {
+        pt_word *word = &w->v[i];
+        if (pt_word_slanted(word) || fabsf(word_middle(word) - y) > RUNNING_ROW_PT || word->running) continue;
+        word->running = 1;
+        marked++;
+    }
+    return marked;
+}
+
+/* a row between the top and bottom rows: heads and feet run around a page's text, so with none they are its text */
+static int has_body(const pt_words *w)
+{
+    float top, bottom;
+    if (!extreme_row(w, 0, &top) || !extreme_row(w, 1, &bottom)) return 0;
+    for (int i = 0; i < w->n; i++) {
+        float m = word_middle(&w->v[i]);
+        if (!pt_word_slanted(&w->v[i]) && fabsf(m - top) > RUNNING_ROW_PT && fabsf(m - bottom) > RUNNING_ROW_PT)
+            return 1;
+    }
+    return 0;
+}
+
+int pt_mark_running_lines(pt_words *a, pt_words *b)
+{
+    int marked = 0;
+    if (!has_body(a) || !has_body(b)) return 0;
+    for (int bottom = 0; bottom < 2; bottom++) {
+        float ya, yb;
+        if (!extreme_row(a, bottom, &ya) || !extreme_row(b, bottom, &yb) || fabsf(ya - yb) > RUNNING_SAME_PT) continue;
+        char sa[RUNNING_TEXT_MAX], sb[RUNNING_TEXT_MAX];
+        int na, nb;
+        row_signature(a, ya, sa, sizeof sa, &na);
+        row_signature(b, yb, sb, sizeof sb, &nb);
+        if (na != nb || (!na && (!*sa || strcmp(sa, sb)))) continue;
+        marked += mark_row(a, ya) + mark_row(b, yb);
+    }
+    return marked;
+}
+
+int pt_mark_lone_page_number(pt_words *words)
+{
+    int marked = 0;
+    for (int bottom = 0; bottom < 2; bottom++) {
+        float y;
+        char sig[RUNNING_TEXT_MAX];
+        int number;
+        if (!extreme_row(words, bottom, &y)) continue;
+        row_signature(words, y, sig, sizeof sig, &number);
+        if (number) marked += mark_row(words, y);
+    }
+    return marked;
+}
+
+void pt_mark_running_in_doc(fz_context *ctx, fz_document *doc, int page, pt_words *words)
+{
+    int pages = fz_count_pages(ctx, doc);
+    if (pages == 1) pt_mark_lone_page_number(words);
+    for (int away = -RUNNING_PAGES_AWAY; away <= RUNNING_PAGES_AWAY; away++) {
+        int other = page + away;
+        if (!away || other < 0 || other >= pages) continue;
+        fz_page *p = fz_load_page(ctx, doc, other);
+        fz_stext_page *st = NULL;
+        pt_words near = {0};
+        fz_var(st);
+        fz_try(ctx)
+        {
+            st = pt_stext(ctx, p);
+            pt_reading_order_words(st, &near);
+            pt_mark_running_lines(words, &near);
+        }
+        fz_always(ctx)
+        {
+            pt_words_free(&near);
+            fz_drop_stext_page(ctx, st);
+            fz_drop_page(ctx, p);
+        }
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
 void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_w, pt_numbering mode,
                      pt_numbering_state *state, pt_text_lines *out)
 {
     pt_text_lines lines = {0};
+    pt_ints piece_block = {0}, piece_caption = {0};
     /* MuPDF's own text lines are the pieces, in the order reading order reaches them: a note set beside the text is a
      * line of its own there however close it comes; the join below puts a line's pieces on one baseline together */
     int sources = 0;
@@ -1167,20 +1329,34 @@ void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_
     for (int i = 0; i < words->n; i++) {
         const pt_word *w = &words->v[i];
         /* slanted words (a table's column headers) are on no line: lineno numbers the row they stand on */
-        if (pt_word_slanted(w)) continue;
+        if (pt_word_slanted(w) || w->running) continue;
         int *piece = &piece_of[w->source_line];
         if (*piece >= 0) lines.v[*piece].r = fz_union_rect(lines.v[*piece].r, w->rect);
         else {
             *piece = lines.n;
             pt_push(lines, ((pt_text_line){w->rect, 0, 0, 0}));
+            pt_push(piece_block, w->source_block);
+            /* "Fig. 2:", the word and its number at the start of the line */
+            const pt_word *next = i + 1 < words->n ? &words->v[i + 1] : NULL;
+            int numbered = next && next->source_line == w->source_line && strchr("0123456789IVXLivxl", next->text[0]);
+            pt_push(piece_caption, numbered && pt_is_caption_word(w->text));
         }
     }
     free(piece_of);
-    /* lineno numbers the text, not what a figure shows */
+    /* lineno numbers the text, not what a figure shows. A short line in one of MuPDF's blocks with a full line is the
+     * end of a paragraph, whatever figure it comes to lie beside, and a short caption is a caption: neither is a
+     * figure's label. */
     int kept = 0;
-    for (int i = 0; i < lines.n; i++)
-        if (!in_figure(lines.v[i].r, figures, CELL_COLUMN_W * page_w)) lines.v[kept++] = lines.v[i];
+    float label_w = CELL_COLUMN_W * page_w;
+    for (int i = 0; i < lines.n; i++) {
+        int not_label = piece_caption.v[i];
+        for (int k = 0; k < lines.n && !not_label; k++)
+            not_label = piece_block.v[k] == piece_block.v[i] && lines.v[k].r.x1 - lines.v[k].r.x0 >= label_w;
+        if (!in_figure(lines.v[i].r, figures, not_label ? 0 : label_w)) lines.v[kept++] = lines.v[i];
+    }
     lines.n = kept;
+    pt_vec_free(piece_block);
+    pt_vec_free(piece_caption);
     /* before joining pieces on one baseline, so a note beside a line of text is not joined to it */
     drop_margin_notes(&lines);
     float starts[COLUMNS_MAX];

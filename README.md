@@ -41,7 +41,7 @@ BSD-style and fontconfig's MIT-style licenses are permissive and impose nothing 
   Everything the window does works from the keyboard: `:` runs any action or command (`:w`, `:q`, `:42`,
   `:zoom 150`, `:set relativenumber`, `:colour #c62828`, with completion), `gt`/`gT` switch tabs, Space e moves
   into the sidebar, Space Shift+N/T/I/S put notes, text, images and signatures at the caret, Ctrl+V draws a box
-  for shapes, crops and redactions, `]a`/`[a` select annotations to move (h/j/k/l), resize (H/J/K/L), edit (`i`) or delete (`dd`);
+  for shapes, crops and redactions, `]c`/`[c` go to the next and previous column, `]a`/`[a` select annotations to move (h/j/k/l), resize (H/J/K/L), edit (`i`) or delete (`dd`);
   Enter or Ctrl+] follows the link at the caret, Ctrl+o/Ctrl+i go back and forward (across files too); `ma` sets a
   mark (a bookmark called `a`; capitals work across files), `'a` and `` `a `` jump to its line or character; `*`/`#`
   find the word under the caret, `zz`/`zt`/`zb` place its line in the view, `viw`/`vip` select a word or paragraph. A mouse selection

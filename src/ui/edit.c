@@ -303,6 +303,7 @@ static void run(void *ctx, intptr_t a)
         int pt = pt_settings_int(&app.settings, "line_numbers_size") + (a == A_NUMBERS_BIGGER ? 1 : -1);
         if (pt < PT_LINE_NUMBERS_MIN_PT || pt > PT_LINE_NUMBERS_MAX_PT) break;
         pt_settings_set_int(&app.settings, "line_numbers_size", pt);
+        line_numbers_changed();
         char msg[48];
         snprintf(msg, sizeof msg, "Line numbers %d pt", pt);
         status(msg, 2);
@@ -1466,6 +1467,51 @@ static int caret_motion(tab *t, int key, int mods, int g, int count)
     return 1;
 }
 
+/* The top line of the column beside `from` towards dir on a page's lines, or of the page's first or last column with
+ * from NULL. Columns lie wholly apart: an indented block in a single column is no column of its own. -1 when none. */
+static int column_top(const pt_text_lines *l, const pt_text_line *from, int dir)
+{
+    const pt_text_line *column = NULL;
+    for (int i = 0; i < l->n; i++) {
+        const pt_text_line *c = &l->v[i];
+        if (from && (dir > 0 ? c->col_x0 < from->col_x1 : c->col_x1 > from->col_x0)) continue;
+        if (!column || (dir > 0 ? c->col_x0 < column->col_x0 : c->col_x0 > column->col_x0)) column = c;
+    }
+    int top = -1;
+    for (int i = 0; column && i < l->n; i++) {
+        const pt_text_line *c = &l->v[i];
+        int same = c->col_x0 < column->col_x1 && c->col_x1 > column->col_x0;
+        if (same && (top < 0 || c->r.y0 < l->v[top].r.y0)) top = i;
+    }
+    return top;
+}
+
+/* ]c, [c: to the top of the next or previous column, on to the next page's first or the previous page's last */
+static void caret_column_step(tab *t, int dir, int times)
+{
+    if (!caret_ready(t)) return;
+    pt_text_lines lines = {0};
+    caret_spot s = t->at;
+    for (int n = 0; n < times; n++) {
+        caret_lines(t, s.page, &lines);
+        int i = lines.n ? spot_line(t, &lines, s) : -1, top = i >= 0 ? column_top(&lines, &lines.v[i], dir) : -1;
+        int page = s.page;
+        for (int o = order_index(t, page) + dir; top < 0 && o >= 0 && o < t->st.order.n; o += dir) {
+            page = t->st.order.v[o];
+            caret_lines(t, page, &lines);
+            top = column_top(&lines, NULL, dir);
+        }
+        if (top < 0) break;
+        s = nearest_in_line(t, page, lines.v[top].r, lines.v[top].r.x0, s);
+        line_hint.t = t, line_hint.at = s, line_hint.line = top;
+    }
+    pt_vec_free(lines);
+    if (s.page != t->at.page) vim_page(t, order_index(t, s.page));
+    t->at = s;
+    keep_caret_x(t);
+    caret_follow(t);
+}
+
 /* v, V and Ctrl+V start (or end) a selection from the caret; y and a end one; H/J/K/L grow a block; 0 for other keys */
 static int caret_mode_key(tab *t, int key, int mods, int count)
 {
@@ -2212,6 +2258,7 @@ static int vim_key(tab *t, int key, int mods)
         int dir = vim.bracket;
         vim_reset();
         if (keymap_is("vim.item", key, mods)) select_item(t, dir, times);
+        else if (keymap_is("vim.column", key, mods)) caret_column_step(t, dir, times);
         return 0;
     }
     if (vim.d) {
@@ -3029,10 +3076,10 @@ void tab_frame(tab *t, Rectangle area)
 
 #define STATUS_EDGE 8.0f /* between the status line's right end and the page number */
 #define STATUS_PAD 6.0f  /* around the page number inside its hover box */
-#define STATUS_GAP 12.0f /* between the status line's pieces */
-#define POS_GAP 24.0f    /* between the line:column and the page, so the two numbers read apart */
+#define STATUS_GAP 14.0f /* between the status line's pieces */
 #define COPY_BUTTON 22.0f
-#define LINE_COL_WIDEST "00000 : 000" /* the line:column slot fits this */
+#define COPY_ICON_INSET 2.0f    /* of the button's glyph, left out of the gaps beside it */
+#define LINE_COL_MIN "000 : 00" /* the line:column slot's width until the numbers outgrow it */
 
 float tab_status(tab *t, Rectangle area)
 {
@@ -3068,13 +3115,11 @@ float tab_status(tab *t, Rectangle area)
         DrawRectangleRounded(pos_r, 0.3f, 4, pal.button);
         set_cursor(CUR_HAND);
     }
-    draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 1);
+    draw_text_in(pos, (Rectangle){rx - pw, area.y, pw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
     ui_tooltip(bid(t, 302), pos_r, keymap_tip("Go to page", "goto"));
     if (ui_clicked(pos_r)) ask_goto(t);
-    rx -= pw + STATUS_PAD + POS_GAP;
+    rx -= pw + STATUS_GAP;
     if (vim_keys_on()) {
-        float lw = text_width(LINE_COL_WIDEST, FS_NORMAL, F_REGULAR);
-
         /* worked out again only when the caret moves or the text changes */
         static struct {
             const tab *t;
@@ -3089,17 +3134,19 @@ float tab_status(tab *t, Rectangle area)
             shown.col = shown.line ? caret_column(t) : 0;
         }
         int line = t->caret ? shown.line : 0;
-        if (line) {
-            char lc[32];
-            snprintf(lc, sizeof lc, "%d : %d", line, shown.col);
-            draw_text_in(lc, (Rectangle){rx - lw, area.y, lw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
-        }
+        /* centred in a slot, so the gaps on both sides match and the pieces beside it hold still */
+        char lc[32] = "";
+        if (line) snprintf(lc, sizeof lc, "%d : %d", line, shown.col);
+        float lw = fmaxf(text_width(LINE_COL_MIN, FS_NORMAL, F_REGULAR), text_width(lc, FS_NORMAL, F_REGULAR));
+        if (line)
+            draw_text_in(lc, (Rectangle){rx - lw, area.y, lw, area.height}, FS_NORMAL, F_REGULAR, pal.window_text, 0);
         rx -= lw + STATUS_GAP;
     }
 #ifndef __ANDROID__
-    Rectangle copy = {rx - COPY_BUTTON, area.y + (area.height - COPY_BUTTON) / 2, COPY_BUTTON, COPY_BUTTON};
+    Rectangle copy = {rx - COPY_BUTTON + COPY_ICON_INSET, area.y + (area.height - COPY_BUTTON) / 2, COPY_BUTTON,
+                      COPY_BUTTON};
     if (ui_button(bid(t, 300), copy, NULL, "copy", B_FLAT, "Copy path")) tab_copy_path(t);
-    rx -= COPY_BUTTON + STATUS_PAD;
+    rx -= COPY_BUTTON - 2 * COPY_ICON_INSET + STATUS_GAP;
     float path_w = fminf(PATH_WIDTH, (rx - area.x - STATUS_GAP) * 0.6f);
     if (path_w >= 60) {
         char *path = elide_middle(t->path, path_w, FS_NORMAL, F_REGULAR);
@@ -4699,6 +4746,8 @@ void text_box_frame(tab *t)
                 copy.text = (char *)text;
                 copy.size = size;
                 copy.rect = fz_make_rect(0, 0, w, h);
+                Color ink = document_colour(b->obj.rgb, DOCUMENT_INK);
+                copy.rgb[0] = ink.r, copy.rgb[1] = ink.g, copy.rgb[2] = ink.b;
                 pt_draw_text(CTX, tmp, page, &copy, t->pdf);
                 fz_drop_page(CTX, (fz_page *)page);
                 page = pdf_load_page(CTX, tmp, 0);
@@ -4771,7 +4820,7 @@ void text_box_frame(tab *t)
             Rectangle c =
                 scene_rect_to_screen(t, to_scene(t, b->page, fz_make_rect(x, top, x, top + size * (asc - desc))));
             DrawLineEx((Vector2){c.x, c.y}, (Vector2){c.x + (c.width > 1 ? c.width : 0), c.y + c.height}, 1.5f,
-                       rgb3(b->obj.rgb));
+                       document_colour(b->obj.rgb, DOCUMENT_INK));
         }
     }
     pt_vec_free(lines);

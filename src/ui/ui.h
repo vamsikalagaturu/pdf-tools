@@ -417,6 +417,11 @@ void app_toggle_reading(void);
 int app_document_dark(void);     /* any thread */
 void app_toggle_document_dark(void);
 Color app_document_paper(void);
+
+enum { DOCUMENT_FILL, DOCUMENT_INK, DOCUMENT_MARK };
+
+/* how a colour of the document shows on the page in the current mode; the document itself keeps it */
+Color document_colour(const unsigned char rgb[3], int role);
 #ifndef __ANDROID__
 int app_fullscreen(void);
 void app_toggle_fullscreen(void);

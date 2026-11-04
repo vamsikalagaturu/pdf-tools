@@ -214,13 +214,14 @@ static fz_display_list *worker_record(render_worker_state *w, render_job *j)
 #define DARK_SCAN_MIN_COVER 0.7f  /* of the page: an image this large and without colour is a scanned page */
 #define DARK_SCAN_MAX_CHROMA 0.04f
 
-enum { DARK_FILL, DARK_INK, DARK_MARK };
+enum { DARK_FILL = DOCUMENT_FILL, DARK_INK = DOCUMENT_INK, DARK_MARK = DOCUMENT_MARK };
 
 typedef struct {
     fz_device super;
     fz_device *target;
     int mask_depth;              /* inside a soft mask, where lightness means transparency */
     int group_depth, mark_group; /* the group that multiplies (a highlight), by depth; 0 when none is open */
+    int ink_group;               /* the group that lightens (a text colour mark), likewise */
     fz_irect box;                /* the device pixels being rendered */
     float page_area;             /* in device pixels */
 } dark_device;
@@ -240,6 +241,15 @@ static void dark_colour(const float rgb[3], int role, float out[3])
         if (role != DARK_INK) c = mapped + (c - mapped) * DARK_FILL_CHROMA;
         out[i] = fminf(1, fmaxf(0, c));
     }
+}
+
+Color document_colour(const unsigned char rgb[3], int role)
+{
+    if (!app_document_dark()) return (Color){rgb[0], rgb[1], rgb[2], 255};
+    float in[3] = {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f}, out[3];
+    dark_colour(in, role, out);
+    return (Color){(unsigned char)(out[0] * 255 + 0.5f), (unsigned char)(out[1] * 255 + 0.5f),
+                   (unsigned char)(out[2] * 255 + 0.5f), 255};
 }
 
 /* every pixel of an RGB pixmap with alpha, whose colours are premultiplied */
@@ -317,7 +327,8 @@ static void dark_fill_path(fz_context *ctx, fz_device *dev, const fz_path *path,
 {
     dark_device *d = (dark_device *)dev;
     float out[3];
-    color = dark_paint(ctx, d, d->mark_group ? DARK_MARK : DARK_FILL, &cs, color, params, out);
+    int role = d->mark_group ? DARK_MARK : d->ink_group ? DARK_INK : DARK_FILL;
+    color = dark_paint(ctx, d, role, &cs, color, params, out);
     fz_fill_path(ctx, d->target, path, even_odd, ctm, cs, color, alpha, params);
 }
 
@@ -326,7 +337,7 @@ static void dark_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *pat
 {
     dark_device *d = (dark_device *)dev;
     float out[3];
-    color = dark_paint(ctx, d, 1, &cs, color, params, out);
+    color = dark_paint(ctx, d, d->mark_group ? DARK_MARK : DARK_INK, &cs, color, params, out);
     fz_stroke_path(ctx, d->target, path, stroke, ctm, cs, color, alpha, params);
 }
 
@@ -364,14 +375,17 @@ static void dark_begin_group(fz_context *ctx, fz_device *dev, fz_rect area, fz_c
                              int knockout, int blendmode, float alpha)
 {
     dark_device *d = (dark_device *)dev;
-    /* a highlight multiplies, which leaves nothing visible on dark paper */
-    int mode = blendmode & FZ_BLEND_MODEMASK, swapped = mode == FZ_BLEND_MULTIPLY ? FZ_BLEND_SCREEN
-                                                        : mode == FZ_BLEND_DARKEN ? FZ_BLEND_LIGHTEN
-                                                                                  : mode;
+    /* A highlight multiplies, which leaves nothing visible on dark paper, and a text colour mark lightens, which would
+     * fill its whole box: each takes the opposite blend, as the print is the light part now. */
+    int mode = blendmode & FZ_BLEND_MODEMASK, swapped = mode == FZ_BLEND_MULTIPLY  ? FZ_BLEND_SCREEN
+                                                        : mode == FZ_BLEND_DARKEN  ? FZ_BLEND_LIGHTEN
+                                                        : mode == FZ_BLEND_LIGHTEN ? FZ_BLEND_DARKEN
+                                                                                   : mode;
     if (d->mask_depth) swapped = mode;
     fz_begin_group(ctx, d->target, area, cs, isolated, knockout, (blendmode & ~FZ_BLEND_MODEMASK) | swapped, alpha);
     d->group_depth++;
     if (!d->mask_depth && mode == FZ_BLEND_MULTIPLY && !d->mark_group) d->mark_group = d->group_depth;
+    if (!d->mask_depth && mode == FZ_BLEND_LIGHTEN && !d->ink_group) d->ink_group = d->group_depth;
 }
 
 static void dark_begin_mask(fz_context *ctx, fz_device *dev, fz_rect area, int luminosity, fz_colorspace *cs,
@@ -478,6 +492,7 @@ static void dark_end_group(fz_context *ctx, fz_device *dev)
 {
     dark_device *d = (dark_device *)dev;
     if (d->mark_group == d->group_depth) d->mark_group = 0;
+    if (d->ink_group == d->group_depth) d->ink_group = 0;
     d->group_depth--;
     fz_end_group(ctx, d->target);
 }
@@ -1050,6 +1065,7 @@ static void render_collect(tab *t)
                 t->figures[page] = mine->figures, mine->figures = (pt_rects){0};
             }
             if (known) t->words_ok[page] = 1;
+            if (known) tab_mark_running(t, page);
         } else if (mine->thumb) {
             if (known && !t->thumb_ok[page]) t->thumbs[page] = texture_from_pixmap(mine->pix), t->thumb_ok[page] = 1;
         } else if (known) cache_insert(t, mine);
