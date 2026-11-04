@@ -456,7 +456,6 @@ int ui_touch_drags_at(float screen_x, float screen_y) { return touch_area_at(scr
 int ui_touch_zooms_at(float screen_x, float screen_y) { return touch_area_at(screen_x, screen_y, 1); }
 
 #ifndef __ANDROID__
-/* A larger interface needs a larger window, but never one larger than the monitor. */
 static void update_window_min_size(void)
 {
     static float applied_scale;

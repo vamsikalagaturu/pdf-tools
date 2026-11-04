@@ -371,7 +371,7 @@ struct tab {
     float *tiles_on;
     double *tiles_wait;
     float scene_w, scene_h;
-    int content_known;            /* content_x0 and content_x1 are worked out */
+    int content_known;
     float content_x0, content_x1; /* the side edges of what the document shows, in scene units */
     int want_scroll_page;         /* scroll to this page once laid out, -1 none */
     float want_center_x, want_center_y;

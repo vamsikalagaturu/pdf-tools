@@ -1323,7 +1323,6 @@ static void extent_end_mask(fz_context *ctx, fz_device *dev, fz_function *fn)
     ((extent_device *)dev)->mask_depth--;
 }
 
-/* widens [*x0, *x1], in scene units, by what page p shows */
 static void page_content_extent(tab *t, int p, float *x0, float *x1)
 {
     fz_context *ctx = CTX; /* fz_new_derived_device names it */
@@ -1461,7 +1460,6 @@ void tab_fit(tab *t, fit_mode fit)
 
 #define RUNNING_PAGES_AWAY 2 /* books alternate their heads between left and right pages */
 
-/* Page `page`'s words just came: compares its top and bottom rows with those of the pages around it already here. */
 void tab_mark_running(tab *t, int page)
 {
     int marked = 0;

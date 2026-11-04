@@ -1016,7 +1016,6 @@ static void reading_note(void)
     free(e);
 }
 
-/* header, tabs and update bar with their top at y; returns their height */
 static float frame_chrome(tab *t, win_tab *cur, float y)
 {
     Rectangle header = {0, y, ui.w, HEADER_H};

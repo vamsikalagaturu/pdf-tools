@@ -413,8 +413,8 @@ tab *app_current_doc(void);
 void app_star_current_doc(void);
 int app_reading(void); /* reading mode is on and a document is showing */
 void app_toggle_reading(void);
-#define DOCUMENT_DARK_PAPER 0x26 /* the grey of a page in document dark mode */
-int app_document_dark(void);     /* any thread */
+#define DOCUMENT_DARK_PAPER 0x26
+int app_document_dark(void); /* any thread */
 void app_toggle_document_dark(void);
 Color app_document_paper(void);
 

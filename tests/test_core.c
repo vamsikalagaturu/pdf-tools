@@ -1116,7 +1116,6 @@ static void test_short_left_column(void)
     CHECK(l.n == 13);
     const pt_text_line *first = line_at(&l, 75, 760), *last = line_at(&l, 75, 732), *right = line_at(&l, 325, 760);
     CHECK(first && last && right && first->n == 1 && last->n == 3 && right->n == 4);
-    /* each column is numbered beside itself */
     CHECK(first && right && first->col_x0 < 80 && right->col_x0 > 300);
     pt_vec_free(l);
     pt_words_free(&w);

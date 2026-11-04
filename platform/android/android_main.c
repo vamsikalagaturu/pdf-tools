@@ -241,9 +241,9 @@ static struct {
     int held;   /* long press reached, nothing sent yet: moving drags, lifting right-clicks */
     double t;
     float x, y, cx, cy;
-    float spread;           /* distance between the first two fingers, for pinch zoom; 0 with one finger */
-    int rail;               /* the direction a one-finger scroll keeps to */
-    float rail_dx, rail_dy; /* its movement until that is decided */
+    float spread; /* distance between the first two fingers, for pinch zoom; 0 with one finger */
+    int rail;
+    float rail_dx, rail_dy; /* the scroll's movement until its rail is decided */
 } touch;
 
 #define LONG_PRESS_S 0.45 /* a finger held still this long right-clicks when lifted */

@@ -1336,7 +1336,6 @@ void pt_number_lines(const pt_words *words, const pt_rects *figures, float page_
             *piece = lines.n;
             pt_push(lines, ((pt_text_line){w->rect, 0, 0, 0}));
             pt_push(piece_block, w->source_block);
-            /* "Fig. 2:", the word and its number at the start of the line */
             const pt_word *next = i + 1 < words->n ? &words->v[i + 1] : NULL;
             int numbered = next && next->source_line == w->source_line && strchr("0123456789IVXLivxl", next->text[0]);
             pt_push(piece_caption, numbered && pt_is_caption_word(w->text));
