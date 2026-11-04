@@ -112,7 +112,7 @@ Cancel gives an empty list. Picked URIs keep their permission (`takePersistableU
 
 The app has no storage permission. Every document comes through the system picker or another app's "Open with",
 works as a copy in the app's cache and is written back through its URI; `HOME` is `files/`. Its only permissions,
-`INTERNET` and `REQUEST_INSTALL_PACKAGES`, are for updates (src/ui/update.c): `PdfToolsActivity.download` fetches
+`INTERNET` and `REQUEST_INSTALL_PACKAGES`, are for updates (src/core/update.c): `PdfToolsActivity.download` fetches
 the release check and the APK (into `cache/share/`), `installApk` hands that to the system installer through
 `ShareProvider`, first opening "Install unknown apps" when the app may not install packages yet.
 

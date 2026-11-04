@@ -64,23 +64,34 @@ test the app on each platform (Actions > CI > Run workflow does the same for any
 Both Linux downloads run on Ubuntu 24.04 and later, Arch and other distributions with glibc 2.39 or newer, and use
 fontconfig and OpenGL from the system (installed on any desktop). Pick one:
 
-- **AppImage**: `chmod +x PDF_Tools-x86_64.AppImage`, then run it.
-- **Tarball**: unpack it anywhere:
+- **AppImage**, one file:
 
   ```sh
-  mkdir -p ~/.local/opt && tar xzf PDF-Tools-Linux-x86_64.tar.gz -C ~/.local/opt
-  ln -s ~/.local/opt/pdf-tools/bin/pdf-tools ~/.local/bin/    # for the command line
+  mkdir -p ~/.local/bin
+  curl -fL https://github.com/vamsikalagaturu/pdf-tools/releases/latest/download/PDF_Tools-x86_64.AppImage -o ~/.local/bin/pdf-tools
+  chmod +x ~/.local/bin/pdf-tools
+  ~/.local/bin/pdf-tools --install-desktop
   ```
 
-Run it once with `--install-desktop` to add it to the applications menu and to "Open with" for PDFs
-(`--uninstall-desktop` removes it; after moving the AppImage or the folder, run it again).
+- **Tarball**, for systems without FUSE, which the AppImage needs:
+
+  ```sh
+  mkdir -p ~/.local/opt ~/.local/bin
+  curl -fL https://github.com/vamsikalagaturu/pdf-tools/releases/latest/download/PDF-Tools-Linux-x86_64.tar.gz | tar xz -C ~/.local/opt
+  ln -sf ~/.local/opt/pdf-tools/bin/pdf-tools ~/.local/bin/pdf-tools
+  ~/.local/bin/pdf-tools --install-desktop
+  ```
+
+`--install-desktop` adds PDF Tools to the applications menu and to "Open with" for PDFs. Run it again after moving the
+program; `--uninstall-desktop` removes the entry. For plain `pdf-tools` commands, `~/.local/bin` must be on your `PATH`.
 
 ### macOS
 
 The `.dmg` on the [releases page](../../releases) is for Apple Silicon Macs
 with macOS 11 or later (on an Intel Mac, build it with `platform/macos/build.sh`).
 
-1. Download `PDF-Tools.dmg`, open it and drag **PDF Tools** onto **Applications**. Eject the disk image.
+1. Download `PDF-Tools.dmg`, open it and drag **PDF Tools** onto **Applications**. Eject the disk image. To download
+   from Terminal: `curl -fLO https://github.com/vamsikalagaturu/pdf-tools/releases/latest/download/PDF-Tools.dmg`
 2. Open the app the first time. It is not notarized by Apple, so macOS blocks the first start:
    - macOS 15 (Sequoia) and later: open PDF Tools from Applications, click **Done** on the warning, then go to
      **System Settings > Privacy & Security**, scroll to "PDF Tools was blocked", click **Open Anyway** and confirm
@@ -104,11 +115,19 @@ An update is the same: drag the new version onto Applications and replace the ol
 
 `PDF-Tools-Windows.zip` is for 64-bit Windows 10 (version 1903) or 11.
 
-1. Unpack it anywhere, e.g. to `%LOCALAPPDATA%\Programs`; the `PDF-Tools` folder holds `pdf-tools.exe`, the OCR
-   data and the Visual C++ runtime. The program is not signed, so SmartScreen may warn on the first start: **More
-   info**, then **Run anyway**.
-2. `pdf-tools.exe --install-desktop` adds PDF Tools to "Open with" for PDFs (`--uninstall-desktop` removes it);
-   to make it the default, pick it under **Open with > Choose another app** with **Always** ticked.
+1. Download it and unpack it anywhere, e.g. to `%LOCALAPPDATA%\Programs`, here in Command Prompt:
+
+   ```bat
+   curl -fLO https://github.com/vamsikalagaturu/pdf-tools/releases/latest/download/PDF-Tools-Windows.zip
+   mkdir "%LOCALAPPDATA%\Programs"
+   tar -xf PDF-Tools-Windows.zip -C "%LOCALAPPDATA%\Programs"
+   ```
+
+   The `PDF-Tools` folder holds `pdf-tools.exe`, the OCR data and the Visual C++ runtime. The program is not signed,
+   so SmartScreen may warn on the first start: **More info**, then **Run anyway**.
+2. `"%LOCALAPPDATA%\Programs\PDF-Tools\pdf-tools.exe" --install-desktop` adds PDF Tools to "Open with" for PDFs
+   (`--uninstall-desktop` removes it); to make it the default, pick it under **Open with > Choose another app** with
+   **Always** ticked.
 3. For the command line, add the folder to your PATH.
 
 Settings are in `%APPDATA%\pdf-tools`, reading positions and window messages in `%LOCALAPPDATA%\pdf-tools`.
@@ -197,8 +216,9 @@ app or (after the app closes) the Windows folder; on Android the system installe
 (the program, `share/pdf-tools`, the man page, the launcher entry and icon; nothing else in the prefix is touched,
 and a launcher entry keeps its `Exec=` line). Installs the app cannot replace itself (a distro package, a prefix
 such as `/usr/local` you may not write, a folder it may not write) get the release page instead. Menu > Check for updates... checks now; Menu > Check for updates at startup (`check_updates` in the
-settings) turns the check off. Desktop downloads go through the system's `curl`. The commands never use the
-network.
+settings) turns the check off. Desktop downloads go through the system's `curl`. `pdf-tools update` does the same
+without the window (`--check` only reports, `--force` also replaces a development build); it is the only command that
+uses the network.
 
 ## Safety
 

@@ -202,6 +202,9 @@ void *glfwGetCurrentContext(void);
 int glfwGetPlatform(void);
 void glfwGetWindowContentScale(void *window, float *x, float *y);
 void glfwSetWindowSize(void *window, int width, int height);
+void glfwGetFramebufferSize(void *window, int *width, int *height);
+typedef void (*glfw_size_fn)(void *window, int width, int height);
+glfw_size_fn glfwSetFramebufferSizeCallback(void *window, glfw_size_fn fn);
 int wayland_smallest_output(int *logical_w, int *logical_h, float *scale);
 #define GLFW_PLATFORM_WAYLAND 0x00060003
 #define GLFW_RELEASE 0
@@ -374,6 +377,21 @@ static float pixels_per_pointer_unit(void)
     return 1;
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+/* raylib takes the size it asked for as the framebuffer's and then only hears of changes, so a scale that arrives while
+ * the window is being created stays unnoticed, and the UI fills part of the window, until a resize. */
+static void adopt_framebuffer_size(void)
+{
+    void *window = glfwGetCurrentContext();
+    int w = 0, h = 0;
+    glfwGetFramebufferSize(window, &w, &h);
+    if (w == GetRenderWidth() && h == GetRenderHeight()) return;
+    glfw_size_fn raylib_size = glfwSetFramebufferSizeCallback(window, NULL);
+    glfwSetFramebufferSizeCallback(window, raylib_size);
+    raylib_size(window, w, h);
+}
+#endif
+
 void ui_size_first_window(float w, float h)
 {
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -385,12 +403,16 @@ void ui_size_first_window(float w, float h)
         float chosen = chosen_scale(), units = chosen > 0 ? chosen / out_scale : 1;
         glfwSetWindowSize(glfwGetCurrentContext(), (int)fminf(w * units, out_w * WINDOW_FIT_MONITOR),
                           (int)fminf(h * units, out_h * WINDOW_FIT_MONITOR));
+        adopt_framebuffer_size();
         return;
     }
 #endif
     int mon = GetCurrentMonitor();
     SetWindowSize((int)fminf(w * ui.scale, GetMonitorWidth(mon) * WINDOW_FIT_MONITOR),
                   (int)fminf(h * ui.scale, GetMonitorHeight(mon) * WINDOW_FIT_MONITOR));
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) adopt_framebuffer_size();
+#endif
 }
 
 /* screen pixels covered by system bars (Android); the UI is laid out inside them */

@@ -6,9 +6,7 @@
 #include "raylib.h"
 #include <stdint.h>
 
-#define APP_NAME "PDF Tools"
 #define APP_ID "pdf-tools"
-#define REPO_URL "https://github.com/vamsikalagaturu/pdf-tools"
 /* logical width below which toolbars collapse and the sidebar overlays the page (phones) */
 #define NARROW_W 760.0f
 /* logical window size below which the narrow toolbar and the compact Home page no longer fit */

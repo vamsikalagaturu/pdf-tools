@@ -529,6 +529,17 @@ is shown with the signature).
 .TP
 .BI "scrub " "input.pdf " \-o " output.pdf"
 Remove metadata, attachments, scripts, hidden text and thumbnails.
+.TP
+.B update
+Install the latest release when it is newer, downloaded with
+.BR curl ;
+the only command that uses the network.
+.B \-\-check
+only reports what is available;
+.B \-\-force
+also replaces a development build.
+Open windows keep the old version until restarted.
+Exits with 0 when already up to date.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help

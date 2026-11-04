@@ -57,6 +57,14 @@ the window.
   page without text, `date` is ISO 8601 in UTC. With `-o` the list goes to that file (Markdown
   when it ends in `.md` or with `--format md`, else this JSON) and the output is
   `{"output", "count"}`. No comments: exit 3, nothing written.
+- `update` installs the latest release when it is newer, as the window's Update does, and is
+  the only command that uses the network (it needs `curl`). The output is `{"current", "latest",
+  "update_available", "install", "path", "updated"}`, `"updated": false` with exit 0 when
+  already up to date; `--check` only reports. Open windows keep the old version until restarted
+  (`"restart_needed": true`). It refuses to replace a development build without `--force`, and
+  an install it cannot replace (a distro package, a prefix the user may not write) fails with
+  `release_page`. On Windows the folder is swapped just after the command exits, so an open
+  window can still block it even though the output says `"updated": true`.
 - Other formats, by file extension: XPS/OXPS, CBZ/CBT, images (PNG, JPEG, GIF, BMP, TIFF, JP2,
   JXR, PSD, PNM), SVG, EPUB, MOBI, FB2, DOCX, XLSX, PPTX. The commands that only read (`info`,
   `search`, `inspect`, `comments`, `render`, `export-images`, `compare`, `ocr`) take them as they

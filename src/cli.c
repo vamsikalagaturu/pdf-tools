@@ -5,6 +5,7 @@
 #include "pt_core.h"
 #include <ctype.h>
 #include <math.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2006,7 +2007,116 @@ static int cmd_edit_annotation(args *a)
         "--color", NULL, VALUE, 0, "#RRGGBB", "colour, #rrggbb", NULL \
     }
 
+static void keep_running(int sig) { (void)sig; }
+
+static const char *install_name(pt_install_kind kind)
+{
+    switch (kind) {
+    case PT_INSTALL_APPIMAGE: return "appimage";
+    case PT_INSTALL_TARBALL: return "tarball";
+    case PT_INSTALL_WINDOWS: return "windows";
+    case PT_INSTALL_MACOS: return "macos";
+    case PT_INSTALL_ANDROID: return "android";
+    case PT_INSTALL_PREFIX: return "prefix";
+    case PT_INSTALL_NONE: break;
+    }
+    return "none";
+}
+
+/* the keys of an update that stops here, before fail() adds why */
+static void update_refused(pt_json *j, const pt_release *rel)
+{
+    pt_json_key(j, "updated");
+    pt_json_bool(j, 0);
+    pt_json_key(j, "release_page");
+    pt_json_string(j, pt_update_page(rel));
+}
+
+static int cmd_update(args *a)
+{
+    pt_update_use_url(getenv("PDF_TOOLS_UPDATE_URL"));
+    /* Ctrl+C reaches curl too; this program then lives on to remove the partial download from the install */
+    signal(SIGINT, keep_running);
+    char *exe = pt_exe_path(), *target = NULL;
+    pt_install_kind kind = exe ? pt_update_detect(exe, &target) : PT_INSTALL_NONE;
+    char *asset = pt_update_asset(kind, pt_update_arch());
+    static pt_update check, install;
+    check.ctx = ctx;
+    check.asset = asset ? pt_strdup(asset) : NULL;
+    pt_update_check(&check);
+    if (check.failed) fail("%s", check.error);
+    const pt_release *rel = &check.rel;
+    int newer = pt_version_compare(rel->version, PT_VERSION) > 0;
+
+    static pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "current");
+    pt_json_string(&j, PT_VERSION);
+    pt_json_key(&j, "latest");
+    pt_json_string(&j, rel->version);
+    pt_json_key(&j, "update_available");
+    pt_json_bool(&j, newer);
+    pt_json_key(&j, "install");
+    pt_json_string(&j, install_name(kind));
+    pt_json_key(&j, "path");
+    if (target) pt_json_string(&j, target);
+    else pt_json_null(&j);
+
+    int updated = 0;
+    if (newer && !given(a, "--check")) {
+        if (strstr(PT_VERSION, "-dev") && !given(a, "--force")) {
+            update_refused(&j, rel);
+            fail("this is a development build; --force replaces it with release %s", rel->version);
+        }
+        if (kind == PT_INSTALL_NONE || !asset || !rel->url) {
+            update_refused(&j, rel);
+            fail("this install cannot replace itself; get %s from the release page", rel->version);
+        }
+        if (!rel->sha256) {
+            update_refused(&j, rel);
+            fail("the release gives no SHA-256 digest for %s, so the download could not be checked; nothing was "
+                 "installed",
+                 asset);
+        }
+        pt_update_prepare(&install, kind, asset, target, rel);
+        pt_update_install(&install);
+#ifdef _WIN32
+        if (!install.failed && pt_update_windows_swap(&install, 0)) {
+            pt_remove_tree(install.stage);
+            install.failed = 1;
+            snprintf(install.error, sizeof install.error, "could not start the update helper");
+        }
+#endif
+        if (install.failed) {
+            update_refused(&j, rel);
+            fail("%s", install.error);
+        }
+        updated = 1;
+    }
+    pt_json_key(&j, "updated");
+    pt_json_bool(&j, updated);
+    if (updated) {
+        pt_json_key(&j, "restart_needed");
+        pt_json_bool(&j, 1);
+    }
+    pt_update_clear(&install);
+    pt_update_clear(&check);
+    free(asset);
+    free(target);
+    free(exe);
+    return emit_end(&j, OK);
+}
+
 static const cmd COMMANDS[] = {
+    {"update",
+     "Install the latest release when it is newer than this program",
+     NULL,
+     NULL,
+     0,
+     cmd_update,
+     {{"--check", NULL, FLAG, 0, NULL, "only report what is available; change nothing", NULL},
+      {"--force", NULL, FLAG, 0, NULL, "replace a development build too", NULL}},
+     {0}},
     {"info",
      "Pages, sizes, fonts, form fields, annotations, metadata, encryption",
      INPUT,
@@ -2348,6 +2458,7 @@ void pt_cli_usage(FILE *out)
           "      info redact fill pages merge split protect unprotect flatten convert synctex\n"
           "      search inspect comments render export-images annotate draw insert-text insert-image\n"
           "      sign prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
+          "      update\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
           "  pdf-tools help                                 the guide for scripts and agents (AGENTS.md)\n",
           out);

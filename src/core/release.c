@@ -1,6 +1,6 @@
-/* What the window's update check (src/ui/update.c) reads from GitHub: the latest release's version, page and the
- * download URL, size and SHA-256 of the asset that fits this install; plus version comparison, file hashing and the
- * file work of updating an install prefix. No network here: the window fetches the JSON and the file. */
+/* What an update check reads from GitHub: the latest release's version, page and the download URL, size and SHA-256 of
+ * the asset that fits this install; plus version comparison, file hashing and the file work of updating an install
+ * prefix. No network here: update.c fetches the JSON and the file. */
 #include "pt_core.h"
 #include <ctype.h>
 #include <errno.h>
