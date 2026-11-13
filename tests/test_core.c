@@ -262,6 +262,111 @@ static void test_shapes(void)
     free(src);
 }
 
+static pt_item field(pt_field_type type, const char *name, fz_rect r)
+{
+    pt_item it = {0};
+    it.page = 0, it.kind = PT_FIELD, it.field = type, it.rect = r, it.name = pt_strdup(name);
+    return it;
+}
+
+static void test_new_fields(void)
+{
+    fz_buffer *blank = pt_blank_pdf(ctx, 300, 400, 1);
+    char *src = pt_format("%s/fields-src.pdf", tmpdir);
+    CHECK(!pt_write_file(src, blank->data, blank->len));
+    fz_drop_buffer(ctx, blank);
+    pt_state s;
+    pt_state_init(&s, 1);
+    pt_item text = field(PT_FIELD_TEXT, "notes", fz_make_rect(20, 20, 200, 80));
+    text.field_flags = PT_FIELD_MULTILINE | PT_FIELD_READ_ONLY, text.max_len = 50, text.text = pt_strdup("hi");
+    pt_push(s.items, text);
+    pt_item a = field(PT_FIELD_RADIO, "pick", fz_make_rect(20, 100, 34, 114));
+    a.text = pt_strdup("A");
+    pt_item b = field(PT_FIELD_RADIO, "pick", fz_make_rect(40, 100, 54, 114));
+    b.text = pt_strdup("B"), b.field_flags = PT_FIELD_CHECKED;
+    pt_push(s.items, a);
+    pt_push(s.items, b);
+    pt_item drop = field(PT_FIELD_DROPDOWN, "choose", fz_make_rect(20, 130, 150, 150));
+    pt_push(drop.options, pt_strdup("one"));
+    pt_push(drop.options, pt_strdup("two"));
+    pt_push(s.items, drop);
+
+    /* a copy keeps the name and choices of its own */
+    pt_item copy = pt_item_copy(&s.items.v[3]);
+    CHECK(copy.name != s.items.v[3].name && !strcmp(copy.name, "choose") && copy.options.n == 2 &&
+          copy.options.v[1] != s.items.v[3].options.v[1]);
+    pt_item_free(&copy);
+
+    fz_buffer *out = pt_apply_edits(ctx, src, NULL, &s, NULL);
+    pdf_document *doc = pt_open_pdf_bytes(ctx, out->data, out->len, NULL);
+    pdf_page *page = pdf_load_page(ctx, doc, 0);
+    int texts = 0, radios = 0, combos = 0;
+    for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+        pdf_obj *obj = pdf_annot_obj(ctx, w);
+        int ff = pdf_field_flags(ctx, obj);
+        switch (pdf_widget_type(ctx, w)) {
+        case PDF_WIDGET_TYPE_TEXT:
+            texts += (ff & PDF_TX_FIELD_IS_MULTILINE) && (ff & PDF_FIELD_IS_READ_ONLY) &&
+                     pdf_text_widget_max_len(ctx, w) == 50 && !strcmp(pdf_field_value(ctx, obj), "hi");
+            break;
+        case PDF_WIDGET_TYPE_RADIOBUTTON: radios += !strcmp(pdf_field_value(ctx, obj), "B"); break;
+        case PDF_WIDGET_TYPE_COMBOBOX: combos += pdf_choice_widget_options(ctx, w, 0, NULL) == 2; break;
+        default: break;
+        }
+    }
+    CHECK(texts == 1 && radios == 2 && combos == 1);
+    pt_strs names = {0};
+    pt_field_names(ctx, doc, &names);
+    CHECK(names.n == 3);
+    char *next = pt_unique_field_name("pick", &names);
+    CHECK(!strcmp(next, "pick1"));
+    free(next);
+    pt_strs_free(&names);
+
+    /* removing a widget takes its field along once no widget is left; one radio button leaves its group */
+    int text_xref = 0, radio_xref = 0;
+    for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+        if (pdf_widget_type(ctx, w) == PDF_WIDGET_TYPE_TEXT) text_xref = pdf_to_num(ctx, pdf_annot_obj(ctx, w));
+        if (pdf_widget_type(ctx, w) == PDF_WIDGET_TYPE_RADIOBUTTON) radio_xref = pdf_to_num(ctx, pdf_annot_obj(ctx, w));
+    }
+    fz_drop_page(ctx, (fz_page *)page);
+    page = NULL;
+    pt_remove_annot(ctx, doc, (pt_key){0, text_xref});
+    pt_remove_annot(ctx, doc, (pt_key){0, radio_xref});
+    pt_field_names(ctx, doc, &names);
+    CHECK(names.n == 2);
+    pt_strs_free(&names);
+    pdf_obj *fields = pdf_dict_getp(ctx, pdf_trailer(ctx, doc), "Root/AcroForm/Fields");
+    CHECK(pdf_array_len(ctx, fields) == 2);
+    page = pdf_load_page(ctx, doc, 0);
+
+    pt_entries entries = {0};
+    pt_edit_entries(ctx, (fz_document *)doc, &s, 1, NULL, NULL, NULL, &entries);
+    int listed = 0;
+    for (int i = 0; i < entries.n; i++)
+        listed += entries.v[i].kind == PT_E_FIELD && !strcmp(entries.v[i].name, "radio") &&
+                  !strcmp(entries.v[i].detail, "pick");
+    CHECK(listed == 2);
+    pt_discard(&s, &entries.v[0].ref, 1, 1);
+    CHECK(s.items.n == 3);
+    pt_entries_free(&entries);
+    fz_drop_page(ctx, (fz_page *)page);
+    pdf_drop_document(ctx, doc);
+    fz_drop_buffer(ctx, out);
+
+    /* a second field of a name already taken is refused, unless both are radio buttons */
+    pt_state_free(&s);
+    pt_state_init(&s, 1);
+    pt_push(s.items, field(PT_FIELD_TEXT, "same", fz_make_rect(20, 20, 100, 40)));
+    pt_push(s.items, field(PT_FIELD_CHECKBOX, "same", fz_make_rect(20, 50, 34, 64)));
+    int refused = 0;
+    fz_try(ctx) fz_drop_buffer(ctx, pt_apply_edits(ctx, src, NULL, &s, NULL));
+    fz_catch(ctx) refused = strstr(fz_caught_message(ctx), "already exists") != NULL;
+    CHECK(refused);
+    pt_state_free(&s);
+    free(src);
+}
+
 static void test_optimize(void)
 {
     /* a 2400x1800 image shown 8x6 in: 300 dpi, above the 225 dpi threshold */
@@ -1788,6 +1893,7 @@ int main(void)
     test_other_formats();
     test_blank_page();
     test_shapes();
+    test_new_fields();
     test_optimize();
     test_regex();
     test_regex_lines();

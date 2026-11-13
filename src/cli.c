@@ -745,6 +745,7 @@ static int cmd_fill(args *a)
     typedef struct {
         char *name;
         pt_key key;
+        char *choice; /* a radio button's on state, else NULL */
     } named;
 
     PT_VEC(nameds, named);
@@ -753,8 +754,12 @@ static int cmd_fill(args *a)
     for (int p = 0; p < n; p++) {
         pdf_page *page = pdf_load_page(ctx, doc, p);
         for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
-            char *name = pdf_load_field_name(ctx, pdf_annot_obj(ctx, w));
-            pt_push(fields, (named){pt_strdup(name), {p, pdf_to_num(ctx, pdf_annot_obj(ctx, w))}});
+            pdf_obj *obj = pdf_annot_obj(ctx, w);
+            char *name = pdf_load_field_name(ctx, obj);
+            char *choice = pdf_widget_type(ctx, w) == PDF_WIDGET_TYPE_RADIOBUTTON
+                               ? pt_strdup(pdf_to_name(ctx, pdf_button_field_on_state(ctx, obj)))
+                               : NULL;
+            pt_push(fields, (named){pt_strdup(name), {p, pdf_to_num(ctx, obj)}, choice});
             fz_free(ctx, name);
         }
         fz_drop_page(ctx, (fz_page *)page);
@@ -769,9 +774,27 @@ static int cmd_fill(args *a)
         if (!eq) fail("--field wants name=value, got '%s'", item);
         char *name = pt_format("%.*s", (int)(eq - item), item);
         int any = 0, on = 0, is_bool = parse_bool(eq + 1, &on);
+        /* a radio group takes one of its buttons' choices, or Off */
+        int radio = 0, known = !strcmp(eq + 1, "Off");
+        for (int f = 0; f < fields.n; f++)
+            if (!strcmp(fields.v[f].name, name) && fields.v[f].choice) {
+                radio = 1;
+                known |= !strcmp(fields.v[f].choice, eq + 1);
+            }
+        if (radio && !known) {
+            static char *choices;
+            choices = pt_strdup("");
+            for (int f = 0; f < fields.n; f++)
+                if (!strcmp(fields.v[f].name, name) && fields.v[f].choice) {
+                    char *more = pt_format("%s%s, ", choices, fields.v[f].choice);
+                    free(choices);
+                    choices = more;
+                }
+            fail("radio group '%s' takes one of: %sOff; got '%s'", name, choices, eq + 1);
+        }
         for (int f = 0; f < fields.n; f++)
             if (!strcmp(fields.v[f].name, name)) {
-                pt_set_form(&s, fields.v[f].key, eq + 1, is_bool, on, 0);
+                pt_set_form(&s, fields.v[f].key, eq + 1, is_bool && !radio, on, 0);
                 any = 1;
             }
         if (!any) {
@@ -821,7 +844,7 @@ static int cmd_fill(args *a)
     free(out);
     fz_drop_buffer(ctx, data);
     pt_state_free(&s);
-    for (int f = 0; f < fields.n; f++) free(fields.v[f].name);
+    for (int f = 0; f < fields.n; f++) free(fields.v[f].name), free(fields.v[f].choice);
     pt_vec_free(fields);
     pdf_drop_document(ctx, doc);
     return emit_end(&j, OK);
@@ -1419,6 +1442,96 @@ static int cmd_insert_image(args *a)
     if (pt_read_file(get(a, "--image"), &it.data)) fail("cannot read %s", get(a, "--image"));
     pdf_drop_document(ctx, doc);
     return write_item(a, it);
+}
+
+static int cmd_new(args *a)
+{
+    float w, h;
+    const char *size = get(a, "--page-size");
+    if (!pt_page_size(size, &w, &h)) fail("--page-size wants A4, Letter or A5, got '%s'", size);
+    int pages = int_arg(a, "--pages", 1);
+    if (pages < 1) fail("--pages wants a number from 1, got %d", pages);
+    fz_buffer *data = pt_blank_pdf(ctx, w, h, pages);
+    const char *out = get(a, "--output");
+    if (pt_write_file(out, data->data, data->len)) fail("cannot write %s", out);
+    fz_drop_buffer(ctx, data);
+    static pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    pt_json_key(&j, "pages");
+    pt_json_int(&j, pages);
+    return emit_end(&j, OK);
+}
+
+static int cmd_add_field(args *a)
+{
+    const char *path = input(a), *pw = get(a, "--password");
+    pdf_document *doc = opened(path, pw);
+    pt_item it = {0};
+    it.kind = PT_FIELD;
+    it.page = one_page(a, doc);
+    it.rect = rect_arg(a, "--rect");
+    if (fz_is_empty_rect(it.rect)) fail("--rect is empty: give x0,y0,x1,y1 with x1 > x0 and y1 > y0");
+    const char *type = get(a, "--type");
+    int ft = pt_field_type_from_name(type);
+    if (ft < 0) fail("--type wants text, checkbox, radio, dropdown or signature, got '%s'", type);
+    it.field = (pt_field_type)ft;
+    it.name = pt_strdup(get(a, "--name"));
+    if (!*it.name) fail("--name must not be empty");
+    const char *value = get(a, "--value");
+    int text = it.field == PT_FIELD_TEXT;
+    if ((given(a, "--multiline") || given(a, "--max-length")) && !text)
+        fail("--multiline and --max-length are for --type text");
+    if (given(a, "--options") != (it.field == PT_FIELD_DROPDOWN))
+        fail("--options is for --type dropdown, and needed there");
+    if (value && it.field == PT_FIELD_SIGNATURE) fail("a signature field takes no --value");
+    if (text && given(a, "--multiline")) it.field_flags |= PT_FIELD_MULTILINE;
+    if (given(a, "--required")) it.field_flags |= PT_FIELD_REQUIRED;
+    if (given(a, "--read-only")) it.field_flags |= PT_FIELD_READ_ONLY;
+    it.max_len = int_arg(a, "--max-length", 0);
+    it.size = PT_FIELD_FONT_SIZE;
+    if (it.max_len < 0) fail("--max-length wants a number from 1");
+    if (it.field == PT_FIELD_DROPDOWN) {
+        char *spec = pt_strdup(get(a, "--options"));
+        for (char *tok = strtok(spec, ","); tok; tok = strtok(NULL, ",")) pt_push(it.options, pt_strdup(tok));
+        free(spec);
+        if (!it.options.n) fail("--options wants \"a,b,c\"");
+        int listed = !value;
+        for (int i = 0; value && i < it.options.n; i++) listed |= !strcmp(it.options.v[i], value);
+        if (!listed) fail("--value '%s' is not one of --options", value);
+    }
+    if (it.field == PT_FIELD_CHECKBOX) {
+        if (value && strcmp(value, "true") && strcmp(value, "false"))
+            fail("a checkbox takes --value true or false, got '%s'", value);
+        if (value && !strcmp(value, "true")) it.field_flags |= PT_FIELD_CHECKED;
+    } else it.text = pt_strdup(value ? value : "");
+
+    pt_state s;
+    pt_state_init(&s, 0);
+    pt_push(s.items, it);
+    fz_buffer *data = finish(doc, apply(path, pw, &s, NULL), pw);
+    char *out = write_out(get(a, "--output"), data, path);
+    static pt_json j;
+    emit_begin(&j);
+    pt_json_key(&j, "output");
+    pt_json_string(&j, out);
+    pt_json_key(&j, "field");
+    pt_json_begin_object(&j);
+    pt_json_key(&j, "name");
+    pt_json_string(&j, it.name);
+    pt_json_key(&j, "type");
+    pt_json_string(&j, type);
+    pt_json_key(&j, "page");
+    pt_json_int(&j, it.page + 1);
+    pt_json_key(&j, "rect");
+    pt_json_rect(&j, it.rect);
+    pt_json_end_object(&j);
+    free(out);
+    fz_drop_buffer(ctx, data);
+    pt_state_free(&s);
+    pdf_drop_document(ctx, doc);
+    return emit_end(&j, OK);
 }
 
 static int write_stamp(args *a, pt_stamp st)
@@ -2316,6 +2429,35 @@ static const cmd COMMANDS[] = {
       {"--cert-password-file", NULL, VALUE, 0, "FILE", PASSWORD_FILE_HELP, NULL},
       {"--reason", NULL, VALUE, 0, "REASON", "reason shown with the digital signature", NULL}},
      {0}},
+    {"new",
+     "Write a PDF of blank pages, e.g. to add form fields to",
+     NULL,
+     NULL,
+     0,
+     cmd_new,
+     {OUTPUT,
+      {"--pages", NULL, VALUE, 0, "PAGES", "number of pages (default 1)", "1"},
+      {"--page-size", NULL, VALUE, 0, "SIZE", "A4 | Letter | A5 (default A4)", "A4"}},
+     {0}},
+    {"add-field",
+     "Add a fillable form field",
+     INPUT,
+     0,
+     cmd_add_field,
+     {OUTPUT,
+      PASSWORD,
+      PAGE,
+      {"--rect", NULL, VALUE, 1, "x0,y0,x1,y1", "box in points", NULL},
+      {"--type", NULL, VALUE, 1, "TYPE", "text | checkbox | radio | dropdown | signature", NULL},
+      {"--name", NULL, VALUE, 1, "NAME", "field name; radio buttons of one name are one group", NULL},
+      {"--value", NULL, VALUE, 0, "VALUE",
+       "text and dropdown: the value; checkbox: true | false; radio: this button's choice (default Choice1)", NULL},
+      {"--options", NULL, VALUE, 0, "\"a,b,c\"", "dropdown: its choices", NULL},
+      {"--multiline", NULL, FLAG, 0, NULL, "text: several lines", NULL},
+      {"--max-length", NULL, VALUE, 0, "N", "text: at most N characters", NULL},
+      {"--required", NULL, FLAG, 0, NULL, NULL, NULL},
+      {"--read-only", NULL, FLAG, 0, NULL, NULL, NULL}},
+     {0}},
     {"bates",
      "Stamp Bates numbers (PREFIX000001SUFFIX) on the pages",
      INPUT,
@@ -2458,7 +2600,7 @@ void pt_cli_usage(FILE *out)
           "      info redact fill pages merge split protect unprotect flatten convert synctex\n"
           "      search inspect comments render export-images annotate draw insert-text insert-image\n"
           "      sign prepare-signature bates watermark ocr compare scrub edit-annotation redact-text\n"
-          "      update\n"
+          "      new add-field update\n"
           "  pdf-tools COMMAND --help                       options of one command\n"
           "  pdf-tools help                                 the guide for scripts and agents (AGENTS.md)\n",
           out);
@@ -2500,9 +2642,10 @@ int pt_cli_main(int argc, char **argv)
     parse(c, argc - 2, argv + 2, &a);
     read_password_files(&a);
     /* the commands that write an edited copy of a PDF (merge checks each of its inputs itself) */
-    static const char *EDITS_PDF[] = {"redact",      "redact-text",  "fill",    "pages", "annotate",       "draw",
-                                      "insert-text", "insert-image", "sign",    "bates", "watermark",      "scrub",
-                                      "protect",     "unprotect",    "flatten", "split", "edit-annotation"};
+    static const char *EDITS_PDF[] = {"redact",    "redact-text",     "fill",         "pages",     "annotate",
+                                      "draw",      "insert-text",     "insert-image", "sign",      "bates",
+                                      "watermark", "scrub",           "protect",      "unprotect", "flatten",
+                                      "split",     "edit-annotation", "add-field"};
     for (size_t i = 0; i < sizeof EDITS_PDF / sizeof *EDITS_PDF; i++)
         if (!strcmp(c->name, EDITS_PDF[i])) refuse_other_format(input(&a));
 

@@ -30,6 +30,9 @@ const tool_def TOOLS[T_COUNT] = {
     {"image", "Image", "image", "tool.image", "Click, or drag a box, to place a picture; drag its corner to resize"},
     {"draw", "Draw", "draw", "tool.draw", "Draw freehand; strokes made in quick succession form one drawing"},
     {"shape", "Shape", "shapes", "tool.shape", "Drag to draw a rectangle, ellipse, line or arrow"},
+    {"form", "Form", "form", "tool.form",
+     "Drag a box, or click, to add a fillable field (text, checkbox, radio button, dropdown, signature); click one "
+     "to change its name and options"},
     {"crop", "Crop", "crop", "tool.crop", "Drag a rectangle to crop to it; drag the frame or its corner to adjust"},
 };
 /* tints for background highlights on white paper; text under them stays black */
@@ -63,6 +66,7 @@ tab *tab_new(void)
     t->pen_rgb[0] = t->pen_rgb[1] = t->pen_rgb[2] = 0;
     t->pen_width = 2;
     t->ink_page = -1;
+    t->crop_ask_page = -1;
     t->want_scroll_page = -1;
     t->sel = SEL_NONE;
     t->text_sel_page = -1;
@@ -2766,6 +2770,10 @@ void tab_poll(tab *t)
 
 /* ---- moving a tab to another window: the state as a file ---- */
 
+/* changes with the layout, so a window never reads another version's file */
+#define TAB_STATE_MAGIC "PTTAB5"
+#define TAB_STATE_MAGIC_LEN 6
+
 static void w_int(FILE *f, int v) { fwrite(&v, sizeof v, 1, f); }
 
 static void w_float(FILE *f, float v) { fwrite(&v, sizeof v, 1, f); }
@@ -2831,6 +2839,9 @@ static void write_state(FILE *f, const pt_state *s)
         w_int(f, (int)it->shape);
         w_int(f, (int)it->data.len);
         if (it->data.len) fwrite(it->data.data, 1, it->data.len, f);
+        w_int(f, (int)it->field), w_str(f, it->name), w_int(f, it->field_flags), w_int(f, it->max_len);
+        w_int(f, it->options.n);
+        for (int k = 0; k < it->options.n; k++) w_str(f, it->options.v[k]);
     }
     w_int(f, s->deleted.n);
     fwrite(s->deleted.v, sizeof(pt_key), (size_t)s->deleted.n, f);
@@ -2898,6 +2909,12 @@ static void read_state(FILE *f, pt_state *s)
         if (len > 0) {
             it.data.data = malloc((size_t)len);
             it.data.len = fread(it.data.data, 1, (size_t)len, f);
+        }
+        it.field = (pt_field_type)r_int(f), it.name = r_str(f), it.field_flags = r_int(f), it.max_len = r_int(f);
+        int no = r_int(f);
+        for (int k = 0; k < no; k++) {
+            char *o = r_str(f);
+            if (o) pt_push(it.options, o);
         }
         pt_push(s->items, it);
     }
@@ -2967,7 +2984,7 @@ int tab_write_state(tab *t, const char *file)
 {
     FILE *f = fopen(file, "wb");
     if (!f) return -1;
-    fwrite("PTTAB4", 1, 6, f);
+    fwrite(TAB_STATE_MAGIC, 1, TAB_STATE_MAGIC_LEN, f);
     w_str(f, t->path), w_str(f, t->password), w_int(f, t->pno), w_float(f, t->zoom);
     write_state(f, &t->st);
     w_int(f, t->nhist);
@@ -2982,8 +2999,9 @@ tab *tab_read_state(const char *file)
 {
     FILE *f = fopen(file, "rb");
     if (!f) return NULL;
-    char magic[6];
-    if (fread(magic, 1, 6, f) != 6 || memcmp(magic, "PTTAB4", 6)) {
+    char magic[TAB_STATE_MAGIC_LEN];
+    if (fread(magic, 1, TAB_STATE_MAGIC_LEN, f) != TAB_STATE_MAGIC_LEN ||
+        memcmp(magic, TAB_STATE_MAGIC, TAB_STATE_MAGIC_LEN)) {
         fclose(f);
         return NULL;
     }

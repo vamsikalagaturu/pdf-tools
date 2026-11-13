@@ -67,6 +67,7 @@ typedef enum {
     T_IMAGE,
     T_DRAW,
     T_SHAPE,
+    T_FORM,
     T_CROP,
     T_COUNT
 } tool_id;
@@ -350,7 +351,8 @@ struct tab {
     tool_id tool;
     unsigned char manual_rgb[3], pen_rgb[3];
     float pen_width;
-    pt_shape shape; /* what the Shape tool draws */
+    pt_shape shape;           /* what the Shape tool draws */
+    pt_field_type field_type; /* what the Form tool adds */
     int ink_page, ink_index;
     double ink_time;
     int snap_text, auto_fill;
@@ -427,6 +429,9 @@ struct tab {
     pt_points stroke;
     fz_rect drag_start; /* scene rect of the item being moved or resized */
     int drag_kind;
+    int drag_keeps_aspect; /* item_keeps_aspect of the item being resized */
+    int crop_ask_page;     /* the crop menu is open for crop_ask (page space) on this page; -1 none */
+    fz_rect crop_ask;
     pt_state pending;
     int has_pending;
     int hover_handle;
@@ -668,6 +673,8 @@ float wheel_step(float extent);       /* what one wheel unit scrolls in a view `
 void layout_scene(tab *t);            /* a page not laid out (one page at a time) gets off_y below -1e8 */
 int item_movable(const pt_item *it);
 int item_resizable(const pt_item *it); /* lines and arrows move by their ends, so they do not resize */
+/* pictures keep their shape when resized; checkboxes and radio buttons stay square, as their mark is drawn */
+int item_keeps_aspect(const pt_item *it);
 void dashed_rect(Rectangle r, Color c);
 /* rows of pages, as positions in page order: the first of the row holding position i (pairs, or the cover alone then
  * pairs; i itself without two pages) */

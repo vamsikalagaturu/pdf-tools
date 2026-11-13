@@ -24,6 +24,8 @@ BSD-style and fontconfig's MIT-style licenses are permissive and impose nothing 
   metadata, attachments, scripts, hidden text and thumbnails.
 - **Edit**: highlight and other marks, notes, text, images, drawings, shapes, forms, crop, rotate, reorder,
   insert and remove pages, Bates numbers, watermarks, document properties, outline.
+- **Make forms**: start from a blank PDF or any PDF and add fillable text fields, checkboxes, radio buttons,
+  dropdowns and signature fields that others can fill in any PDF viewer.
 - **Sign**: a picture of your signature, or a digital certificate signature (.p12).
 - **More**: OCR (Tesseract), compare two PDFs, combine and split, export pages as PDF or images, protect with a
   password, print. Undo and redo, find with regular expressions (JavaScript syntax) or ignoring accents, in one tab or all, two pages

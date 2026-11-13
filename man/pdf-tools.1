@@ -122,6 +122,19 @@ annotation that other viewers show and can remove.
 .BR Shape " (O)"
 Drag a rectangle, ellipse, line or arrow, saved as a PDF annotation.
 .TP
+.BR Form " (F)"
+Drag a box, or click, to add a fillable form field: a text field (one line or
+several, with an optional maximum length), checkbox, radio button, dropdown or
+signature field, picked in the tool's options.
+A dialog sets its name, value, choices, font size and whether it is required
+or read-only; click the field again (or press i on it) to change them, drag it
+or its corner to move or resize it.
+Radio buttons with the same group name are one group, of which one can be on.
+The fields are saved as PDF form fields with their appearance, so other
+viewers can fill them.
+.B File > New blank PDF
+creates an empty PDF (A4, Letter or A5, any number of pages) to add them to.
+.TP
 .BR Crop " (C)"
 Drag a rectangle, then crop this page, all pages or the ticked pages to it, or
 crop the page to its content.
@@ -351,9 +364,43 @@ The output lists every match and any text still found under a box.
 Fill form fields (repeatable); checkboxes take
 .B true
 or
-.BR false .
+.BR false ,
+a radio group one of its buttons' choices or
+.BR Off .
 Field names are listed by
 .BR info .
+.TP
+.BI "new " \-o " output.pdf"
+Write a PDF of
+.BI \-\-pages " n"
+(default 1) blank pages of
+.B \-\-page\-size
+.RB ( A4 ", " Letter " or " A5 ,
+default A4).
+.TP
+.BI "add\-field " "input.pdf " \-o " output.pdf " "\-\-page " n " \-\-rect " x0,y0,x1,y1 " \-\-type " type " \-\-name " name"
+Add a fillable form field of
+.I type
+.BR text ", " checkbox ", " radio ", " dropdown " or " signature .
+.BI \-\-value " value"
+is a text or dropdown field's value,
+.B true
+or
+.B false
+for a checkbox, and a radio button's choice; radio buttons of one
+.I name
+are one group.
+A dropdown takes its choices as
+.BI \-\-options " a,b,c" ;
+a text field takes
+.B \-\-multiline
+and
+.BI \-\-max\-length " n" ;
+any field takes
+.B \-\-required
+and
+.BR \-\-read\-only .
+A name another field already has is refused.
 .TP
 .BI "pages " "input.pdf " \-o " output.pdf"
 .BI \-\-order " 3,1,2"

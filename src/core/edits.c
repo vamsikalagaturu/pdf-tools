@@ -22,7 +22,7 @@
 
 /* ---- kinds, marks, shapes and pens ---- */
 
-const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highlight", "ink", "shape"};
+const char *pt_kind_names[] = {"redact", "text", "note", "sign", "image", "highlight", "ink", "shape", "field"};
 const char *pt_shape_names[] = {"rectangle", "ellipse", "line", "arrow"};
 const char *pt_mark_names[] = {"highlight", "underline", "strikeout", "squiggly", "textcolour"};
 
@@ -64,6 +64,9 @@ pt_item pt_item_copy(const pt_item *src)
     it.text = pt_strdup(src->text);
     it.font = pt_strdup(src->font);
     it.quote = pt_strdup(src->quote);
+    it.name = pt_strdup(src->name);
+    it.options = (pt_strs){0};
+    for (int i = 0; i < src->options.n; i++) pt_push(it.options, pt_strdup(src->options.v[i]));
     it.rects = (pt_rects){0};
     for (int i = 0; i < src->rects.n; i++) pt_push(it.rects, src->rects.v[i]);
     it.strokes = (pt_strokes){0};
@@ -85,6 +88,8 @@ void pt_item_free(pt_item *it)
     free(it->text);
     free(it->font);
     free(it->quote);
+    free(it->name);
+    pt_strs_free(&it->options);
     pt_vec_free(it->rects);
     for (int i = 0; i < it->strokes.n; i++) pt_vec_free(it->strokes.v[i]);
     pt_vec_free(it->strokes);
@@ -607,6 +612,31 @@ fz_buffer *pt_doc_bytes(fz_context *ctx, pdf_document *doc, const char *password
     return write_doc(ctx, doc, PDF_ENCRYPT_AES_256, -1, password, password);
 }
 
+fz_buffer *pt_blank_pdf(fz_context *ctx, float w, float h, int pages)
+{
+    pdf_document *doc = pdf_create_document(ctx);
+    pdf_obj *page = NULL;
+    fz_buffer *out = NULL;
+    fz_var(page), fz_var(out);
+    fz_try(ctx)
+    {
+        for (int i = 0; i < pages; i++) {
+            page = pdf_add_page(ctx, doc, fz_make_rect(0, 0, w, h), 0, NULL, NULL);
+            pdf_insert_page(ctx, doc, -1, page);
+            pdf_drop_obj(ctx, page);
+            page = NULL;
+        }
+        out = pt_doc_bytes(ctx, doc, NULL);
+    }
+    fz_always(ctx)
+    {
+        pdf_drop_obj(ctx, page);
+        pdf_drop_document(ctx, doc);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+    return out;
+}
+
 static int encrypt_method(fz_context *ctx, pdf_crypt *crypt)
 {
     const char *method = pdf_crypt_method(ctx, crypt);
@@ -948,15 +978,30 @@ static pdf_annot *find_annot(fz_context *ctx, pdf_page *page, int xref)
     return NULL;
 }
 
+static void drop_empty_fields(fz_context *ctx, pdf_document *doc, pdf_obj *widget);
+
 void pt_remove_annot(fz_context *ctx, pdf_document *doc, pt_key key)
 {
     pdf_page *page = pdf_load_page(ctx, doc, key.page);
+    pdf_obj *obj = NULL;
+    fz_var(obj);
     fz_try(ctx)
     {
         pdf_annot *a = find_annot(ctx, page, key.xref);
         if (a) pdf_delete_annot(ctx, page, a);
+        for (pdf_annot *w = a ? NULL : pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w))
+            if (pdf_to_num(ctx, pdf_annot_obj(ctx, w)) == key.xref) {
+                obj = pdf_keep_obj(ctx, pdf_annot_obj(ctx, w));
+                pdf_delete_annot(ctx, page, w);
+                drop_empty_fields(ctx, doc, obj);
+                break;
+            }
     }
-    fz_always(ctx) fz_drop_page(ctx, (fz_page *)page);
+    fz_always(ctx)
+    {
+        pdf_drop_obj(ctx, obj);
+        fz_drop_page(ctx, (fz_page *)page);
+    }
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
@@ -1592,6 +1637,7 @@ static void apply_page_items(fz_context *ctx, pdf_document *doc, pdf_document *f
                 pt_insert_image(ctx, doc, page, it->rect, it->data.data, it->data.len);
             else if (it->kind == PT_HIGHLIGHT || it->kind == PT_NOTE || it->kind == PT_INK || it->kind == PT_SHAPE)
                 pt_add_annotation(ctx, page, it);
+            else if (it->kind == PT_FIELD) pt_add_field(ctx, doc, page, it);
         }
     }
     fz_always(ctx)
@@ -1665,6 +1711,43 @@ static void split_repeats(fz_context *ctx, pdf_document *doc, int *order, int n)
     fz_catch(ctx) fz_rethrow(ctx);
 }
 
+static pdf_obj *field_root(fz_context *ctx, pdf_obj *field);
+
+/* pdf_rearrange_pages makes a new catalog without /AcroForm, which leaves the widgets on the pages but no form for
+ * other viewers to fill. The form comes back with /Fields cut to the fields that keep a widget on an output page. */
+static void rearrange_keeping_form(fz_context *ctx, pdf_document *doc, const int *order, int n)
+{
+    pdf_obj *form = pdf_keep_obj(ctx, pdf_dict_getp(ctx, pdf_trailer(ctx, doc), "Root/AcroForm"));
+    pdf_obj *kept = NULL;
+    fz_var(kept);
+    fz_try(ctx)
+    {
+        pdf_rearrange_pages(ctx, doc, n, order, PDF_CLEAN_STRUCTURE_DROP);
+        if (form) {
+            pdf_obj *roots = kept = pdf_new_array(ctx, doc, 8);
+            for (int p = 0; p < pdf_count_pages(ctx, doc); p++) {
+                pdf_obj *annots = pdf_dict_get(ctx, pdf_lookup_page_obj(ctx, doc, p), PDF_NAME(Annots));
+                for (int k = 0; k < pdf_array_len(ctx, annots); k++) {
+                    pdf_obj *a = pdf_array_get(ctx, annots, k);
+                    if (!pdf_name_eq(ctx, pdf_dict_get(ctx, a, PDF_NAME(Subtype)), PDF_NAME(Widget))) continue;
+                    pdf_obj *root = field_root(ctx, a);
+                    if (pdf_array_find(ctx, roots, root) < 0) pdf_array_push(ctx, roots, root);
+                }
+            }
+            pdf_obj *fields = pdf_dict_get(ctx, form, PDF_NAME(Fields));
+            for (int i = pdf_array_len(ctx, fields) - 1; i >= 0; i--)
+                if (pdf_array_find(ctx, roots, pdf_array_get(ctx, fields, i)) < 0) pdf_array_delete(ctx, fields, i);
+            pdf_dict_put(ctx, pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root)), PDF_NAME(AcroForm), form);
+        }
+    }
+    fz_always(ctx)
+    {
+        pdf_drop_obj(ctx, kept);
+        pdf_drop_obj(ctx, form);
+    }
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
 static fz_buffer *apply_edits(fz_context *ctx, const pt_source *src, const char *password, const pt_state *s,
                               pt_leaks *leaks)
 {
@@ -1705,7 +1788,7 @@ static fz_buffer *apply_edits(fz_context *ctx, const pt_source *src, const char 
         if (s->order.n) {
             for (int i = 0; i < s->order.n; i++) pt_push(order, s->order.v[i]);
             split_repeats(ctx, doc, order.v, order.n);
-            pdf_rearrange_pages(ctx, doc, order.n, order.v, PDF_CLEAN_STRUCTURE_DROP);
+            rearrange_keeping_form(ctx, doc, order.v, order.n);
         }
         pt_apply_stamps(ctx, doc, &s->stamps, NULL, 0);
         out = pt_doc_bytes(ctx, doc, NULL);
@@ -2050,8 +2133,9 @@ void pt_graft_pages(fz_context *ctx, pdf_document *dst, pdf_document *src, const
 /* ---- the unsaved edits as a list (the Edits tab), and discarding some of them ---- */
 
 const char *pt_entry_names[] = {
-    "redact",  "text",   "note", "sign",        "image",  "highlight", "ink",   "shape",      "form",    "deleted",
-    "comment", "rotate", "crop", "remove_page", "insert", "reorder",   "stamp", "properties", "outline", "certificate",
+    "redact",      "text",   "note",    "sign",    "image",      "highlight", "ink",
+    "shape",       "field",  "form",    "deleted", "comment",    "rotate",    "crop",
+    "remove_page", "insert", "reorder", "stamp",   "properties", "outline",   "certificate",
 };
 
 static void add(pt_entries *out, int page, pt_entry_kind kind, const char *name, const char *detail, pt_ref ref)
@@ -2157,9 +2241,11 @@ void pt_edit_entries(fz_context *ctx, fz_document *doc, const pt_state *s, int o
                 memmove(detail, a, n);
                 detail[n] = 0;
             } else if (it->kind == PT_HIGHLIGHT) detail = pt_strdup(it->quote ? it->quote : "");
+            else if (it->kind == PT_FIELD) detail = pt_strdup(it->name ? it->name : "");
             else detail = pt_strdup(it->text ? it->text : "");
             const char *name = it->kind == PT_HIGHLIGHT ? pt_mark_names[it->style]
                                : it->kind == PT_SHAPE   ? pt_shape_names[it->shape]
+                               : it->kind == PT_FIELD   ? pt_field_type_names[it->field]
                                                         : "";
             add(&flat, p, (pt_entry_kind)it->kind, name, detail, (pt_ref){(pt_entry_kind)it->kind, p, index, {0, 0}});
             free(detail);
@@ -2261,6 +2347,7 @@ void pt_discard(pt_state *s, const pt_ref *refs, int n, int own)
         case PT_E_HIGHLIGHT:
         case PT_E_INK:
         case PT_E_SHAPE:
+        case PT_E_FIELD:
             for (int i = 0, k = 0; i < s->items.n; i++)
                 if (s->items.v[i].page == ref.page && k++ == ref.index) drop[i] = 1;
             break;

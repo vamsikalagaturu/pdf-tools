@@ -167,10 +167,28 @@ enum {
     A_MARKC0 = A_STYLE0 + 5,
     A_SHAPE0 = A_MARKC0 + 5,
     A_PEN0 = A_SHAPE0 + 4,
+    A_FIELD0 = A_PEN0 + PT_PEN_COUNT,
 };
 
 static const char *SHAPE_ICONS[4] = {"shape-rect", "shape-ellipse", "shape-line", "shape-arrow"};
 static const char *SHAPE_LABELS[4] = {"Rectangle", "Ellipse", "Line", "Arrow"};
+static const char *FIELD_ICONS[PT_FIELD_COUNT] = {"field-text", "field-checkbox", "field-radio", "field-dropdown",
+                                                  "field-signature"};
+static const char *FIELD_TYPE_LABELS[PT_FIELD_COUNT] = {"Text field", "Checkbox", "Radio button", "Dropdown",
+                                                        "Signature field"};
+static const char *FIELD_SHORT_LABELS[PT_FIELD_COUNT] = {"Text field", "Checkbox", "Radio", "Dropdown", "Signature"};
+static const char *FIELD_TIPS[PT_FIELD_COUNT] = {
+    "Text field: a box others type into (fixed text on the page: the Text tool, T)",
+    "Checkbox: ticked or not",
+    "Radio button: one choice of a group; give the buttons of a group the same group name",
+    "Dropdown: one of a list of choices",
+    "Signature field: where others sign digitally",
+};
+static const char *FIELD_BASE_NAMES[PT_FIELD_COUNT] = {"Text", "Check", "Group", "Dropdown", "Signature"};
+/* a field placed with a click instead of a drag, in points */
+static const fz_point FIELD_CLICK_SIZE[PT_FIELD_COUNT] = {{180, 22}, {14, 14}, {14, 14}, {150, 22}, {180, 50}};
+#define FIELD_MIN_H_PT (PT_FIELD_FONT_SIZE + 4.0f)
+#define FIELD_MIN_W_PT (3 * FIELD_MIN_H_PT)
 
 static void ask_goto(tab *t);
 
@@ -317,6 +335,7 @@ static void run(void *ctx, intptr_t a)
             set_mark_colour(t, p[a - A_MARKC0].rgb);
         } else if (a >= A_SHAPE0 && a < A_SHAPE0 + 4) t->shape = (pt_shape)(a - A_SHAPE0);
         else if (a >= A_PEN0 && a < A_PEN0 + PT_PEN_COUNT) set_pen_style(t, (pt_pen)(a - A_PEN0));
+        else if (a >= A_FIELD0 && a < A_FIELD0 + PT_FIELD_COUNT) t->field_type = (pt_field_type)(a - A_FIELD0);
     }
     pt_vec_free(pages);
 }
@@ -394,6 +413,10 @@ void tab_menu_items(tab *t, ui_menu *file, ui_menu *edit, ui_menu *tools, ui_men
         ui_menu *pens = menu_sub(tools, "Pen style", "pen-pen");
         for (int i = 0; i < PT_PEN_COUNT; i++)
             menu_item(pens, PEN_LABELS[i], PEN_ICONS[i], NULL, run, t, A_PEN0 + i, 1, (int)pen_style() == i);
+        ui_menu *fields = menu_sub(tools, "Form field type", "form");
+        for (int i = 0; i < PT_FIELD_COUNT; i++)
+            menu_item(fields, FIELD_TYPE_LABELS[i], FIELD_ICONS[i], NULL, run, t, A_FIELD0 + i, 1,
+                      (int)t->field_type == i);
     }
 
     if (pages) {
@@ -1566,6 +1589,16 @@ static void place_signature(tab *t, fz_point pos, int page);
 static void pick_image(tab *t, int page, fz_rect box, int replace);
 static void remove_item(tab *t, int index);
 static void delete_annot(tab *t, pt_key key);
+
+/* the file's form field widget with this key (the Form tool selects those as SEL_ANNOT) */
+static int is_form_field(tab *t, pt_key key)
+{
+    field_infos *fs = page_fields(t, key.page);
+    for (int i = 0; i < fs->n; i++)
+        if (fs->v[i].key.xref == key.xref) return 1;
+    return 0;
+}
+
 static void recolour(tab *t, int index, const unsigned char rgb[3]);
 static void crop_menu_at(tab *t, int page, fz_rect rect, Vector2 at);
 static void place_signature_in(tab *t, int page, fz_rect box);
@@ -1604,12 +1637,14 @@ static void page_objects(tab *t, int page, page_objs *out)
 static const char *item_name(const pt_item *it)
 {
     static const char *const KINDS[] = {
-        [PT_REDACT] = "Redaction", [PT_TEXT] = "Text box",  [PT_NOTE] = "Note",   [PT_SIGN] = "Signature",
-        [PT_IMAGE] = "Image",      [PT_HIGHLIGHT] = "Mark", [PT_INK] = "Drawing", [PT_SHAPE] = "Shape",
+        [PT_REDACT] = "Redaction", [PT_TEXT] = "Text box", [PT_NOTE] = "Note",
+        [PT_SIGN] = "Signature",   [PT_IMAGE] = "Image",   [PT_HIGHLIGHT] = "Mark",
+        [PT_INK] = "Drawing",      [PT_SHAPE] = "Shape",   [PT_FIELD] = "Form field",
     };
     static const char *const SHAPES[] = {"Rectangle", "Ellipse", "Line", "Arrow"};
     if (it->kind == PT_HIGHLIGHT) return MARK_LABELS[it->style];
     if (it->kind == PT_SHAPE) return SHAPES[it->shape];
+    if (it->kind == PT_FIELD) return FIELD_TYPE_LABELS[it->field];
     return KINDS[it->kind];
 }
 
@@ -1709,8 +1744,8 @@ static void item_nudge(tab *t, float dx, float dy, float dw, float dh)
     float w = s.x1 - s.x0, h = s.y1 - s.y0;
     s = fz_make_rect(s.x0 + dx, s.y0 + dy, s.x0 + dx + fmaxf(ITEM_MIN_PT, w + dw),
                      s.y0 + dy + fmaxf(ITEM_MIN_PT, h + dh));
-    /* pictures keep their shape, as dragging the handle does */
-    if (resize && (it->kind == PT_SIGN || it->kind == PT_IMAGE) && w > 0 && h > 0) {
+    /* pictures, checkboxes and radio buttons keep their shape, as dragging the handle does */
+    if (resize && item_keeps_aspect(it) && w > 0 && h > 0) {
         if (dw) s.y1 = s.y0 + (s.x1 - s.x0) * h / w;
         else s.x1 = s.x0 + (s.y1 - s.y0) * w / h;
     }
@@ -1733,7 +1768,8 @@ static void item_nudge(tab *t, float dx, float dy, float dw, float dh)
 static void item_edit(tab *t)
 {
     if (t->sel == SEL_ANNOT) {
-        item_clicked(t, SEL_ANNOT, t->sel_page, t->sel_index);
+        if (is_form_field(t, (pt_key){t->sel_page, t->sel_index})) status("A form field can be deleted (dd)", 3);
+        else item_clicked(t, SEL_ANNOT, t->sel_page, t->sel_index);
         return;
     }
     if (t->sel != SEL_ITEM || t->sel_index >= t->st.items.n) return;
@@ -1741,6 +1777,7 @@ static void item_edit(tab *t)
     if (it->kind == PT_TEXT) edit_text_item(t, t->sel_index);
     else if (it->kind == PT_NOTE || it->kind == PT_HIGHLIGHT) item_clicked(t, SEL_ITEM, t->sel_page, t->sel_index);
     else if (it->kind == PT_IMAGE) pick_image(t, it->page, fz_empty_rect, t->sel_index);
+    else if (it->kind == PT_FIELD) field_dialog(t, t->sel_index, NULL);
     else status("Nothing to edit: :colour recolours it, h/j/k/l move it", 4);
 }
 
@@ -2632,6 +2669,15 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
         if (draw && ui_button(bid(t, 51), (Rectangle){x, y, w2, h}, "Remove crop", "close", B_FLAT, NULL))
             run(t, A_UNCROP);
         x += w2 + 2;
+    } else if (t->tool == T_FORM) {
+        for (int i = 0; i < PT_FIELD_COUNT; i++) {
+            int flags = B_FLAT | ((int)t->field_type == i ? B_CHECKED : 0);
+            float bw = button_width(FIELD_SHORT_LABELS[i], FIELD_ICONS[i], 0);
+            if (draw && ui_button(bid(t, 80 + i), (Rectangle){x, y, bw, h}, FIELD_SHORT_LABELS[i], FIELD_ICONS[i],
+                                  flags, FIELD_TIPS[i]))
+                run(t, A_FIELD0 + i);
+            x += bw + 2;
+        }
     } else if (t->tool == T_DRAW || t->tool == T_SHAPE) {
         /* shapes share the pen's colour and width */
         if (t->tool == T_SHAPE) {
@@ -2699,7 +2745,7 @@ static float tool_options(tab *t, float x, float y, float h, int draw)
 static int tool_has_options(tab *t)
 {
     return t->tool == T_REDACT || t->tool == T_HIGHLIGHT || t->tool == T_CROP || t->tool == T_DRAW ||
-           t->tool == T_SHAPE || t->tool == T_SIGN;
+           t->tool == T_SHAPE || t->tool == T_SIGN || t->tool == T_FORM;
 }
 
 /* phone-sized windows: one picker for the tools, the rest in an overflow menu; tool options get their own row */
@@ -3490,6 +3536,7 @@ static void crop_menu_at(tab *t, int page, fz_rect rect, Vector2 at)
     menu_sep(m);
     menu_item(m, "Crop this page to its content instead", "crop", NULL, crop_content_page, NULL, 0, 1, 0);
     menu_open(m, at);
+    t->crop_ask_page = page, t->crop_ask = rect;
     pt_vec_free(ticked);
 }
 
@@ -3683,6 +3730,29 @@ static void pick_image(tab *t, int page, fz_rect box, int replace)
                 "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff", image_chosen, job);
 }
 
+/* a field of the Form tool's type in `box` (page points), named after its type; asked about before it is added */
+static void place_field(tab *t, int page, fz_rect box)
+{
+    /* a short drag still counts as one: no field smaller than one line of its text, a checkbox its click size */
+    float w = box.x1 - box.x0, h = box.y1 - box.y0;
+    if (t->field_type == PT_FIELD_CHECKBOX || t->field_type == PT_FIELD_RADIO)
+        w = h = fmaxf(fminf(w, h), FIELD_CLICK_SIZE[t->field_type].x);
+    else w = fmaxf(w, FIELD_MIN_W_PT), h = fmaxf(h, FIELD_MIN_H_PT);
+    box.x1 = box.x0 + w, box.y1 = box.y0 + h;
+    pt_item it = {0};
+    it.page = page, it.kind = PT_FIELD, it.field = t->field_type, it.rect = box, it.size = PT_FIELD_FONT_SIZE;
+    pt_strs taken = {0};
+    pt_ints radio = {0};
+    field_names_taken(t, -1, &taken, &radio);
+    it.name = pt_unique_field_name(FIELD_BASE_NAMES[it.field], &taken);
+    if (it.field == PT_FIELD_RADIO) it.text = pt_strdup("Choice1");
+    if (it.field == PT_FIELD_DROPDOWN) pt_push(it.options, pt_strdup("Choice1"));
+    pt_strs_free(&taken);
+    pt_vec_free(radio);
+    field_dialog(t, -1, &it);
+    pt_item_free(&it);
+}
+
 void on_band(tab *t, fz_rect scene)
 {
     if (!t->doc) return;
@@ -3694,6 +3764,7 @@ void on_band(tab *t, fz_rect scene)
     else if (t->tool == T_CROP) crop_menu(t, page, sel);
     else if (t->tool == T_TEXT) start_text(t, page, (fz_point){sel.x0, sel.y0}, sel.x1 - sel.x0, -1);
     else if (t->tool == T_IMAGE) pick_image(t, page, sel, -1);
+    else if (t->tool == T_FORM) place_field(t, page, sel);
     else {
         pt_rects rects = {0};
         char *text = line_rects(t, page, sel, &rects);
@@ -3724,6 +3795,10 @@ void on_click(tab *t, fz_point scene)
     else if (t->tool == T_SIGN) place_signature(t, pos, page);
     else if (t->tool == T_IMAGE) pick_image(t, page, fz_make_rect(pos.x, pos.y, pos.x, pos.y), -1);
     else if (t->tool == T_NOTE) place_note(t, pos, page);
+    else if (t->tool == T_FORM) {
+        fz_point size = FIELD_CLICK_SIZE[t->field_type];
+        place_field(t, page, fz_make_rect(pos.x, pos.y, pos.x + size.x, pos.y + size.y));
+    }
 }
 
 void on_shape(tab *t)
@@ -3814,7 +3889,7 @@ static void delete_annot(tab *t, pt_key key)
     pt_state snap;
     snapshot(t, &snap);
     annot_infos *as = page_annots(t, key.page);
-    const char *type = "annotation";
+    const char *type = is_form_field(t, key) ? "form field" : "annotation";
     for (int i = 0; i < as->n; i++)
         if (as->v[i].xref == key.xref) type = pdf_string_from_annot_type(CTX, as->v[i].type);
     pt_push(t->annot_types, (annot_type){key, pt_strdup(type)});
@@ -4015,6 +4090,12 @@ static void a_fill(void *c, intptr_t white)
     recolour(mc.t, mc.index, rgb);
 }
 
+static void a_field_props(void *c, intptr_t a)
+{
+    (void)c, (void)a;
+    field_dialog(mc.t, mc.index, NULL);
+}
+
 static void a_delete_item(void *c, intptr_t a)
 {
     (void)c, (void)a;
@@ -4047,6 +4128,7 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         mc.kind = SEL_ITEM;
         if (it->kind == PT_TEXT) menu_item(m, "Edit text", "text", NULL, a_edit_text, NULL, 0, 1, 0);
         else if (it->kind == PT_IMAGE) menu_item(m, "Replace image...", "image", NULL, a_replace_image, NULL, 0, 1, 0);
+        else if (it->kind == PT_FIELD) menu_item(m, "Field properties...", "form", NULL, a_field_props, NULL, 0, 1, 0);
         else if (it->kind == PT_INK || it->kind == PT_SHAPE) {
             ui_menu *c = menu_sub(m, "Colour", "custom-colour");
             for (int i = 0; i < 6; i++)
@@ -4083,6 +4165,8 @@ void item_menu(tab *t, sel_kind kind, int page, int index, Vector2 at)
         }
         menu_sep(m);
         menu_item(m, "Delete", "remove", NULL, a_delete_item, NULL, 0, 1, 0);
+    } else if (kind == SEL_ANNOT && is_form_field(t, (pt_key){page, index})) {
+        menu_item(m, "Delete field", "remove", NULL, a_delete_annot, NULL, 0, 1, 0);
     } else if (kind == SEL_ANNOT) {
         menu_item(m, "Comment...", "comment", NULL, a_item_clicked, NULL, 0, 1, 0);
         const annot_info *an = annot_of(t, (pt_key){page, index});
@@ -4125,9 +4209,12 @@ void end_change(tab *t, int moved, sel_kind kind, int page, int index)
         return;
     }
     if (t->has_pending) pt_state_free(&t->pending), t->has_pending = 0;
+    if (kind == SEL_ANNOT && is_form_field(t, (pt_key){page, index})) return;
     if (kind == SEL_ANNOT) item_clicked(t, kind, page, index);
     else if (kind == SEL_ITEM && (t->st.items.v[index].kind == PT_NOTE || t->st.items.v[index].kind == PT_HIGHLIGHT))
         item_clicked(t, kind, page, index);
+    else if (kind == SEL_ITEM && t->st.items.v[index].kind == PT_FIELD && t->tool == T_FORM)
+        field_dialog(t, index, NULL);
 }
 
 /* ---- the page menu ---- */
@@ -5275,6 +5362,7 @@ static const struct {
     [PT_E_HIGHLIGHT] = {"Highlight", "highlight"},
     [PT_E_INK] = {"Drawing", "draw"},
     [PT_E_SHAPE] = {"Shape", "shapes"},
+    [PT_E_FIELD] = {"New field", "form"},
     [PT_E_FORM] = {"Field", "file"},
     [PT_E_DELETED] = {"Removed", "remove"},
     [PT_E_COMMENT] = {"Comment", "note"},
@@ -5802,7 +5890,7 @@ static void on_edit_entry(tab *t, const pt_ref *ref)
     if (p == PT_DOCUMENT || order_index(t, p) < 0) return;
     tab_goto(t, p);
     fz_rect target = fz_empty_rect;
-    if (ref->kind <= PT_E_SHAPE) {
+    if (ref->kind <= PT_E_FIELD) {
         for (int i = 0, k = 0; i < t->st.items.n; i++)
             if (t->st.items.v[i].page == p && k++ == ref->index) {
                 t->sel = SEL_ITEM, t->sel_page = p, t->sel_index = i;
