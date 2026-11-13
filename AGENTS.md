@@ -41,7 +41,12 @@ the window.
   line ends.
 - `pages`: `--order` keeps only the pages it lists, `--remove` drops pages after that, `--crop`
   deletes what lies outside the box.
-- `fill` takes field names from `info` (`fields[].name`); checkboxes take `true`/`false`.
+- `fill` takes field names from `info` (`fields[].name`); checkboxes take `true`/`false`, a radio group one of
+  its buttons' choices or `Off` (anything else fails, listing the choices).
+- To make a form: `new -o form.pdf [--pages N] [--page-size A4|Letter|A5]`, then one `add-field` per field
+  (`--type text|checkbox|radio|dropdown|signature`, `--name`, `--rect` on `--page`). Radio buttons sharing a
+  `--name` are one group and each `--value` is that button's choice; a dropdown needs `--options "a,b,c"`. A name
+  another field has fails. Output: `{"output", "field": {"name", "type", "page", "rect"}}`.
 - `sign --cert` writes a PKCS#7 digital signature (incremental save); `sign --image` alone only
   places a picture, which is not a cryptographic signature.
 - `bates` numbers count only the selected pages; the output gives `first` and `last`.

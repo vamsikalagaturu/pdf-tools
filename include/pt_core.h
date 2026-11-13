@@ -174,6 +174,29 @@ int pt_is_on(const char *value); /* checked: not empty, "Off", "false" or "False
 void pt_set_field(fz_context *ctx, pdf_annot *widget, const char *text, int is_bool, int on, float fontsize);
 float pt_field_fontsize(fz_context *ctx, pdf_annot *widget); /* of the /DA that applies; 0 for auto size or none */
 
+/* new form fields (ISO 32000-1, 12.7) */
+typedef enum {
+    PT_FIELD_TEXT,
+    PT_FIELD_CHECKBOX,
+    PT_FIELD_RADIO,
+    PT_FIELD_DROPDOWN,
+    PT_FIELD_SIGNATURE,
+    PT_FIELD_COUNT
+} pt_field_type;
+
+/* the font size of a new text field or dropdown, in points */
+#define PT_FIELD_FONT_SIZE 11
+
+/* pt_item.field_flags */
+enum { PT_FIELD_MULTILINE = 1, PT_FIELD_REQUIRED = 2, PT_FIELD_READ_ONLY = 4, PT_FIELD_CHECKED = 8 };
+
+extern const char *pt_field_type_names[PT_FIELD_COUNT]; /* "text", "checkbox", "radio", "dropdown", "signature" */
+int pt_field_type_from_name(const char *name);          /* -1: unknown or NULL */
+/* the fully qualified names of doc's fields, each once */
+void pt_field_names(fz_context *ctx, pdf_document *doc, pt_strs *out);
+/* `base` followed by the first number from 1 that makes a name not in `taken` */
+char *pt_unique_field_name(const char *base, const pt_strs *taken);
+
 /* ---- fonts.c: text box fonts ---- */
 #define PT_LINE_SPACING 1.2f
 
@@ -210,7 +233,7 @@ void pt_text_size(fz_context *ctx, fz_font *font, const char *text, float size, 
 extern const char *pt_default_fonts[5];
 
 /* ---- edits.c: the edit state and the save pipeline ---- */
-typedef enum { PT_REDACT, PT_TEXT, PT_NOTE, PT_SIGN, PT_IMAGE, PT_HIGHLIGHT, PT_INK, PT_SHAPE } pt_kind;
+typedef enum { PT_REDACT, PT_TEXT, PT_NOTE, PT_SIGN, PT_IMAGE, PT_HIGHLIGHT, PT_INK, PT_SHAPE, PT_FIELD } pt_kind;
 
 typedef enum { PT_MARK_HIGHLIGHT, PT_MARK_UNDERLINE, PT_MARK_STRIKEOUT, PT_MARK_SQUIGGLY, PT_MARK_TEXTCOLOUR } pt_mark;
 
@@ -257,6 +280,13 @@ typedef struct {
     pt_pen pen;         /* ink */
     pt_shape shape;     /* shape: rect and ellipse fill `rect` */
     pt_bytes data;      /* sign: PNG, image: file bytes */
+    /* field: its name (radio buttons of one name are a group), text = its value (radio: this button's choice),
+     * size = font size (0 auto) */
+    pt_field_type field;
+    char *name;
+    pt_strs options; /* dropdown */
+    int field_flags;
+    int max_len; /* text; 0 = any length */
 } pt_item;
 
 typedef struct {
@@ -507,6 +537,11 @@ void pt_scrub(fz_context *ctx, pdf_document *doc);
 void pt_crop_page(fz_context *ctx, pdf_document *doc, int page, fz_rect rect);
 void pt_remove_annot(fz_context *ctx, pdf_document *doc, pt_key key);
 void pt_add_annotation(fz_context *ctx, pdf_page *page, const pt_item *it); /* marks, notes, ink and shapes */
+/* A field item as a widget with its appearance, listed under /AcroForm; a radio button joins the radio group of its
+ * name. Throws when another field already has the name. */
+void pt_add_field(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_item *it);
+/* an unencrypted PDF of `pages` empty w x h pt pages */
+fz_buffer *pt_blank_pdf(fz_context *ctx, float w, float h, int pages);
 /* A text box as page content; its font is resolved in `fonts_doc` (pt_resolve_font). */
 void pt_draw_text(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_item *it, pdf_document *fonts_doc);
 /* The image file bytes `data` as page content, keeping the image's proportions, centred in `rect`. */
@@ -710,6 +745,7 @@ typedef enum {
     PT_E_HIGHLIGHT,
     PT_E_INK,
     PT_E_SHAPE,
+    PT_E_FIELD,
     PT_E_FORM,
     PT_E_DELETED,
     PT_E_COMMENT,

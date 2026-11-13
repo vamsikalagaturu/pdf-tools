@@ -887,6 +887,279 @@ void properties_dialog(tab *t)
     dialog_push(d);
 }
 
+/* ---- new form fields ---- */
+
+static const char *FIELD_LABELS[PT_FIELD_COUNT] = {"Text", "Checkbox", "Radio button", "Dropdown", "Signature"};
+#define FIELD_MAX_LENGTH 100000
+#define FIELD_FONT_MAX_PT 72.0f
+
+void field_names_taken(tab *t, int skip, pt_strs *names, pt_ints *radio)
+{
+    for (int p = 0; t->doc && p < fz_count_pages(CTX, t->doc); p++) {
+        field_infos *fs = page_fields(t, p);
+        for (int i = 0; i < fs->n; i++) {
+            pt_push(*names, pt_strdup(fs->v[i].name));
+            pt_push(*radio, fs->v[i].type == PDF_WIDGET_TYPE_RADIOBUTTON);
+        }
+    }
+    for (int i = 0; i < t->st.items.n; i++) {
+        const pt_item *it = &t->st.items.v[i];
+        if (i == skip || it->kind != PT_FIELD || !it->name) continue;
+        pt_push(*names, pt_strdup(it->name));
+        pt_push(*radio, it->field == PT_FIELD_RADIO);
+    }
+}
+
+typedef struct {
+    tab *t;
+    int index; /* -1: a new field, added on OK */
+    pt_item it;
+    ui_text name, value, options;
+    int type, checked, multiline, required, read_only, max_len;
+    pt_strs taken;
+    pt_ints taken_radio;
+    int first;
+} field_data;
+
+static void field_free(dialog *d)
+{
+    field_data *f = d->data;
+    text_free(&f->name), text_free(&f->value), text_free(&f->options);
+    pt_item_free(&f->it);
+    pt_strs_free(&f->taken);
+    pt_vec_free(f->taken_radio);
+    free(f);
+}
+
+/* why `name` cannot be this field's, NULL when it can */
+static const char *field_name_problem(const field_data *f, const char *name)
+{
+    if (!*name) return "Give the field a name";
+    if (strchr(name, '.')) return "A name cannot contain a dot";
+    for (int i = 0; i < f->taken.n; i++)
+        if (!strcmp(f->taken.v[i], name) && !(f->type == PT_FIELD_RADIO && f->taken_radio.v[i]))
+            return "Another field has this name";
+    return NULL;
+}
+
+static void split_options(const char *text, pt_strs *out)
+{
+    char *copy = pt_strdup(text);
+    for (char *tok = strtok(copy, ","); tok; tok = strtok(NULL, ",")) {
+        while (*tok == ' ') tok++;
+        size_t n = strlen(tok);
+        while (n && tok[n - 1] == ' ') tok[--n] = 0;
+        if (*tok) pt_push(*out, pt_strdup(tok));
+    }
+    free(copy);
+}
+
+static float field_label(const char *label, Rectangle b, float y)
+{
+    draw_text_in(label, (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    return b.x + 120;
+}
+
+static int field_frame(dialog *d, Rectangle b)
+{
+    field_data *f = d->data;
+    tab *t = f->t;
+    if (f->first) text_focus(&f->name), text_select_all(&f->name), f->first = 0;
+    int res = 0;
+    float y = b.y, x;
+    x = field_label("Type:", b, y);
+    ui_combo(ui_id(d, 1), (Rectangle){x, y, 200, 30}, FIELD_LABELS, PT_FIELD_COUNT, &f->type);
+    y += 38;
+    y = field_row(d, 2, b, y, f->type == PT_FIELD_RADIO ? "Group name:" : "Name:", &f->name, &res);
+    if (f->type == PT_FIELD_TEXT || f->type == PT_FIELD_DROPDOWN || f->type == PT_FIELD_RADIO)
+        y = field_row(d, 3, b, y, f->type == PT_FIELD_RADIO ? "Choice:" : "Value:", &f->value, &res);
+    if (f->type == PT_FIELD_DROPDOWN) y = field_row(d, 4, b, y, "Choices:", &f->options, &res);
+    if (f->type == PT_FIELD_CHECKBOX || f->type == PT_FIELD_RADIO) {
+        x = field_label("", b, y);
+        ui_checkbox(ui_id(d, 5), (Rectangle){x, y, 200, 30}, "Checked", &f->checked, 0);
+        y += 38;
+    }
+    if (f->type == PT_FIELD_TEXT) {
+        x = field_label("", b, y);
+        ui_checkbox(ui_id(d, 6), (Rectangle){x, y, 150, 30}, "Several lines", &f->multiline, 0);
+        draw_text_in("Max length:", (Rectangle){x + 160, y, 100, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+        ui_spin(ui_id(d, 7), (Rectangle){x + 260, y, 120, 30}, &f->max_len, 0, FIELD_MAX_LENGTH, 1, NULL, NULL);
+        y += 38;
+    }
+    if (f->type == PT_FIELD_TEXT || f->type == PT_FIELD_DROPDOWN) {
+        x = field_label("Font size:", b, y);
+        ui_spinf(ui_id(d, 8), (Rectangle){x, y, 120, 30}, &f->it.size, 0, FIELD_FONT_MAX_PT, 1, " pt");
+        draw_text_in("0 fits the text to the box", (Rectangle){x + 130, y, 220, 30}, FS_SMALL, F_REGULAR,
+                     pal.disabled_text, -1);
+        y += 38;
+    }
+    x = field_label("", b, y);
+    ui_checkbox(ui_id(d, 9), (Rectangle){x, y, 120, 30}, "Required", &f->required, 0);
+    ui_checkbox(ui_id(d, 10), (Rectangle){x + 130, y, 130, 30}, "Read-only", &f->read_only, 0);
+    y += 38;
+
+    const char *problem = field_name_problem(f, text_get(&f->name));
+    pt_strs choices = {0};
+    split_options(text_get(&f->options), &choices);
+    const char *value = text_get(&f->value);
+    if (!problem && f->type == PT_FIELD_DROPDOWN) {
+        int listed = !*value;
+        for (int i = 0; i < choices.n; i++) listed |= !strcmp(choices.v[i], value);
+        if (!choices.n) problem = "List the choices, separated by commas";
+        else if (!listed) problem = "The value must be one of the choices";
+    }
+    if (problem) draw_text(problem, b.x + 120, y, FS_SMALL, F_REGULAR, pal.danger);
+
+    Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
+    int done = 0;
+    if (ui_button(ui_id(d, 11), ok, f->index < 0 ? "Add" : "OK", NULL, B_PRIMARY | (problem ? B_DISABLED : 0), NULL) ||
+        ((res & TE_SUBMIT) && !problem)) {
+        pt_item it = pt_item_copy(&f->it);
+        it.field = (pt_field_type)f->type;
+        free(it.name), free(it.text);
+        it.name = pt_strdup(text_get(&f->name));
+        it.text = f->type == PT_FIELD_CHECKBOX || f->type == PT_FIELD_SIGNATURE ? NULL : pt_strdup(value);
+        pt_strs_free(&it.options);
+        if (f->type == PT_FIELD_DROPDOWN) it.options = choices, choices = (pt_strs){0};
+        it.max_len = f->type == PT_FIELD_TEXT ? f->max_len : 0;
+        /* a checkbox or radio button is drawn as a square: a wider box would leave its mark at one side */
+        if (f->type == PT_FIELD_CHECKBOX || f->type == PT_FIELD_RADIO) {
+            float side = fminf(it.rect.x1 - it.rect.x0, it.rect.y1 - it.rect.y0);
+            it.rect.x1 = it.rect.x0 + side, it.rect.y1 = it.rect.y0 + side;
+        }
+        it.field_flags =
+            (f->type == PT_FIELD_TEXT && f->multiline ? PT_FIELD_MULTILINE : 0) |
+            (f->required ? PT_FIELD_REQUIRED : 0) | (f->read_only ? PT_FIELD_READ_ONLY : 0) |
+            ((f->type == PT_FIELD_CHECKBOX || f->type == PT_FIELD_RADIO) && f->checked ? PT_FIELD_CHECKED : 0);
+        pt_state snap;
+        snapshot(t, &snap);
+        if (f->index < 0) {
+            pt_push(t->st.items, it);
+            t->sel = SEL_ITEM, t->sel_page = it.page, t->sel_index = t->st.items.n - 1;
+            status("Field added; it is written when you save", 4);
+        } else if (f->index < t->st.items.n) {
+            pt_item_free(&t->st.items.v[f->index]);
+            t->st.items.v[f->index] = it;
+        } else pt_item_free(&it);
+        push_undo(t, &snap);
+        done = 1;
+    } else if (ui_button(ui_id(d, 12), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL) ||
+               (res & TE_CANCEL))
+        done = 1;
+    pt_strs_free(&choices);
+    return done;
+}
+
+void field_dialog(tab *t, int index, const pt_item *fresh)
+{
+    const pt_item *src = index >= 0 && index < t->st.items.n ? &t->st.items.v[index] : fresh;
+    if (!t->doc || !src || src->kind != PT_FIELD) return;
+    dialog *d = calloc(1, sizeof *d);
+    field_data *f = calloc(1, sizeof *f);
+    f->t = t, f->index = index >= 0 ? index : -1, f->first = 1;
+    f->it = pt_item_copy(src);
+    f->type = src->field;
+    f->checked = (src->field_flags & PT_FIELD_CHECKED) != 0;
+    f->multiline = (src->field_flags & PT_FIELD_MULTILINE) != 0;
+    f->required = (src->field_flags & PT_FIELD_REQUIRED) != 0;
+    f->read_only = (src->field_flags & PT_FIELD_READ_ONLY) != 0;
+    f->max_len = src->max_len;
+    text_set(&f->name, src->name ? src->name : "");
+    text_set(&f->value, src->text ? src->text : "");
+    char *joined = pt_strdup("");
+    for (int i = 0; i < src->options.n; i++) {
+        char *next = pt_format("%s%s%s", joined, i ? ", " : "", src->options.v[i]);
+        free(joined);
+        joined = next;
+    }
+    text_set(&f->options, joined);
+    free(joined);
+    f->options.placeholder = "e.g. Yes, No, Maybe";
+    field_names_taken(t, f->index, &f->taken, &f->taken_radio);
+    *d = (dialog){index >= 0 ? "Form field" : "New form field", 560, 430, field_frame, field_free, f, 1};
+    dialog_push(d);
+}
+
+/* ---- new blank PDF ---- */
+
+static const char *NEW_PDF_SIZES[] = {"A4", "Letter", "A5"};
+#define NEW_PDF_SIZE_COUNT 3
+#define NEW_PDF_MAX_PAGES 1000
+
+typedef struct {
+    int size, pages;
+} new_pdf_data;
+
+static void new_pdf_free(dialog *d) { free(d->data); }
+
+static void new_pdf_chosen(void *ctx, pt_strs *paths)
+{
+    new_pdf_data *n = ctx;
+    if (paths->n) {
+        const char *ext = strrchr(pt_basename(paths->v[0]), '.');
+        char *path = ext && !strcasecmp(ext, ".pdf") ? pt_strdup(paths->v[0]) : pt_format("%s.pdf", paths->v[0]);
+        float w = 0, h = 0;
+        pt_page_size(NEW_PDF_SIZES[n->size], &w, &h);
+        fz_buffer *data = NULL;
+        fz_var(data);
+        fz_try(CTX) data = pt_blank_pdf(CTX, w, h, n->pages);
+        fz_catch(CTX) fz_report_error(CTX);
+        if (!data || pt_write_file(path, data->data, data->len)) {
+            char *msg = pt_format("Could not write %s", path);
+            message_box(MSG_ERROR, APP_NAME, msg, NULL, NULL);
+            free(msg);
+        } else {
+            pt_strs open = {0};
+            pt_push(open, pt_strdup(path));
+            app_open_paths(&open);
+            pt_strs_free(&open);
+            for (int i = 0; i < app.tabs.n; i++)
+                if (app.tabs.v[i].kind == TAB_DOC && app.tabs.v[i].doc && tab_path(app.tabs.v[i].doc) &&
+                    pt_same_file(tab_path(app.tabs.v[i].doc), path))
+                    tool_set(app.tabs.v[i].doc, T_FORM);
+        }
+        fz_drop_buffer(CTX, data);
+        free(path);
+    }
+    free(n);
+}
+
+static int new_pdf_frame(dialog *d, Rectangle b)
+{
+    new_pdf_data *n = d->data;
+    float y = b.y;
+    draw_text_in("Page size:", (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    ui_combo(ui_id(d, 1), (Rectangle){b.x + 120, y, 160, 30}, NEW_PDF_SIZES, NEW_PDF_SIZE_COUNT, &n->size);
+    y += 38;
+    draw_text_in("Pages:", (Rectangle){b.x, y, 120, 30}, FS_NORMAL, F_REGULAR, pal.window_text, -1);
+    ui_spin(ui_id(d, 2), (Rectangle){b.x + 120, y, 120, 30}, &n->pages, 1, NEW_PDF_MAX_PAGES, 1, NULL, NULL);
+    y += 38;
+    draw_text("Then choose where to save it; it opens with the Form tool.", b.x, y + 2, FS_SMALL, F_REGULAR,
+              pal.disabled_text);
+    Rectangle ok = {b.x + b.width - 100, b.y + b.height - 30, 100, 30};
+    if (ui_button(ui_id(d, 3), ok, "Create...", NULL, B_PRIMARY, NULL)) {
+        new_pdf_data *job = malloc(sizeof *job);
+        if (!job) abort();
+        *job = *n;
+        const char *start = pt_settings_str(&app.settings, "last_folder");
+        char *dir = pt_strdup(*start ? start : getenv("HOME") ? getenv("HOME") : "."), *path = pt_join(dir, "form.pdf");
+        file_dialog(FD_SAVE, "New blank PDF", path, "PDF", "*.pdf", new_pdf_chosen, job);
+        free(dir);
+        free(path);
+        return 1;
+    }
+    return ui_button(ui_id(d, 4), (Rectangle){ok.x - 98, ok.y, 90, 30}, "Cancel", NULL, 0, NULL);
+}
+
+void new_pdf_dialog(void)
+{
+    dialog *d = calloc(1, sizeof *d);
+    new_pdf_data *n = calloc(1, sizeof *n);
+    n->pages = 1;
+    *d = (dialog){"New blank PDF", 460, 190, new_pdf_frame, new_pdf_free, n, 1};
+    dialog_push(d);
+}
+
 /* ---- e-book layout ---- */
 
 static const char *EBOOK_SIZES[] = {"A5", "A4", "Letter", "window"};

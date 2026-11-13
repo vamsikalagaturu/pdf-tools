@@ -16,7 +16,7 @@
 static const cursor_kind TOOL_CURSORS[T_COUNT] = {
     [T_VIEW] = CUR_IBEAM,  [T_REDACT] = CUR_CROSS, [T_HIGHLIGHT] = CUR_IBEAM, [T_NOTE] = CUR_HAND,
     [T_TEXT] = CUR_IBEAM,  [T_SIGN] = CUR_CROSS,   [T_IMAGE] = CUR_CROSS,     [T_DRAW] = CUR_PEN,
-    [T_SHAPE] = CUR_CROSS, [T_CROP] = CUR_CROSS,
+    [T_SHAPE] = CUR_CROSS, [T_FORM] = CUR_CROSS,   [T_CROP] = CUR_CROSS,
 };
 
 static void link_preview_hover(tab *t, const link_info *l, Rectangle at);
@@ -26,19 +26,25 @@ static void link_preview_hover(tab *t, const link_info *l, Rectangle at);
 static int movable(pt_kind k)
 {
     return k == PT_REDACT || k == PT_TEXT || k == PT_SIGN || k == PT_IMAGE || k == PT_NOTE || k == PT_INK ||
-           k == PT_SHAPE;
+           k == PT_SHAPE || k == PT_FIELD;
 }
 
 /* lines and arrows are defined by their ends, not their box: they move but do not resize */
 static int resizable(const pt_item *it)
 {
-    return it->kind == PT_REDACT || it->kind == PT_SIGN || it->kind == PT_IMAGE ||
+    return it->kind == PT_REDACT || it->kind == PT_SIGN || it->kind == PT_IMAGE || it->kind == PT_FIELD ||
            (it->kind == PT_SHAPE && it->shape <= PT_SHAPE_ELLIPSE);
 }
 
 int item_movable(const pt_item *it) { return movable(it->kind); }
 
 int item_resizable(const pt_item *it) { return resizable(it); }
+
+int item_keeps_aspect(const pt_item *it)
+{
+    return it->kind == PT_SIGN || it->kind == PT_IMAGE ||
+           (it->kind == PT_FIELD && (it->field == PT_FIELD_CHECKBOX || it->field == PT_FIELD_RADIO));
+}
 
 /* One ink stroke (screen points) as `pen` draws it, `w` its screen width. The see-through pens draw the stroke as
  * one strip so its joints do not darken; the highlighter multiplies a light tint into the page, as the saved
@@ -439,7 +445,7 @@ static int dragging_item(tab *t, int index)
 }
 
 /* Where gesture `g` (a move or a resize from the bottom-right handle) puts the dragged item or crop, in scene space;
- * signatures and images keep their aspect. */
+ * pictures, checkboxes and radio buttons keep their aspect. */
 static fz_rect drag_rect_for(tab *t, gesture_kind g)
 {
     fz_point now = screen_to_scene(t, ui.mouse);
@@ -447,11 +453,68 @@ static fz_rect drag_rect_for(tab *t, gesture_kind g)
     fz_rect r = t->drag_start;
     if (g == G_MOVE) return fz_make_rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy);
     float w = fmaxf(4, r.x1 - r.x0 + dx), h = fmaxf(4, r.y1 - r.y0 + dy);
-    if (t->drag_kind == PT_SIGN || t->drag_kind == PT_IMAGE) h = w * (r.y1 - r.y0) / (r.x1 - r.x0);
+    if (t->drag_keeps_aspect) h = w * (r.y1 - r.y0) / (r.x1 - r.x0);
     return fz_make_rect(r.x0, r.y0, r.x0 + w, r.y0 + h);
 }
 
 static fz_rect drag_rect(tab *t) { return drag_rect_for(t, t->gesture); }
+
+#define FIELD_LABEL_PAD_PX 3.0f
+#define FIELD_ARROW_PX 10.0f
+
+/* a field to be added, as the form shows it: its box, its kind's mark and its name or value */
+/* a field's area as the form shows it: a radio button is a circle in its box, any other field the box */
+static void draw_field_area(Rectangle r, int radio)
+{
+    if (radio) {
+        Vector2 c = {r.x + r.width / 2, r.y + r.height / 2};
+        float radius = fminf(r.width, r.height) / 2;
+        DrawCircleV(c, radius, pal.field_bg);
+        DrawCircleLinesV(c, radius, pal.field_frame);
+        return;
+    }
+    DrawRectangleRec(r, pal.field_bg);
+    DrawRectangleLinesEx(r, 1, pal.field_frame);
+}
+
+static void draw_new_field(const pt_item *it, Rectangle r)
+{
+    draw_field_area(r, it->field == PT_FIELD_RADIO);
+    if (it->field == PT_FIELD_RADIO) {
+        if (it->field_flags & PT_FIELD_CHECKED)
+            DrawCircleV((Vector2){r.x + r.width / 2, r.y + r.height / 2}, fminf(r.width, r.height) / 4, pal.field_mark);
+        return;
+    }
+    float side = fmaxf(4, fminf(r.width, r.height) - 2);
+    Rectangle box = {r.x + (r.width - side) / 2, r.y + (r.height - side) / 2, side, side};
+    int on = (it->field_flags & PT_FIELD_CHECKED) != 0;
+    const char *label = it->text && *it->text ? it->text : it->name;
+    Rectangle text = {r.x + FIELD_LABEL_PAD_PX, r.y, r.width - 2 * FIELD_LABEL_PAD_PX, r.height};
+    switch (it->field) {
+    case PT_FIELD_CHECKBOX:
+        DrawRectangleLinesEx(box, 1, pal.field_frame);
+        if (on) draw_icon("tick", box, pal.field_text);
+        break;
+    case PT_FIELD_RADIO: break;
+    case PT_FIELD_DROPDOWN: {
+        float ax = r.x + r.width - FIELD_ARROW_PX - FIELD_LABEL_PAD_PX, ay = r.y + r.height / 2;
+        DrawTriangle((Vector2){ax, ay - FIELD_ARROW_PX / 4},
+                     (Vector2){ax + FIELD_ARROW_PX / 2, ay + FIELD_ARROW_PX / 4},
+                     (Vector2){ax + FIELD_ARROW_PX, ay - FIELD_ARROW_PX / 4}, pal.field_frame);
+        text.width -= FIELD_ARROW_PX + FIELD_LABEL_PAD_PX;
+        label = it->text && *it->text ? it->text : it->options.n ? it->options.v[0] : it->name;
+    } break;
+    case PT_FIELD_SIGNATURE: label = "Sign here"; break;
+    case PT_FIELD_TEXT:
+    case PT_FIELD_COUNT: break;
+    }
+    int labelled = it->field != PT_FIELD_CHECKBOX && it->field != PT_FIELD_RADIO;
+    if (labelled && label && text.width > 0 && r.height >= FS_SMALL) {
+        char *shown = elide_right(label, text.width, FS_SMALL, F_REGULAR);
+        draw_text_in(shown, text, FS_SMALL, F_REGULAR, it->text && *it->text ? pal.field_text : pal.field_frame, -1);
+        free(shown);
+    }
+}
 
 static void draw_item(tab *t, int index)
 {
@@ -515,6 +578,7 @@ static void draw_item(tab *t, int index)
         if (c) DrawTexturePro(c->tex, (Rectangle){0, 0, (float)c->w, (float)c->h}, r, (Vector2){0, 0}, 0, WHITE);
         break;
     }
+    case PT_FIELD: draw_new_field(it, r); break;
     }
     if (t->sel == SEL_ITEM && t->sel_index == index) {
         dashed_rect(r, pal.selection);
@@ -576,6 +640,15 @@ static hit_obj hit_test(tab *t)
             return (hit_obj){SEL_ITEM, it->page, i, handle};
         }
     }
+    /* the Form tool selects the file's form fields (to delete them) instead of filling them */
+    for (int k = 0; t->tool == T_FORM && k < t->st.order.n; k++) {
+        int p = t->st.order.v[k];
+        if (t->off_y[p] < -1e8f) continue;
+        field_infos *fs = page_fields(t, p);
+        for (int i = fs->n - 1; i >= 0; i--)
+            if (in_screen(scene_rect_to_screen(t, disp_to_scene(t, p, fs->v[i].rect))))
+                return (hit_obj){SEL_ANNOT, p, fs->v[i].key.xref, 0};
+    }
     for (int k = 0; k < t->st.order.n; k++) {
         int p = t->st.order.v[k];
         if (t->off_y[p] < -1e8f) continue;
@@ -621,6 +694,7 @@ static gesture_kind selection_mode(tab *t)
     case T_IMAGE: return G_BAND;
     case T_DRAW: return G_STROKE;
     case T_SHAPE: return G_SHAPE;
+    case T_FORM: return G_BAND;
     case T_SIGN: return cert_placing(t) ? G_BAND : G_NONE;
     default: return G_NONE;
     }
@@ -768,7 +842,7 @@ static void handle_input(tab *t, Rectangle area)
     if ((t->scene_h * t->zoom > area.height && ui_hover(vbar)) || (t->scene_w * t->zoom > area.width && ui_hover(hbar)))
         over = 0;
     hit_obj h = over ? hit_test(t) : (hit_obj){SEL_NONE, -1, -1, 0};
-    int field = over && on_field(t);
+    int field = over && t->tool != T_FORM && on_field(t);
 
     /* cursor */
     if (over && t->gesture == G_NONE) {
@@ -824,10 +898,12 @@ static void handle_input(tab *t, Rectangle area)
             if (h.kind == SEL_ITEM) {
                 const pt_item *it = &t->st.items.v[h.index];
                 t->drag_kind = it->kind;
+                t->drag_keeps_aspect = item_keeps_aspect(it);
                 t->drag_start = to_scene(t, it->page, it->rect);
                 t->gesture = h.handle ? G_RESIZE : movable(it->kind) ? G_MOVE : G_FIELD;
             } else if (h.kind == SEL_CROP) {
                 t->drag_kind = -1;
+                t->drag_keeps_aspect = 0;
                 t->drag_start = to_scene(t, h.page, t->st.crop.v[h.index].rect);
                 t->gesture = h.handle ? G_RESIZE : G_MOVE;
             } else t->gesture = G_FIELD;
@@ -1641,6 +1717,10 @@ static void pane_frame(tab *t, Rectangle area)
 
     /* overlays: crops, find matches, the text selection, previews, SyncTeX marks, the gesture in progress */
     for (int i = 0; i < t->st.crop.n; i++) draw_crop(t, i);
+    /* the dragged area stays shown while the crop menu asks what to crop to it */
+    if (t->crop_ask_page >= 0 && !menu_is_open()) t->crop_ask_page = -1;
+    if (t->crop_ask_page >= 0 && t->off_y[t->crop_ask_page] > -1e8f)
+        dashed_rect(scene_rect_to_screen(t, to_scene(t, t->crop_ask_page, t->crop_ask)), pal.selection);
     for (int i = 0; i < t->matches.n; i++) {
         int p = t->matches.v[i].page;
         if (t->off_y[p] < -1e8f) continue;
@@ -1883,6 +1963,23 @@ void fields_frame(tab *t, int page)
         Rectangle r = scene_rect_to_screen(t, disp_to_scene(t, page, f->rect));
         if (r.y > t->view.y + t->view.height || r.y + r.height < t->view.y) continue;
         unsigned id = ui_id(t, 10000 + f->key.xref);
+        if (t->tool == T_FORM) {
+            int selected = t->sel == SEL_ANNOT && t->sel_page == page && t->sel_index == f->key.xref;
+            int radio = f->type == PDF_WIDGET_TYPE_RADIOBUTTON;
+            draw_field_area(r, radio);
+            if (!radio && f->type != PDF_WIDGET_TYPE_CHECKBOX && r.height >= FS_SMALL &&
+                r.width > 2 * FIELD_LABEL_PAD_PX) {
+                Rectangle text = {r.x + FIELD_LABEL_PAD_PX, r.y, r.width - 2 * FIELD_LABEL_PAD_PX, r.height};
+                char *shown = elide_right(f->name, text.width, FS_SMALL, F_REGULAR);
+                draw_text_in(shown, text, FS_SMALL, F_REGULAR, pal.field_frame, -1);
+                free(shown);
+            }
+            if (selected) dashed_rect(r, pal.selection);
+            static char tip[256];
+            snprintf(tip, sizeof tip, "Form field %s - Delete or right-click removes it", f->name);
+            ui_tooltip(id, r, tip);
+            continue;
+        }
         if (f->type == PDF_WIDGET_TYPE_TEXT) {
             field_editor *e = editor_for(t, f);
             float px = fit_text(f, e, f->rect);

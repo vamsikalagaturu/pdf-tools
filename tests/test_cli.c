@@ -224,6 +224,119 @@ static void test_fill(const char *form)
     free(o);
 }
 
+/* the value MuPDF reads for field `name` on page 1 of `path`, "" when it has none; NULL when there is no such field */
+static char *field_value(const char *path, const char *name, int *widgets)
+{
+    pdf_document *doc = pdf_open_document(ctx, path);
+    pdf_page *page = pdf_load_page(ctx, doc, 0);
+    char *found = NULL;
+    *widgets = 0;
+    for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+        char *n = pdf_load_field_name(ctx, pdf_annot_obj(ctx, w));
+        if (!strcmp(n, name)) {
+            const char *v = pdf_field_value(ctx, pdf_annot_obj(ctx, w));
+            free(found);
+            found = pt_strdup(v ? v : "");
+            (*widgets)++;
+        }
+        fz_free(ctx, n);
+    }
+    fz_drop_page(ctx, (fz_page *)page);
+    pdf_drop_document(ctx, doc);
+    return found;
+}
+
+static void test_new_and_add_field(void)
+{
+    char *blank = tmp("blank.pdf"), *a = tmp("field-a.pdf"), *b = tmp("field-b.pdf"), *bad = tmp("field-bad.pdf");
+    CHECK(run("new", "-o", blank, "--pages", "2", "--page-size", "Letter", NULL) == OK && has("\"pages\":2"));
+    CHECK(run("info", blank, NULL) == OK && has("\"pages\":2") && has("[612.0,792.0,0]"));
+    CHECK(run("new", "-o", bad, "--page-size", "B5", NULL) == FAILED && has("--page-size"));
+
+    CHECK(run("add-field", blank, "-o", a, "--page", "1", "--rect", "72,72,300,96", "--type", "text", "--name",
+              "full_name", "--value", "Jane", "--required", NULL) == OK &&
+          has("\"field\":{\"name\":\"full_name\",\"type\":\"text\",\"page\":1"));
+    CHECK(run("add-field", a, "-o", b, "--page", "1", "--rect", "72,110,90,128", "--type", "checkbox", "--name",
+              "agree", "--value", "true", NULL) == OK);
+    CHECK(run("add-field", b, "-o", a, "--page", "1", "--rect", "72,140,90,158", "--type", "radio", "--name", "size",
+              "--value", "Small", NULL) == OK);
+    CHECK(run("add-field", a, "-o", b, "--page", "1", "--rect", "100,140,118,158", "--type", "radio", "--name", "size",
+              "--value", "Large", NULL) == OK);
+    CHECK(run("add-field", b, "-o", a, "--page", "1", "--rect", "72,170,250,190", "--type", "dropdown", "--name",
+              "country", "--options", "India,Germany", "--value", "Germany", NULL) == OK);
+    CHECK(run("add-field", a, "-o", b, "--page", "1", "--rect", "72,200,272,260", "--type", "signature", "--name",
+              "sig", NULL) == OK);
+    CHECK(run("info", b, NULL) == OK && has("\"name\":\"full_name\",\"type\":\"Text\",\"value\":\"Jane\"") &&
+          has("\"name\":\"agree\",\"type\":\"CheckBox\",\"value\":\"Yes\"") &&
+          has("\"name\":\"size\",\"type\":\"RadioButton\"") &&
+          has("\"name\":\"country\",\"type\":\"ComboBox\",\"value\":\"Germany\"") &&
+          has("\"name\":\"sig\",\"type\":\"Signature\""));
+    int widgets = 0;
+    char *v = field_value(b, "size", &widgets);
+    CHECK(v && widgets == 2);
+    free(v);
+
+    /* the check mark's font keeps ZapfDingbats' own encoding, so other viewers draw it */
+    pdf_document *doc = pdf_open_document(ctx, b);
+    pdf_page *page = pdf_load_page(ctx, doc, 0);
+    int checked_font = 0, encoded = 0;
+    for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+        pdf_obj *fonts = pdf_dict_getp(ctx, pdf_annot_obj(ctx, w), "AP/N/Yes/Resources/Font");
+        for (int k = 0; k < pdf_dict_len(ctx, fonts); k++) {
+            pdf_obj *font = pdf_dict_get_val(ctx, fonts, k);
+            if (strcmp(pdf_dict_get_name(ctx, font, PDF_NAME(BaseFont)), "ZapfDingbats")) continue;
+            checked_font = 1;
+            encoded |= pdf_dict_get(ctx, font, PDF_NAME(Encoding)) != NULL;
+        }
+    }
+    fz_drop_page(ctx, (fz_page *)page);
+    pdf_drop_document(ctx, doc);
+    CHECK(checked_font && !encoded);
+
+    CHECK(run("fill", b, "-o", a, "--field", "full_name=John", "--field", "country=India", NULL) == OK);
+    v = field_value(a, "full_name", &widgets);
+    CHECK(v && !strcmp(v, "John"));
+    free(v);
+
+    /* one button of a radio group is on, and the group's value is that button's choice as a name */
+    CHECK(run("fill", b, "-o", a, "--field", "size=Large", NULL) == OK);
+    doc = pdf_open_document(ctx, a);
+    page = pdf_load_page(ctx, doc, 0);
+    int on = 0, large = 0, named = 0;
+    for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+        if (pdf_widget_type(ctx, w) != PDF_WIDGET_TYPE_RADIOBUTTON) continue;
+        pdf_obj *obj = pdf_annot_obj(ctx, w), *as = pdf_dict_get(ctx, obj, PDF_NAME(AS));
+        on += !pdf_name_eq(ctx, as, PDF_NAME(Off));
+        large += !strcmp(pdf_to_name(ctx, as), "Large");
+        pdf_obj *group = pdf_dict_get(ctx, obj, PDF_NAME(Parent));
+        named += pdf_is_name(ctx, pdf_dict_get(ctx, group, PDF_NAME(V)));
+    }
+    fz_drop_page(ctx, (fz_page *)page);
+    pdf_drop_document(ctx, doc);
+    CHECK(on == 1 && large == 1 && named == 2);
+    CHECK(run("fill", b, "-o", bad, "--field", "size=Medium", NULL) == FAILED &&
+          has("takes one of: Small, Large, Off"));
+    CHECK(run("fill", b, "-o", bad, "--field", "size=true", NULL) == FAILED);
+
+    CHECK(run("add-field", b, "-o", bad, "--page", "1", "--rect", "72,300,200,320", "--type", "text", "--name", "agree",
+              NULL) == FAILED &&
+          has("already exists"));
+    CHECK(run("add-field", b, "-o", bad, "--page", "1", "--rect", "1,1,9,9", "--type", "button", "--name", "x", NULL) ==
+              FAILED &&
+          has("--type"));
+    CHECK(run("add-field", b, "-o", bad, "--page", "1", "--rect", "1,1,9,9", "--type", "dropdown", "--name", "x",
+              NULL) == FAILED &&
+          has("--options"));
+    CHECK(run("add-field", b, "-o", bad, "--page", "1", "--rect", "1,1,9,9", "--type", "text", "--name", "x",
+              "--options", "a,b", NULL) == FAILED);
+    CHECK(run("add-field", b, "-o", bad, "--page", "3", "--rect", "1,1,9,9", "--type", "text", "--name", "x", NULL) ==
+          FAILED);
+    CHECK(run("add-field", b, "-o", b, "--page", "1", "--rect", "1,1,9,9", "--type", "text", "--name", "x", NULL) ==
+          FAILED);
+    CHECK(!exists(bad));
+    free(blank), free(a), free(b), free(bad);
+}
+
 static void test_pages(const char *statement)
 {
     char *o = tmp("pages.pdf");
@@ -722,6 +835,7 @@ int main(int argc, char **argv)
     test_redact_text_and_regex(statement);
     test_redact_nothing_matched(statement);
     test_fill(form);
+    test_new_and_add_field();
     test_pages(statement);
     test_merge_split_flatten(statement);
     test_merge_images(statement);

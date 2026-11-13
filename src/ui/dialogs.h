@@ -1,8 +1,8 @@
 #ifndef PT_DIALOGS_H
 #define PT_DIALOGS_H
 /* The document tab's dialogs and tools (dialogs.c: export pages, protect, the signature library, personal data,
- * Bates numbers, watermarks, properties, images, certificate signing) and other views (views.c: presentation, the
- * Compare tab, text recognition). */
+ * Bates numbers, watermarks, properties, images, certificate signing, new form fields, new blank PDFs) and other views
+ * (views.c: presentation, the Compare tab, text recognition). */
 #include "tab.h"
 
 typedef void (*export_done)(void *ctx, const char *ranges, int flat, int dpi);
@@ -18,6 +18,12 @@ void watermark_dialog(tab *t);
 void properties_dialog(tab *t);
 void ebook_layout_dialog(void); /* View > E-book layout: the settings, then every open e-book laid out again */
 void export_images_dialog(tab *t);
+/* The names of the document's fields and of the new ones (skipping item `skip`, -1 none); radio[i] is set when
+ * names[i] is a radio group, which a radio button may join. */
+void field_names_taken(tab *t, int skip, pt_strs *names, pt_ints *radio);
+/* the name, value, options and flags of new field t->st.items.v[index], or of `fresh` (index -1), added on OK */
+void field_dialog(tab *t, int index, const pt_item *fresh);
+void new_pdf_dialog(void); /* File > New blank PDF: page size and count, then where to save it; opens it */
 void cert_sign_start(tab *t);
 int cert_placing(tab *t); /* the next band on the page is the signature box */
 void cert_place(tab *t, int page, fz_rect src);

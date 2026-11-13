@@ -1,5 +1,5 @@
 /* Bates numbers and watermarks as page content (Helvetica, WinAnsi), document properties (the Info dictionary),
- * the outline and form field values. */
+ * the outline, form field values and new form fields. */
 #include "content.h"
 #include <ctype.h>
 #include <math.h>
@@ -339,21 +339,248 @@ float pt_field_fontsize(fz_context *ctx, pdf_annot *widget)
     return 0;
 }
 
+static void dingbats_builtin_encoding(fz_context *ctx, pdf_obj *widget);
+
+/* A button's field is the nearest of it and its ancestors that has a name: a radio group for its buttons. Sets the
+ * field's /V to the name `value` and every button of the field to it when that is the button's on state, else to
+ * Off (ISO 32000-1, 12.7.4.2.3-4), so one button of a radio group is on at most. */
+static void set_button_field(fz_context *ctx, pdf_obj *button, pdf_obj *value)
+{
+    pdf_obj *field = button;
+    for (int depth = 0; depth < MAX_FIELD_DEPTH && !pdf_dict_get(ctx, field, PDF_NAME(T)); depth++) {
+        pdf_obj *parent = pdf_dict_get(ctx, field, PDF_NAME(Parent));
+        if (!parent) break;
+        field = parent;
+    }
+    pdf_dict_put(ctx, field, PDF_NAME(V), value);
+    pdf_obj *kids = pdf_dict_get(ctx, field, PDF_NAME(Kids));
+    int n = pdf_array_len(ctx, kids);
+    for (int i = 0; i <= n; i++) {
+        pdf_obj *b = i < n ? pdf_array_get(ctx, kids, i) : n ? NULL : field;
+        if (!b) continue;
+        int on = pdf_name_eq(ctx, pdf_button_field_on_state(ctx, b), value);
+        pdf_dict_put(ctx, b, PDF_NAME(AS), on ? value : PDF_NAME(Off));
+    }
+}
+
 void pt_set_field(fz_context *ctx, pdf_annot *widget, const char *text, int is_bool, int on, float fontsize)
 {
     pdf_obj *obj = pdf_annot_obj(ctx, widget);
-    pdf_document *doc = pdf_annot_page(ctx, widget)->doc;
     if (fontsize > 0) set_da_fontsize(ctx, obj, fontsize);
     enum pdf_widget_type t = pdf_widget_type(ctx, widget);
     if (t == PDF_WIDGET_TYPE_CHECKBOX || t == PDF_WIDGET_TYPE_RADIOBUTTON) {
-        int want = is_bool ? on : pt_is_on(text);
         pdf_obj *state = pdf_button_field_on_state(ctx, obj);
-        const char *name = want ? (state ? pdf_to_name(ctx, state) : "Yes") : "Off";
-        pdf_set_field_value(ctx, doc, obj, name, 1);
+        int radio = t == PDF_WIDGET_TYPE_RADIOBUTTON;
+        pdf_obj *as = pdf_dict_get(ctx, obj, PDF_NAME(AS));
+        int is_on = as && !pdf_name_eq(ctx, as, PDF_NAME(Off));
+        /* a radio button takes its own choice's name; a value naming another choice is for another button */
+        int want = is_bool ? on : radio ? text && !strcmp(text, pdf_to_name(ctx, state)) : pt_is_on(text);
+        int other_choice = radio && !is_bool && !want && pt_is_on(text);
+        if (want) set_button_field(ctx, obj, state);
+        else if (!other_choice && (!radio || is_on)) set_button_field(ctx, obj, PDF_NAME(Off));
     } else if (t == PDF_WIDGET_TYPE_COMBOBOX || t == PDF_WIDGET_TYPE_LISTBOX) {
         pdf_set_choice_field_value(ctx, widget, text ? text : "");
     } else {
         pdf_set_text_field_value(ctx, widget, text ? text : "");
     }
     pdf_update_annot(ctx, widget);
+    if (t == PDF_WIDGET_TYPE_CHECKBOX) dingbats_builtin_encoding(ctx, obj);
+}
+
+/* ---- new form fields ---- */
+
+const char *pt_field_type_names[PT_FIELD_COUNT] = {"text", "checkbox", "radio", "dropdown", "signature"};
+
+int pt_field_type_from_name(const char *name)
+{
+    for (int i = 0; i < PT_FIELD_COUNT; i++)
+        if (name && !strcmp(name, pt_field_type_names[i])) return i;
+    return -1;
+}
+
+static int has_str(const pt_strs *s, const char *v)
+{
+    for (int i = 0; i < s->n; i++)
+        if (!strcmp(s->v[i], v)) return 1;
+    return 0;
+}
+
+void pt_field_names(fz_context *ctx, pdf_document *doc, pt_strs *out)
+{
+    int pages = pdf_count_pages(ctx, doc);
+    for (int p = 0; p < pages; p++) {
+        pdf_page *page = pdf_load_page(ctx, doc, p);
+        fz_try(ctx)
+        {
+            for (pdf_annot *w = pdf_first_widget(ctx, page); w; w = pdf_next_widget(ctx, w)) {
+                char *name = pdf_load_field_name(ctx, pdf_annot_obj(ctx, w));
+                if (*name && !has_str(out, name)) pt_push(*out, pt_strdup(name));
+                fz_free(ctx, name);
+            }
+        }
+        fz_always(ctx) fz_drop_page(ctx, (fz_page *)page);
+        fz_catch(ctx) fz_rethrow(ctx);
+    }
+}
+
+char *pt_unique_field_name(const char *base, const pt_strs *taken)
+{
+    for (int n = 1;; n++) {
+        char *name = pt_format("%s%d", base, n);
+        if (!has_str(taken, name)) return name;
+        free(name);
+    }
+}
+
+/* a light grey border and no background, so the page stays visible under an empty field */
+#define FIELD_BORDER_GREY 0.6f
+#define FIELD_BORDER_WIDTH 1
+#define FIELD_DEFAULT_DA "/Helv 0 Tf 0 g"
+
+/* /AcroForm with /Fields, a default appearance and Helvetica as /Helv in its resources */
+static pdf_obj *acroform(fz_context *ctx, pdf_document *doc)
+{
+    pdf_obj *root = pdf_dict_get(ctx, pdf_trailer(ctx, doc), PDF_NAME(Root));
+    pdf_obj *form = pdf_dict_get(ctx, root, PDF_NAME(AcroForm));
+    if (!form) form = pdf_dict_put_dict(ctx, root, PDF_NAME(AcroForm), 2);
+    if (!pdf_is_array(ctx, pdf_dict_get(ctx, form, PDF_NAME(Fields))))
+        pdf_dict_put_array(ctx, form, PDF_NAME(Fields), 1);
+    if (!pdf_dict_get(ctx, form, PDF_NAME(DA))) pdf_dict_put_text_string(ctx, form, PDF_NAME(DA), FIELD_DEFAULT_DA);
+    pdf_obj *dr = pdf_dict_get(ctx, form, PDF_NAME(DR));
+    if (!dr) dr = pdf_dict_put_dict(ctx, form, PDF_NAME(DR), 1);
+    pdf_obj *fonts = pdf_dict_get(ctx, dr, PDF_NAME(Font));
+    if (!fonts) fonts = pdf_dict_put_dict(ctx, dr, PDF_NAME(Font), 1);
+    if (!pdf_dict_get(ctx, fonts, PDF_NAME(Helv)))
+        pdf_dict_put_drop(ctx, fonts, PDF_NAME(Helv), pt_standard_font(ctx, doc, "Helvetica"));
+    /* the appearances are written here, so viewers need not make their own */
+    pdf_dict_del(ctx, form, PDF_NAME(NeedAppearances));
+    return form;
+}
+
+/* A button's appearance dictionary names its on state (ISO 32000-1, 12.7.4.2.3); these placeholders carry the name
+ * until MuPDF draws the real appearances. */
+static void name_on_state(fz_context *ctx, pdf_document *doc, pdf_obj *widget, const char *on)
+{
+    pdf_obj *ap = pdf_dict_put_dict(ctx, widget, PDF_NAME(AP), 1);
+    pdf_obj *n = pdf_dict_put_dict(ctx, ap, PDF_NAME(N), 2);
+    pdf_dict_put_drop(ctx, n, PDF_NAME(Off), pdf_new_dict(ctx, doc, 0));
+    pdf_dict_put_drop(ctx, n, pdf_new_name(ctx, on), pdf_new_dict(ctx, doc, 0));
+}
+
+/* MuPDF gives the ZapfDingbats font of a check mark WinAnsiEncoding, under which "3" names no ZapfDingbats glyph and
+ * other viewers draw no check; the font's built-in encoding is the one the check needs (ISO 32000-1, 9.6.6.1). */
+static void dingbats_builtin_encoding(fz_context *ctx, pdf_obj *widget)
+{
+    pdf_obj *n = pdf_dict_getp(ctx, widget, "AP/N");
+    for (int i = 0; i < pdf_dict_len(ctx, n); i++) {
+        pdf_obj *fonts = pdf_dict_getp(ctx, pdf_dict_get_val(ctx, n, i), "Resources/Font");
+        for (int k = 0; k < pdf_dict_len(ctx, fonts); k++) {
+            pdf_obj *font = pdf_dict_get_val(ctx, fonts, k);
+            if (!strcmp(pdf_dict_get_name(ctx, font, PDF_NAME(BaseFont)), "ZapfDingbats"))
+                pdf_dict_del(ctx, font, PDF_NAME(Encoding));
+        }
+    }
+}
+
+void pt_add_field(fz_context *ctx, pdf_document *doc, pdf_page *page, const pt_item *it)
+{
+    const char *name = it->name && *it->name ? it->name : pt_field_type_names[it->field];
+    pdf_obj *form = acroform(ctx, doc);
+    pdf_obj *fields = pdf_dict_get(ctx, form, PDF_NAME(Fields));
+    pdf_obj *existing = pdf_lookup_field(ctx, fields, name);
+    int radio = it->field == PT_FIELD_RADIO;
+    int joins = 0;
+    if (existing) {
+        joins = radio && pdf_name_eq(ctx, pdf_dict_get_inheritable(ctx, existing, PDF_NAME(FT)), PDF_NAME(Btn)) &&
+                (pdf_dict_get_inheritable_int(ctx, existing, PDF_NAME(Ff)) & PDF_BTN_FIELD_IS_RADIO) &&
+                pdf_dict_get(ctx, existing, PDF_NAME(Kids));
+        if (!joins) fz_throw(ctx, FZ_ERROR_ARGUMENT, "a field named %s already exists", name);
+    }
+
+    int ff = (it->field_flags & PT_FIELD_READ_ONLY ? PDF_FIELD_IS_READ_ONLY : 0) |
+             (it->field_flags & PT_FIELD_REQUIRED ? PDF_FIELD_IS_REQUIRED : 0);
+    int on = (it->field_flags & PT_FIELD_CHECKED) != 0;
+    const char *value = it->text ? it->text : "";
+    pdf_annot *w = it->field == PT_FIELD_SIGNATURE ? pdf_create_signature_widget(ctx, page, (char *)name)
+                                                   : pdf_create_annot_raw(ctx, page, PDF_ANNOT_WIDGET);
+    fz_try(ctx)
+    {
+        pdf_obj *obj = pdf_annot_obj(ctx, w);
+        pdf_set_annot_rect(ctx, w, it->rect);
+        pdf_dict_put(ctx, obj, PDF_NAME(P), page->obj);
+        pdf_dict_put_int(ctx, obj, PDF_NAME(F), PDF_ANNOT_IS_PRINT);
+        char da[64];
+        snprintf(da, sizeof da, "/Helv %g Tf 0 g", it->size > 0 ? it->size : 0);
+        pdf_dict_put_text_string(ctx, obj, PDF_NAME(DA), da);
+        pdf_obj *mk = pdf_dict_put_dict(ctx, obj, PDF_NAME(MK), 1);
+        pdf_obj *bc = pdf_dict_put_array(ctx, mk, PDF_NAME(BC), 3);
+        for (int i = 0; i < 3; i++) pdf_array_push_real(ctx, bc, FIELD_BORDER_GREY);
+        pdf_obj *bs = pdf_dict_put_dict(ctx, obj, PDF_NAME(BS), 2);
+        pdf_dict_put_int(ctx, bs, PDF_NAME(W), FIELD_BORDER_WIDTH);
+        pdf_dict_put(ctx, bs, PDF_NAME(S), PDF_NAME(S));
+
+        /* a radio button's field is its group, the parent of its buttons; other widgets are their own field */
+        if (radio) {
+            pdf_obj *group = existing;
+            if (!joins) {
+                group = pdf_add_new_dict(ctx, doc, 4);
+                pdf_dict_put(ctx, group, PDF_NAME(FT), PDF_NAME(Btn));
+                pdf_dict_put_int(ctx, group, PDF_NAME(Ff),
+                                 PDF_BTN_FIELD_IS_RADIO | PDF_BTN_FIELD_IS_NO_TOGGLE_TO_OFF | ff);
+                pdf_dict_put_text_string(ctx, group, PDF_NAME(T), name);
+                pdf_dict_put(ctx, group, PDF_NAME(V), PDF_NAME(Off));
+                pdf_dict_put_array(ctx, group, PDF_NAME(Kids), 2);
+                pdf_array_push(ctx, fields, group);
+                pdf_drop_obj(ctx, group);
+            }
+            pdf_dict_put(ctx, obj, PDF_NAME(Parent), group);
+            pdf_array_push(ctx, pdf_dict_get(ctx, group, PDF_NAME(Kids)), obj);
+            const char *choice = *value ? value : "Choice1";
+            name_on_state(ctx, doc, obj, choice);
+            pdf_dict_put_name(ctx, obj, PDF_NAME(AS), on ? choice : "Off");
+            if (on) pdf_dict_put_name(ctx, group, PDF_NAME(V), choice);
+        } else if (it->field != PT_FIELD_SIGNATURE) {
+            pdf_dict_put_text_string(ctx, obj, PDF_NAME(T), name);
+            pdf_array_push(ctx, fields, obj);
+        }
+
+        switch (it->field) {
+        case PT_FIELD_TEXT:
+            pdf_dict_put(ctx, obj, PDF_NAME(FT), PDF_NAME(Tx));
+            pdf_dict_put_int(ctx, obj, PDF_NAME(Ff),
+                             ff | (it->field_flags & PT_FIELD_MULTILINE ? PDF_TX_FIELD_IS_MULTILINE : 0));
+            if (it->max_len > 0) pdf_dict_put_int(ctx, obj, PDF_NAME(MaxLen), it->max_len);
+            if (*value) {
+                pdf_dict_put_text_string(ctx, obj, PDF_NAME(V), value);
+                pdf_dict_put_text_string(ctx, obj, PDF_NAME(DV), value);
+            }
+            break;
+        case PT_FIELD_CHECKBOX:
+            pdf_dict_put(ctx, obj, PDF_NAME(FT), PDF_NAME(Btn));
+            pdf_dict_put_int(ctx, obj, PDF_NAME(Ff), ff);
+            name_on_state(ctx, doc, obj, "Yes");
+            pdf_dict_put(ctx, obj, PDF_NAME(AS), on ? PDF_NAME(Yes) : PDF_NAME(Off));
+            pdf_dict_put(ctx, obj, PDF_NAME(V), on ? PDF_NAME(Yes) : PDF_NAME(Off));
+            pdf_dict_put(ctx, obj, PDF_NAME(DV), on ? PDF_NAME(Yes) : PDF_NAME(Off));
+            break;
+        case PT_FIELD_DROPDOWN: {
+            pdf_dict_put(ctx, obj, PDF_NAME(FT), PDF_NAME(Ch));
+            pdf_dict_put_int(ctx, obj, PDF_NAME(Ff), ff | PDF_CH_FIELD_IS_COMBO);
+            pdf_obj *opt = pdf_dict_put_array(ctx, obj, PDF_NAME(Opt), it->options.n);
+            for (int i = 0; i < it->options.n; i++) pdf_array_push_text_string(ctx, opt, it->options.v[i]);
+            if (*value) {
+                pdf_dict_put_text_string(ctx, obj, PDF_NAME(V), value);
+                pdf_dict_put_text_string(ctx, obj, PDF_NAME(DV), value);
+            }
+        } break;
+        case PT_FIELD_SIGNATURE: pdf_dict_put_int(ctx, obj, PDF_NAME(Ff), ff); break;
+        case PT_FIELD_RADIO:
+        case PT_FIELD_COUNT: break;
+        }
+        pdf_dirty_annot(ctx, w);
+        pdf_update_annot(ctx, w);
+        if (it->field == PT_FIELD_CHECKBOX) dingbats_builtin_encoding(ctx, obj);
+    }
+    fz_always(ctx) pdf_drop_annot(ctx, w);
+    fz_catch(ctx) fz_rethrow(ctx);
 }

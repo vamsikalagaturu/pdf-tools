@@ -527,6 +527,7 @@ static void m_action(void *ctx, intptr_t a)
 #ifndef __ANDROID__
     case 20: app_toggle_fullscreen(); break;
 #endif
+    case 21: new_pdf_dialog(); break;
     }
 }
 
@@ -550,6 +551,7 @@ ui_menu *app_build_menu(tab *t)
 #endif
     menu_item(f, "Home", "home", keymap_label("home"), m_action, NULL, 1, 1, 0);
     menu_item(f, "Open...", "open", keymap_label("open"), m_action, NULL, 2, 1, 0);
+    menu_item(f, "New blank PDF...", "new-pdf", keymap_label("new_pdf"), m_action, NULL, 21, 1, 0);
     ui_menu *r = menu_sub(f, "Open recent", "recent");
     const pt_strs *recent = pt_settings_list(&app.settings, "recent_files");
     for (int i = 0; recent && i < recent->n; i++)
@@ -895,6 +897,7 @@ static void global_shortcuts(void)
 {
     if (dialogs_open() || menu_is_open()) return;
     if (keymap_pressed("open")) app_open_dialog();
+    if (keymap_pressed("new_pdf")) new_pdf_dialog();
     if (keymap_pressed("close_tab")) app_close_tab(app.current);
     if (keymap_pressed("combine")) app_open_workspace(NULL);
     if (keymap_pressed("quit")) ipc_quit_all(), app_quit_request();
@@ -1501,10 +1504,13 @@ int pt_app_main(int argc, char **argv)
     return 0;
 }
 
-/* ---- the Home tab: open a PDF, start Combine & split, or reopen a starred or recent file (two-line rows) ---- */
+/* ---- the Home tab: open a PDF, make a blank one, start Combine & split, or reopen a starred or recent file (two-line
+ * rows) ---- */
 
 #define ROW_HEIGHT 48.0f
 #define HOME_ROWS_MAX 8
+#define HOME_BUTTONS 3 /* open, new blank PDF, combine & split */
+#define HOME_BUTTON_GAP 12.0f
 #define HOME_HEADER_H (88.0f + 10 + 40 + 10 + 22 + 26) /* logo, name and tagline, down to the buttons */
 #define HOME_HINT_H 22.0f
 #define HOME_LIST_MIN_H (HOME_SECTION_H + 2 * ROW_HEIGHT)
@@ -1604,12 +1610,17 @@ void home_frame(Rectangle area)
                      F_REGULAR, pal.disabled_text, 0);
         y += 48;
     }
-    float bw = fmaxf(170, button_width("Combine & split PDFs...", "merge", 0) + 20);
-    float bx = x + (w - (bw * 2 + 12)) / 2;
+    float bw = fminf(fmaxf(170, button_width("Combine & split PDFs...", "merge", 0) + 20),
+                     (w - (HOME_BUTTONS - 1) * HOME_BUTTON_GAP) / HOME_BUTTONS);
+    float bx = x + (w - (bw * HOME_BUTTONS + (HOME_BUTTONS - 1) * HOME_BUTTON_GAP)) / 2;
     if (ui_button(ui_id_str("home-open", 0), (Rectangle){bx, y, bw, 44}, "Open PDF...", "open", 0, NULL))
         app_open_dialog();
-    if (ui_button(ui_id_str("home-merge", 0), (Rectangle){bx + bw + 12, y, bw, 44}, "Combine & split PDFs...", "merge",
-                  0, NULL))
+    bx += bw + HOME_BUTTON_GAP;
+    if (ui_button(ui_id_str("home-new", 0), (Rectangle){bx, y, bw, 44}, "New blank PDF...", "new-pdf", 0,
+                  "An empty PDF to add form fields, text and images to"))
+        new_pdf_dialog();
+    bx += bw + HOME_BUTTON_GAP;
+    if (ui_button(ui_id_str("home-merge", 0), (Rectangle){bx, y, bw, 44}, "Combine & split PDFs...", "merge", 0, NULL))
         app_open_workspace(NULL);
     y += 44 + 26;
     if (total) {
